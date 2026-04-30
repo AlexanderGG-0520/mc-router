@@ -160,7 +160,7 @@ gh run view <run-id> --log
 
 Manual run `25160991609` verified the optional real Minecraft server E2E workflow on 2026-04-30 UTC:
 
-- Run URL: <https://github.com/AlexanderGG-0520/mc-router/actions/runs/25160991609>
+- Run URL: </actions/runs/25160991609>
 - Workflow: `optional minecraft e2e`
 - Branch: `main`
 - Head SHA: `d45851e67102edac46f56783f03720628caf2c6d`
