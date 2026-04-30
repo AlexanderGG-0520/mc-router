@@ -46,6 +46,23 @@ It creates:
 
 RBAC is omitted because the MVP does not call the Kubernetes API.
 
+## ConfigMap Updates And Reload
+
+The gateway supports `SIGHUP` config reload on Linux. In Kubernetes, this gives operators a choice after updating the ConfigMap-backed route config:
+
+- Send `SIGHUP` to the running gateway process so new connections use the updated routes without restarting the Pod.
+- Use a rolling restart when changing startup-only settings, such as the listener address, or when your platform makes signal delivery operationally awkward.
+
+Reload is atomic from the gateway's point of view. If the updated config is invalid, the running route snapshot stays active. Active connections are not disconnected by reload; new connections use the new route snapshot after a successful reload.
+
+Example command shape:
+
+```powershell
+kubectl exec -n mc-gateway deploy/mc-gateway -- kill -HUP 1
+```
+
+This assumes PID 1 inside the container is `mc-gateway` and that the container image includes a compatible `kill` command. Some restricted images or runtime policies may make `kubectl exec` or signal delivery unavailable. In those environments, prefer a rolling restart and verify logs for `reload_success` or `reload_failed`.
+
 ## NodePort Option
 
 If a LoadBalancer is not available, change the Service type:

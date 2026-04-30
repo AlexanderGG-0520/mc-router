@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
@@ -15,16 +16,21 @@ import (
 )
 
 type Server struct {
-	cfg    config.Config
-	router *router.Router
+	state  atomic.Value
 	logger *slog.Logger
 	limits mcproto.Limits
 
-	dialContext dialContextFunc
+	listenAddress string
+	dialContext   dialContextFunc
 
 	listenerMu sync.Mutex
 	listener   net.Listener
 	wg         sync.WaitGroup
+}
+
+type serverState struct {
+	cfg    config.Config
+	router *router.Router
 }
 
 type dialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
@@ -43,22 +49,47 @@ const (
 
 func NewServer(cfg config.Config, routeTable *router.Router, logger *slog.Logger) *Server {
 	dialer := net.Dialer{}
-	return &Server{
-		cfg:         cfg,
-		router:      routeTable,
-		logger:      logger,
-		limits:      mcproto.DefaultLimits(),
-		dialContext: dialer.DialContext,
+	s := &Server{
+		logger:        logger,
+		limits:        mcproto.DefaultLimits(),
+		listenAddress: cfg.Listen,
+		dialContext:   dialer.DialContext,
 	}
+	s.state.Store(&serverState{cfg: cfg, router: routeTable})
+	return s
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	lc := net.ListenConfig{}
-	listener, err := lc.Listen(ctx, "tcp", s.cfg.Listen)
+	listener, err := lc.Listen(ctx, "tcp", s.listenAddress)
 	if err != nil {
 		return err
 	}
 	return s.Serve(ctx, listener)
+}
+
+func (s *Server) ReloadFile(path string) error {
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		s.logger.Error("reload_failed", "config", path, "error", err)
+		return err
+	}
+	routeTable, err := router.New(cfg)
+	if err != nil {
+		s.logger.Error("reload_failed", "config", path, "error", err)
+		return err
+	}
+	s.UpdateConfig(cfg, routeTable)
+	s.logger.Info("reload_success", "config", path, "routes", len(cfg.Routes), "listen", cfg.Listen)
+	return nil
+}
+
+func (s *Server) UpdateConfig(cfg config.Config, routeTable *router.Router) {
+	s.state.Store(&serverState{cfg: cfg, router: routeTable})
+}
+
+func (s *Server) currentState() *serverState {
+	return s.state.Load().(*serverState)
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
@@ -105,8 +136,9 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 	defer s.wg.Done()
 	defer client.Close()
 
+	state := s.currentState()
 	remoteAddr := client.RemoteAddr().String()
-	if err := client.SetReadDeadline(time.Now().Add(s.cfg.HandshakeTimeout.Duration)); err != nil {
+	if err := client.SetReadDeadline(time.Now().Add(state.cfg.HandshakeTimeout.Duration)); err != nil {
 		s.logger.Warn("failed to set handshake deadline", "remote", remoteAddr, "error", err)
 		return
 	}
@@ -125,13 +157,13 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 	}
 
 	routeAddress := handshake.RouteAddress()
-	selection, err := s.router.Select(routeAddress)
+	selection, err := state.router.Select(routeAddress)
 	if err != nil {
 		s.logger.Info("connection rejected", "reason", reasonRouteDenied, "remote", remoteAddr, "server_address", routeAddress, "error", err)
 		return
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, s.cfg.BackendDialTimeout.Duration)
+	dialCtx, cancel := context.WithTimeout(ctx, state.cfg.BackendDialTimeout.Duration)
 	defer cancel()
 	backend, err := s.dialContext(dialCtx, "tcp", selection.Backend)
 	if err != nil {

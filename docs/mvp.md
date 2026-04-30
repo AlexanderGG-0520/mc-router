@@ -11,6 +11,7 @@
 - Unknown host `deny` or `default` policy.
 - JSON structured logging.
 - Graceful shutdown.
+- SIGHUP config reload for static route updates on supported platforms.
 - Unit tests for parser, config, and router behavior.
 - Dockerfile.
 - Minimal Kubernetes manifest.
@@ -26,7 +27,7 @@
 - Prometheus metrics.
 - REST or admin API.
 - Web UI.
-- Dynamic reload.
+- Filesystem watch or admin-triggered dynamic reload.
 - Per-route rate limits or allow/deny lists.
 
 ## MVP Acceptance Checks
@@ -70,6 +71,7 @@ Automated tests now cover:
 - Malformed handshake denial without connecting to the backend.
 - Idle client handshake read timeout.
 - Server shutdown on context cancellation.
+- SIGHUP/static config reload keeps the previous routes after invalid reloads and applies valid reloads to new connections.
 - Race detector coverage through `go test -race ./...`.
 - A short fake-backend soak test with concurrent connections to exercise connection open, proxy copy, close, and shutdown paths.
 - Minecraft protocol smoke tests using lightweight fake backends:
@@ -86,9 +88,9 @@ The protocol smoke tests use fixed protocol framing helpers and fake TCP backend
 
 ## Next Implementation Priorities
 
-1. Add config reload on SIGHUP or watched file updates.
-2. Add Prometheus metrics for accepted, denied, failed, and proxied connections.
-3. Add fallback or maintenance responses for status pings.
-4. Add Kubernetes label or annotation discovery.
-5. Add wake-up controller behavior for scaled-to-zero servers.
-6. Add CRD only after static and label based models are stable.
+1. Add Prometheus metrics for accepted, denied, failed, and proxied connections.
+2. Add fallback or maintenance responses for status pings.
+3. Add Kubernetes label or annotation discovery.
+4. Add wake-up controller behavior for scaled-to-zero servers.
+5. Add CRD only after static and label based models are stable.
+6. Consider filesystem watch or admin-triggered reload if SIGHUP is not enough operationally.

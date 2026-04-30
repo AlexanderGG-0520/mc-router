@@ -70,6 +70,23 @@ Known limitations:
 
 The MVP has a single route source: static YAML.
 
+## Config Reload
+
+`mc-gateway` can reload the static YAML config after receiving `SIGHUP` on platforms that support that signal. Reload is intentionally limited to rebuilding the validated route config and swapping the active router snapshot. It does not add a REST API, admin API, Web UI, filesystem watcher, or Kubernetes API watch.
+
+Reload behavior:
+
+1. The gateway reads the same config file path that was used at startup.
+2. The normal config parser and validation run.
+3. A new router is built from the validated config.
+4. The active config/router snapshot is replaced atomically only after all previous steps succeed.
+5. New connections use the new snapshot.
+6. Active connections keep using the snapshot they selected at connection start and are not disconnected by reload.
+
+If reload fails because the file cannot be read, YAML is malformed, validation fails, or router construction fails, the existing snapshot stays active and the gateway logs `reload_failed`. A successful reload logs `reload_success`. The listener address is still a startup setting; changing `listen` in the file requires a restart to bind a different address.
+
+The implementation uses an immutable snapshot stored in `atomic.Value`. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
+
 Future route sources should feed the same router model rather than rewriting the proxy path:
 
 - Kubernetes Service labels or annotations.
