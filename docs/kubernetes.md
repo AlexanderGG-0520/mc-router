@@ -48,7 +48,7 @@ RBAC is omitted because the MVP does not call the Kubernetes API.
 
 ## ConfigMap Updates And Reload
 
-The gateway supports `SIGHUP` config reload on Linux. In Kubernetes, this gives operators a choice after updating the ConfigMap-backed route config:
+The gateway supports `SIGHUP` config reload on supported Unix platforms, including Linux, macOS, BSD, and Solaris. In Kubernetes, this gives operators a choice after updating the ConfigMap-backed route config:
 
 - Send `SIGHUP` to the running gateway process so new connections use the updated routes without restarting the Pod.
 - Use a rolling restart when changing startup-only settings, such as the listener address, or when your platform makes signal delivery operationally awkward.
