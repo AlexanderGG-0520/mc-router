@@ -156,6 +156,24 @@ gh run watch <run-id>
 gh run view <run-id> --log
 ```
 
+## Verified Manual Run
+
+Manual run `25160991609` verified the optional real Minecraft server E2E workflow on 2026-04-30 UTC:
+
+- Run URL: </actions/runs/25160991609>
+- Workflow: `optional minecraft e2e`
+- Branch: `main`
+- Head SHA: `d45851e67102edac46f56783f03720628caf2c6d`
+- Minecraft version: `1.21.1`
+- Protocol version: `767`
+- Server: `itzg/minecraft-server:java21` with `TYPE=PAPER`
+- Result: success
+- Status flow: `TestRealMinecraftStatusThroughGateway` passed
+- Login start flow: `TestRealMinecraftLoginStartThroughGateway` passed
+- Login response: encryption request, packet `0x01`, payload `171` bytes
+
+This remains an optional manual workflow, not a required PR gate. Manual execution requires explicit Minecraft EULA acceptance. The GitHub Actions logs showed a Node.js 20 deprecation warning for upstream actions, but it did not affect this run.
+
 ## Troubleshooting
 
 If the workflow fails before starting Docker, check the `Confirm EULA acceptance` step. `accept_minecraft_eula=false` is expected to fail before `EULA=TRUE` is ever passed to the container.
