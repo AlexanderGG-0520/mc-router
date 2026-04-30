@@ -21,7 +21,7 @@ Image publishing is not implemented yet. A future release workflow should build 
 Candidate registries:
 
 - GHCR: `ghcr.io/AlexanderGG-0520/mc-router`
-- Docker Hub / DHCR: repository name is not decided yet
+- Docker Hub: repository name is not decided yet
 
 Candidate tag policy:
 

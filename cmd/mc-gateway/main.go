@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
@@ -45,7 +46,7 @@ func run(configPath string, logger *slog.Logger) error {
 		defer signal.Stop(reloadCh)
 		go serveReloadSignals(ctx, reloadCh, configPath, server)
 	} else {
-		logger.Info("config reload signal unavailable", "platform", "windows")
+		logger.Info("config reload signal unavailable", "platform", runtime.GOOS)
 	}
 	err = server.ListenAndServe(ctx)
 	if errors.Is(err, context.Canceled) {

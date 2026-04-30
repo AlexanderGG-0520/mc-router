@@ -56,3 +56,21 @@ func TestServeReloadSignalsContinuesAfterReloadError(t *testing.T) {
 		}
 	}
 }
+
+func TestServeReloadSignalsStopsWhenContextIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	reloadCh := make(chan os.Signal)
+	reloader := &fakeReloader{paths: make(chan string, 1)}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveReloadSignals(ctx, reloadCh, "config.yaml", reloader)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reload signal loop did not stop after context cancellation")
+	}
+}

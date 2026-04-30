@@ -74,6 +74,8 @@ The MVP has a single route source: static YAML.
 
 `mc-gateway` can reload the static YAML config after receiving `SIGHUP` on platforms that support that signal. Reload is intentionally limited to rebuilding the validated route config and swapping the active router snapshot. It does not add a REST API, admin API, Web UI, filesystem watcher, or Kubernetes API watch.
 
+Windows local development does not use `SIGHUP`; restart the process after config changes there. A future admin command can cover platforms where process signals are awkward.
+
 Reload behavior:
 
 1. The gateway reads the same config file path that was used at startup.

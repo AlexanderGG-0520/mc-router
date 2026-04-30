@@ -16,7 +16,7 @@ import (
 )
 
 type Server struct {
-	state  atomic.Value
+	state  atomic.Pointer[serverState]
 	logger *slog.Logger
 	limits mcproto.Limits
 
@@ -48,6 +48,9 @@ const (
 )
 
 func NewServer(cfg config.Config, routeTable *router.Router, logger *slog.Logger) *Server {
+	if routeTable == nil {
+		panic("proxy: nil router")
+	}
 	dialer := net.Dialer{}
 	s := &Server{
 		logger:        logger,
@@ -85,11 +88,18 @@ func (s *Server) ReloadFile(path string) error {
 }
 
 func (s *Server) UpdateConfig(cfg config.Config, routeTable *router.Router) {
+	if routeTable == nil {
+		panic("proxy: nil router")
+	}
 	s.state.Store(&serverState{cfg: cfg, router: routeTable})
 }
 
 func (s *Server) currentState() *serverState {
-	return s.state.Load().(*serverState)
+	state := s.state.Load()
+	if state == nil {
+		panic("proxy: server state is not initialized")
+	}
+	return state
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
