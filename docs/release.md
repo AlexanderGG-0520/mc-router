@@ -8,6 +8,7 @@ This repository follows the same PR-first rule for release-related work.
 - Review release notes, workflow changes, and version bumps in a PR.
 - Avoid mixing release changes with unrelated protocol or platform work.
 - If a release task needs a direct fix on `main`, follow up with a PR that documents and corrects it.
+- Tagging, release automation, and image publishing are not yet standardized in this repository. Treat those as future work until a dedicated release process is added.
 
 ## Manual E2E
 
