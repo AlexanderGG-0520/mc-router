@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
@@ -30,11 +31,7 @@ func main() {
 }
 
 func run(configPath string, logger *slog.Logger) error {
-	cfg, err := config.LoadFile(configPath)
-	if err != nil {
-		return err
-	}
-	routeTable, err := router.New(cfg)
+	cfg, routeTable, err := loadRouteConfig(configPath)
 	if err != nil {
 		return err
 	}
@@ -43,9 +40,44 @@ func run(configPath string, logger *slog.Logger) error {
 	defer stop()
 
 	server := proxy.NewServer(cfg, routeTable, logger)
+	reloadCh := make(chan os.Signal, 1)
+	if signals := reloadSignals(); len(signals) > 0 {
+		signal.Notify(reloadCh, signals...)
+		defer signal.Stop(reloadCh)
+		go serveReloadSignals(ctx, reloadCh, configPath, server)
+	} else {
+		logger.Info("config reload signal unavailable", "platform", runtime.GOOS)
+	}
 	err = server.ListenAndServe(ctx)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
+}
+
+type configReloader interface {
+	ReloadFile(path string) error
+}
+
+func loadRouteConfig(configPath string) (config.Config, *router.Router, error) {
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		return config.Config{}, nil, err
+	}
+	routeTable, err := router.New(cfg)
+	if err != nil {
+		return config.Config{}, nil, err
+	}
+	return cfg, routeTable, nil
+}
+
+func serveReloadSignals(ctx context.Context, reloadCh <-chan os.Signal, configPath string, reloader configReloader) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-reloadCh:
+			_ = reloader.ReloadFile(configPath)
+		}
+	}
 }

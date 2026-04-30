@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -470,6 +471,139 @@ func TestProxyShortSoakConcurrentConnections(t *testing.T) {
 	stop()
 }
 
+func TestReloadFileUsesNewRoutesForNewConnections(t *testing.T) {
+	firstBackend := listenLocalTCP(t)
+	defer firstBackend.Close()
+	firstBytes := acceptAndReadOnce(t, firstBackend)
+	secondBackend := listenLocalTCP(t)
+	defer secondBackend.Close()
+	secondBytes := acceptAndReadOnce(t, secondBackend)
+
+	configPath := writeRouteConfig(t, firstBackend.Addr().String())
+	gatewayAddr, server, stop := startReloadableTestServer(t, configPath)
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin)
+	client := dialAndWrite(t, gatewayAddr, handshake)
+	closeClientWrite(t, client)
+	_ = client.Close()
+	if got := waitBytes(t, firstBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("first backend bytes = %v, want %v", got, handshake)
+	}
+
+	writeRouteConfigAt(t, configPath, secondBackend.Addr().String())
+	if err := server.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+
+	client = dialAndWrite(t, gatewayAddr, handshake)
+	closeClientWrite(t, client)
+	_ = client.Close()
+	if got := waitBytes(t, secondBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("second backend bytes = %v, want %v", got, handshake)
+	}
+}
+
+func TestReloadFileKeepsCurrentRoutesWhenConfigIsInvalid(t *testing.T) {
+	backend := listenLocalTCP(t)
+	defer backend.Close()
+	firstBytes := acceptAndReadOnce(t, backend)
+
+	configPath := writeRouteConfig(t, backend.Addr().String())
+	gatewayAddr, server, stop := startReloadableTestServer(t, configPath)
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin)
+	client := dialAndWrite(t, gatewayAddr, handshake)
+	closeClientWrite(t, client)
+	_ = client.Close()
+	if got := waitBytes(t, firstBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("first backend bytes = %v, want %v", got, handshake)
+	}
+
+	if err := os.WriteFile(configPath, []byte("routes:\n  - serverAddress: smp.example.com\n    backend: not-a-host-port\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := server.ReloadFile(configPath); err == nil {
+		t.Fatal("ReloadFile succeeded with invalid config")
+	}
+
+	secondBytes := acceptAndReadOnce(t, backend)
+	client = dialAndWrite(t, gatewayAddr, handshake)
+	closeClientWrite(t, client)
+	_ = client.Close()
+	if got := waitBytes(t, secondBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("backend bytes after failed reload = %v, want %v", got, handshake)
+	}
+}
+
+func TestReloadFileDoesNotCloseActiveConnections(t *testing.T) {
+	const activeClients = 3
+	firstBackend := listenLocalTCP(t)
+	defer firstBackend.Close()
+	secondBackend := listenLocalTCP(t)
+	defer secondBackend.Close()
+	secondBytes := acceptAndReadOnce(t, secondBackend)
+
+	accepted := make(chan net.Conn, activeClients)
+	go func() {
+		for i := 0; i < activeClients; i++ {
+			conn, err := firstBackend.Accept()
+			if err != nil {
+				accepted <- nil
+				return
+			}
+			accepted <- conn
+		}
+	}()
+
+	configPath := writeRouteConfig(t, firstBackend.Addr().String())
+	gatewayAddr, server, stop := startReloadableTestServer(t, configPath)
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin)
+	var clients []net.Conn
+	var backendConns []net.Conn
+	for i := 0; i < activeClients; i++ {
+		client := dialAndWrite(t, gatewayAddr, handshake)
+		defer client.Close()
+		clients = append(clients, client)
+		backendConn := waitConn(t, accepted)
+		defer backendConn.Close()
+		backendConns = append(backendConns, backendConn)
+	}
+
+	writeRouteConfigAt(t, configPath, secondBackend.Addr().String())
+	if err := server.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+
+	for i, client := range clients {
+		if err := client.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+			t.Fatalf("SetReadDeadline: %v", err)
+		}
+		_, err := client.Read(make([]byte, 1))
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("active client %d read error = %v, want timeout with connection still open", i, err)
+		}
+	}
+
+	newClient := dialAndWrite(t, gatewayAddr, handshake)
+	closeClientWrite(t, newClient)
+	_ = newClient.Close()
+	if got := waitBytes(t, secondBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("new connection backend bytes = %v, want %v", got, handshake)
+	}
+
+	for _, backendConn := range backendConns {
+		_ = backendConn.Close()
+	}
+	for _, client := range clients {
+		readClosed(t, client)
+	}
+}
+
 func TestServeStopsOnContextCancellation(t *testing.T) {
 	listener := listenLocalTCP(t)
 	defer listener.Close()
@@ -532,6 +666,41 @@ func startTestServer(t *testing.T, cfg config.Config, configure ...func(*Server)
 	return listener.Addr().String(), stop
 }
 
+func startReloadableTestServer(t *testing.T, configPath string) (string, *Server, func()) {
+	t.Helper()
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("config.LoadFile: %v", err)
+	}
+	routeTable, err := router.New(cfg)
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	listener := listenLocalTCP(t)
+	server := NewServer(cfg, routeTable, testLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Serve(ctx, listener)
+	}()
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			cancel()
+			_ = listener.Close()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Serve returned error: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("server did not stop")
+			}
+		})
+	}
+	return listener.Addr().String(), server, stop
+}
+
 func listenLocalTCP(t *testing.T) net.Listener {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -568,6 +737,20 @@ func waitBytes(t *testing.T, ch <-chan []byte) []byte {
 		return got
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for backend bytes")
+		return nil
+	}
+}
+
+func waitConn(t *testing.T, ch <-chan net.Conn) net.Conn {
+	t.Helper()
+	select {
+	case conn := <-ch:
+		if conn == nil {
+			t.Fatal("backend did not accept a connection")
+		}
+		return conn
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for backend connection")
 		return nil
 	}
 }
@@ -645,6 +828,28 @@ func waitForConnClosed(conn net.Conn) error {
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
+func writeRouteConfig(t *testing.T, backend string) string {
+	t.Helper()
+	path := t.TempDir() + "/config.yaml"
+	writeRouteConfigAt(t, path, backend)
+	return path
+}
+
+func writeRouteConfigAt(t *testing.T, path string, backend string) {
+	t.Helper()
+	body := fmt.Sprintf(`listen: ":0"
+handshakeTimeout: 1s
+backendDialTimeout: 1s
+unknownHostPolicy: deny
+routes:
+  - serverAddress: smp.example.com
+    backend: %q
+`, backend)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 }
 
 func buildHandshakePacket(protocol int32, address string, port uint16, nextState int32) []byte {
