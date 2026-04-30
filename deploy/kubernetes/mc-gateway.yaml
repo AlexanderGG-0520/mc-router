@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mc-gateway
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mc-gateway-config
+  namespace: mc-gateway
+data:
+  config.yaml: |
+    listen: ":25565"
+    handshakeTimeout: "5s"
+    backendDialTimeout: "5s"
+    unknownHostPolicy: "deny"
+    defaultRoute:
+      backend: "lobby.default.svc.cluster.local:25565"
+      mode: "allow"
+    routes:
+      - serverAddress: "smp.example.com"
+        backend: "alec-smp.alec-smp.svc.cluster.local:25565"
+      - serverAddress: "lobby.example.com"
+        backend: "alec-smp-lobby.alec-smp-lobby.svc.cluster.local:25565"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mc-gateway
+  namespace: mc-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mc-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mc-gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mc-gateway
+          image: ghcr.io/alexandergg-0520/mc-router:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-config"
+            - "/etc/mc-gateway/config.yaml"
+          ports:
+            - name: minecraft
+              containerPort: 25565
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/mc-gateway
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: minecraft
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: minecraft
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+      volumes:
+        - name: config
+          configMap:
+            name: mc-gateway-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mc-gateway
+  namespace: mc-gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: mc-gateway
+  ports:
+    - name: minecraft
+      port: 25565
+      targetPort: minecraft
+      protocol: TCP

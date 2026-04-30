@@ -1,0 +1,661 @@
+package proxy
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/AlexanderGG-0520/mc-router/internal/config"
+	"github.com/AlexanderGG-0520/mc-router/internal/mcproto"
+	"github.com/AlexanderGG-0520/mc-router/internal/router"
+)
+
+func TestProxyForwardsHandshakeAndRemainingBytesToKnownBackend(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	backendBytes := acceptAndReadOnce(t, backendListener)
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()},
+		},
+	})
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "SMP.Example.COM.", 25565, mcproto.NextStateLogin)
+	remaining := []byte{0x01, 0x02, 0x03, 0x04}
+	client := dialAndWrite(t, gatewayAddr, append(append([]byte{}, handshake...), remaining...))
+	defer client.Close()
+	closeClientWrite(t, client)
+
+	got := waitBytes(t, backendBytes)
+	want := append(append([]byte{}, handshake...), remaining...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("backend bytes = %v, want %v", got, want)
+	}
+}
+
+func TestProxyDeniesUnknownHostWithoutConnectingBackend(t *testing.T) {
+	dialed := make(chan struct{}, 1)
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"},
+		},
+	}, func(server *Server) {
+		server.dialContext = func(context.Context, string, string) (net.Conn, error) {
+			dialed <- struct{}{}
+			return nil, errors.New("dial should not be called")
+		}
+	})
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateLogin))
+	defer client.Close()
+	closeClientWrite(t, client)
+	readClosed(t, client)
+
+	select {
+	case <-dialed:
+		t.Fatal("dialer was called for an unknown host")
+	default:
+	}
+}
+
+func TestProxyUsesDefaultBackendForUnknownHostWhenConfigured(t *testing.T) {
+	defaultBackend := listenLocalTCP(t)
+	defer defaultBackend.Close()
+	backendBytes := acceptAndReadOnce(t, defaultBackend)
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDefault,
+		DefaultRoute: config.DefaultRoute{
+			Backend: defaultBackend.Addr().String(),
+			Mode:    config.RouteModeAllow,
+		},
+	})
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateLogin)
+	client := dialAndWrite(t, gatewayAddr, handshake)
+	defer client.Close()
+	closeClientWrite(t, client)
+
+	if got := waitBytes(t, backendBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("default backend bytes = %v, want %v", got, handshake)
+	}
+}
+
+func TestProxyRejectsMalformedHandshakeWithoutConnectingBackend(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDefault,
+		DefaultRoute: config.DefaultRoute{
+			Backend: backendListener.Addr().String(),
+			Mode:    config.RouteModeAllow,
+		},
+	})
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x00})
+	defer client.Close()
+	closeClientWrite(t, client)
+
+	tcpListener := backendListener.(*net.TCPListener)
+	if err := tcpListener.SetDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+		t.Fatalf("SetDeadline: %v", err)
+	}
+	conn, err := backendListener.Accept()
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("backend accepted a connection for a malformed handshake")
+	}
+	if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("backend Accept error = %v, want timeout", err)
+	}
+}
+
+func TestProxyHandshakeReadTimeoutClosesIdleClient(t *testing.T) {
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: 30 * time.Millisecond},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+	})
+	defer stop()
+
+	client, err := net.DialTimeout("tcp", gatewayAddr, time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout: %v", err)
+	}
+	defer client.Close()
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	_, err = client.Read(make([]byte, 1))
+	if err == nil {
+		t.Fatal("expected idle client connection to close")
+	}
+}
+
+func TestProxyExitsWhenBackendClosesAfterHandshake(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	accepted := make(chan []byte, 1)
+	go func() {
+		conn, err := backendListener.Accept()
+		if err != nil {
+			accepted <- nil
+			return
+		}
+		defer conn.Close()
+		handshake := buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin)
+		buf := make([]byte, len(handshake))
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		_, _ = io.ReadFull(conn, buf)
+		accepted <- buf
+	}()
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()},
+		},
+	})
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin)
+	client := dialAndWrite(t, gatewayAddr, handshake)
+	defer client.Close()
+	if got := waitBytes(t, accepted); !bytes.Equal(got, handshake) {
+		t.Fatalf("backend handshake = %v, want %v", got, handshake)
+	}
+	readClosed(t, client)
+}
+
+func TestProxyExitsWhenClientClosesAfterHandshake(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	backendBytes := acceptAndReadOnce(t, backendListener)
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()},
+		},
+	})
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin)
+	client := dialAndWrite(t, gatewayAddr, handshake)
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if got := waitBytes(t, backendBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("backend bytes = %v, want %v", got, handshake)
+	}
+}
+
+func TestProxyClosesClientWhenBackendDialFails(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	backendAddr := backendListener.Addr().String()
+	if err := backendListener.Close(); err != nil {
+		t.Fatalf("backend listener close: %v", err)
+	}
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendAddr},
+		},
+	})
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin))
+	defer client.Close()
+	readClosed(t, client)
+}
+
+func TestProxyBackendDialTimeoutClosesClient(t *testing.T) {
+	dialStarted := make(chan struct{})
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: 40 * time.Millisecond},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"},
+		},
+	}, func(server *Server) {
+		server.dialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
+			close(dialStarted)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+	})
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin))
+	defer client.Close()
+	waitClosed(t, dialStarted, "dialer was not called")
+	readClosed(t, client)
+}
+
+func TestProxyContextCancellationClosesActiveConnection(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	backendAccepted := make(chan struct{})
+	go func() {
+		conn, err := backendListener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		close(backendAccepted)
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()},
+		},
+	})
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin))
+	defer client.Close()
+	waitClosed(t, backendAccepted, "backend was not connected")
+	stop()
+	readClosed(t, client)
+}
+
+func TestProxyHandlesMultipleClientsIndependently(t *testing.T) {
+	const clients = 5
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	received := make(chan []byte, clients)
+	var backendWG sync.WaitGroup
+	backendWG.Add(clients)
+	for i := 0; i < clients; i++ {
+		go func() {
+			defer backendWG.Done()
+			conn, err := backendListener.Accept()
+			if err != nil {
+				received <- nil
+				return
+			}
+			defer conn.Close()
+			_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			data, _ := io.ReadAll(conn)
+			received <- data
+		}()
+	}
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()},
+		},
+	})
+	defer stop()
+
+	want := make(map[string]struct{}, clients)
+	var clientWG sync.WaitGroup
+	clientErrs := make(chan error, clients)
+	clientWG.Add(clients)
+	for i := 0; i < clients; i++ {
+		payload := []byte{byte(i), byte(i + 1), byte(i + 2)}
+		data := append(buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin), payload...)
+		want[string(data)] = struct{}{}
+		go func(id int, data []byte) {
+			defer clientWG.Done()
+			if err := sendAndWaitClosed(gatewayAddr, data); err != nil {
+				clientErrs <- fmt.Errorf("client %d: %w", id, err)
+			}
+		}(i, data)
+	}
+	clientWG.Wait()
+	close(clientErrs)
+	for err := range clientErrs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	backendWG.Wait()
+
+	for i := 0; i < clients; i++ {
+		got := waitBytes(t, received)
+		if _, ok := want[string(got)]; !ok {
+			t.Fatalf("unexpected backend bytes: %v", got)
+		}
+		delete(want, string(got))
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing backend payloads: %d", len(want))
+	}
+}
+
+func TestProxyShortSoakConcurrentConnections(t *testing.T) {
+	const clients = 60
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	received := make(chan []byte, clients)
+	backendErrs := make(chan error, clients)
+	var backendWG sync.WaitGroup
+	backendWG.Add(clients)
+	for i := 0; i < clients; i++ {
+		go func(id int) {
+			defer backendWG.Done()
+			conn, err := backendListener.Accept()
+			if err != nil {
+				backendErrs <- fmt.Errorf("backend accept %d: %w", id, err)
+				return
+			}
+			defer conn.Close()
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				backendErrs <- fmt.Errorf("backend deadline %d: %w", id, err)
+				return
+			}
+			data, err := io.ReadAll(conn)
+			if err != nil {
+				backendErrs <- fmt.Errorf("backend read %d: %w", id, err)
+				return
+			}
+			received <- data
+		}(i)
+	}
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()},
+		},
+	})
+	defer stop()
+
+	want := make(map[string]struct{}, clients)
+	var clientWG sync.WaitGroup
+	clientErrs := make(chan error, clients)
+	clientWG.Add(clients)
+	for i := 0; i < clients; i++ {
+		payload := []byte{byte(i), byte(i >> 8), 0x42}
+		data := append(buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin), payload...)
+		want[string(data)] = struct{}{}
+		go func(id int, data []byte) {
+			defer clientWG.Done()
+			if err := sendAndWaitClosed(gatewayAddr, data); err != nil {
+				clientErrs <- fmt.Errorf("client %d: %w", id, err)
+			}
+		}(i, data)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		clientWG.Wait()
+		backendWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("soak test timed out waiting for clients and backends")
+	}
+	close(clientErrs)
+	close(backendErrs)
+	for err := range clientErrs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for err := range backendErrs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i := 0; i < clients; i++ {
+		got := waitBytes(t, received)
+		if _, ok := want[string(got)]; !ok {
+			t.Fatalf("unexpected backend bytes: %v", got)
+		}
+		delete(want, string(got))
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing backend payloads: %d", len(want))
+	}
+
+	stop()
+}
+
+func TestServeStopsOnContextCancellation(t *testing.T) {
+	listener := listenLocalTCP(t)
+	defer listener.Close()
+	cfg := config.Defaults()
+	routeTable, err := router.New(cfg)
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	server := NewServer(cfg, routeTable, testLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Serve(ctx, listener)
+	}()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve did not stop after context cancellation")
+	}
+}
+
+func startTestServer(t *testing.T, cfg config.Config, configure ...func(*Server)) (string, func()) {
+	t.Helper()
+	if cfg.DefaultRoute.Mode == "" && cfg.DefaultRoute.Backend != "" {
+		cfg.DefaultRoute.Mode = config.RouteModeAllow
+	}
+	routeTable, err := router.New(cfg)
+	if err != nil {
+		t.Fatalf("router.New: %v", err)
+	}
+	listener := listenLocalTCP(t)
+	server := NewServer(cfg, routeTable, testLogger())
+	for _, fn := range configure {
+		fn(server)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Serve(ctx, listener)
+	}()
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			cancel()
+			_ = listener.Close()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Serve returned error: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("server did not stop")
+			}
+		})
+	}
+	return listener.Addr().String(), stop
+}
+
+func listenLocalTCP(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	return listener
+}
+
+func acceptAndReadOnce(t *testing.T, listener net.Listener) <-chan []byte {
+	t.Helper()
+	result := make(chan []byte, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			result <- nil
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		data, _ := io.ReadAll(conn)
+		result <- data
+	}()
+	return result
+}
+
+func waitBytes(t *testing.T, ch <-chan []byte) []byte {
+	t.Helper()
+	select {
+	case got := <-ch:
+		if got == nil {
+			t.Fatal("backend did not accept a connection")
+		}
+		return got
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for backend bytes")
+		return nil
+	}
+}
+
+func waitClosed(t *testing.T, ch <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal(message)
+	}
+}
+
+func readClosed(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if err := waitForConnClosed(conn); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func dialAndWrite(t *testing.T, address string, data []byte) *net.TCPConn {
+	t.Helper()
+	rawConn, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout: %v", err)
+	}
+	conn := rawConn.(*net.TCPConn)
+	if _, err := conn.Write(data); err != nil {
+		_ = conn.Close()
+		t.Fatalf("Write: %v", err)
+	}
+	return conn
+}
+
+func closeClientWrite(t *testing.T, conn *net.TCPConn) {
+	t.Helper()
+	if err := conn.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+}
+
+func sendAndWaitClosed(address string, data []byte) error {
+	rawConn, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	conn := rawConn.(*net.TCPConn)
+	defer conn.Close()
+	if err := writeAll(conn, data); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := conn.CloseWrite(); err != nil {
+		return fmt.Errorf("close write: %w", err)
+	}
+	if err := waitForConnClosed(conn); err != nil {
+		return fmt.Errorf("wait closed: %w", err)
+	}
+	return nil
+}
+
+func waitForConnClosed(conn net.Conn) error {
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return fmt.Errorf("set read deadline: %w", err)
+	}
+	_, err := conn.Read(make([]byte, 1))
+	if err == nil {
+		return errors.New("expected connection to be closed")
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("timed out waiting for connection close: %w", err)
+	}
+	return nil
+}
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
+func buildHandshakePacket(protocol int32, address string, port uint16, nextState int32) []byte {
+	var payload []byte
+	payload = append(payload, mcproto.WriteVarInt(mcproto.HandshakePacketID)...)
+	payload = append(payload, mcproto.WriteVarInt(protocol)...)
+	payload = append(payload, mcproto.WriteVarInt(int32(len(address)))...)
+	payload = append(payload, []byte(address)...)
+	var portRaw [2]byte
+	binary.BigEndian.PutUint16(portRaw[:], port)
+	payload = append(payload, portRaw[:]...)
+	payload = append(payload, mcproto.WriteVarInt(nextState)...)
+	return append(mcproto.WriteVarInt(int32(len(payload))), payload...)
+}

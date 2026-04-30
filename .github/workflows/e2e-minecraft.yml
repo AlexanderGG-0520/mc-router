@@ -1,0 +1,109 @@
+name: optional minecraft e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      accept_minecraft_eula:
+        description: "Required: I accept the Minecraft EULA for this run"
+        required: true
+        type: boolean
+        default: false
+      minecraft_version:
+        description: "Minecraft Java Edition version to start through itzg/minecraft-server"
+        required: true
+        type: string
+        default: "1.21.1"
+      protocol_version:
+        description: "Minecraft protocol version used by the smoke client"
+        required: true
+        type: string
+        default: "767"
+
+jobs:
+  real-minecraft-smoke:
+    name: real minecraft server smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Confirm EULA acceptance
+        shell: pwsh
+        run: |
+          if ("${{ inputs.accept_minecraft_eula }}" -ne "true") {
+            throw "This workflow starts a Minecraft server. Re-run it only after accepting the Minecraft EULA input."
+          }
+
+      - name: Download Go dependencies
+        run: go mod download
+
+      - name: Show Docker version
+        run: docker version
+
+      - name: Build mc-gateway
+        shell: pwsh
+        run: |
+          $gatewayBin = Join-Path $env:RUNNER_TEMP "mc-gateway"
+          go build -o $gatewayBin ./cmd/mc-gateway
+          "MC_ROUTER_E2E_GATEWAY_BIN=$gatewayBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Start Paper server
+        shell: pwsh
+        run: |
+          $dockerArgs = @(
+            "run",
+            "--detach",
+            "--name", "mc-router-e2e-minecraft",
+            "--publish", "127.0.0.1::25565",
+            "--env", "EULA=TRUE",
+            "--env", "TYPE=PAPER",
+            "--env", "VERSION=${{ inputs.minecraft_version }}",
+            "--env", "ONLINE_MODE=TRUE",
+            "--env", "ENABLE_RCON=false",
+            "--env", "MEMORY=1G",
+            "--env", "MOTD=mc-router e2e",
+            "itzg/minecraft-server:java21"
+          )
+          docker @dockerArgs
+
+          $published = docker port mc-router-e2e-minecraft 25565/tcp | Select-Object -First 1
+          if (-not $published) {
+            throw "Docker did not publish the Minecraft server port."
+          }
+          $port = ($published -split ":")[-1]
+          if (-not $port) {
+            throw "Could not parse published Minecraft server port from '$published'."
+          }
+          "MC_ROUTER_E2E_BACKEND=127.0.0.1:$port" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "Minecraft backend for E2E: 127.0.0.1:$port"
+
+      - name: Run real Minecraft E2E smoke test
+        shell: pwsh
+        run: |
+          $env:MC_ROUTER_E2E_PROTOCOL_VERSION = "${{ inputs.protocol_version }}"
+          $env:MC_ROUTER_E2E_TIMEOUT = "8m"
+          $env:MC_ROUTER_E2E_LOGIN_EXPECT = "any"
+          go test -v -tags=e2e -timeout=15m ./test/e2e
+
+      - name: Minecraft server logs
+        if: always()
+        shell: pwsh
+        run: |
+          $containers = docker ps -a --format "{{.Names}}"
+          if ($containers -contains "mc-router-e2e-minecraft") {
+            docker logs mc-router-e2e-minecraft
+          }
+
+      - name: Stop Minecraft server
+        if: always()
+        shell: pwsh
+        run: |
+          $containers = docker ps -a --format "{{.Names}}"
+          if ($containers -contains "mc-router-e2e-minecraft") {
+            docker rm -f mc-router-e2e-minecraft
+          }

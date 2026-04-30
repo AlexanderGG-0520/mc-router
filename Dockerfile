@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:1.24-alpine AS build
+WORKDIR /src
+RUN apk add --no-cache ca-certificates
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mc-gateway ./cmd/mc-gateway
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/mc-gateway /mc-gateway
+USER nonroot:nonroot
+EXPOSE 25565/tcp
+ENTRYPOINT ["/mc-gateway"]
+CMD ["-config", "/etc/mc-gateway/config.yaml"]

@@ -1,0 +1,12 @@
+listen: ":25565"
+handshakeTimeout: "5s"
+backendDialTimeout: "5s"
+unknownHostPolicy: "deny"
+defaultRoute:
+  backend: "lobby.default.svc.cluster.local:25565"
+  mode: "allow"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "alec-smp.alec-smp.svc.cluster.local:25565"
+  - serverAddress: "lobby.example.com"
+    backend: "alec-smp-lobby.alec-smp-lobby.svc.cluster.local:25565"

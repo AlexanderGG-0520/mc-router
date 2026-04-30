@@ -1,0 +1,9 @@
+.git
+.github
+.gocache
+*.exe
+*.test
+*.out
+coverage.*
+profile.cov
+.env

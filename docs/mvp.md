@@ -1,0 +1,94 @@
+# MVP
+
+## Included
+
+- Go single binary named `mc-gateway`.
+- Static YAML route config.
+- TCP listener.
+- Minecraft Java Edition handshake parser.
+- Route lookup by requested `serverAddress`.
+- Backend TCP proxy.
+- Unknown host `deny` or `default` policy.
+- JSON structured logging.
+- Graceful shutdown.
+- Unit tests for parser, config, and router behavior.
+- Dockerfile.
+- Minimal Kubernetes manifest.
+- GitHub Actions CI.
+
+## Not Included Yet
+
+- Kubernetes API watches.
+- Labels, annotations, or CRD route discovery.
+- Scale-to-zero wake-up.
+- Fallback server.
+- UDP or extra TCP routing for mods such as Simple Voice Chat.
+- Prometheus metrics.
+- REST or admin API.
+- Web UI.
+- Dynamic reload.
+- Per-route rate limits or allow/deny lists.
+
+## MVP Acceptance Checks
+
+The MVP is acceptable when these commands pass:
+
+```powershell
+gofmt -w .
+go test ./...
+go test -race ./...
+go vet ./...
+docker build -t mc-gateway:dev .
+```
+
+Manual network acceptance should use at least two backend Minecraft servers and two DNS names pointing at the gateway. The gateway should route each client based on the server address entered in the Minecraft client.
+
+## Connection Flow
+
+1. Client opens a TCP connection to `mc-gateway`.
+2. `mc-gateway` applies a handshake read deadline.
+3. `mc-gateway` reads exactly the first Minecraft packet, bounded by VarInt and packet length limits.
+4. `mc-gateway` parses the handshake and normalizes the requested server address.
+5. The router selects an explicit route, a default route, or denies the connection.
+6. For allowed routes, `mc-gateway` dials the selected backend with a timeout.
+7. `mc-gateway` writes the original handshake bytes to the backend before proxying the rest of the stream.
+8. Bidirectional TCP copy runs until one side closes or the server context is cancelled.
+9. Both connections are closed and copy goroutines are waited before the connection handler returns.
+
+## Verified Behavior
+
+Automated tests now cover:
+
+- VarInt decoding, including malformed overlong VarInts.
+- Handshake parsing for valid login handshakes.
+- Rejection of oversized, truncated, unsupported packet id, invalid next state, invalid hostname, and too-long hostname handshakes.
+- Static config validation for unknown fields, invalid policy, duplicate route, invalid backend, invalid route hostname, and missing default backend.
+- Route matching for case-insensitive hostnames and trailing dots.
+- Unknown host deny behavior.
+- Default route behavior.
+- Fake-backend TCP proxy integration where the backend receives the original handshake packet plus remaining client bytes.
+- Malformed handshake denial without connecting to the backend.
+- Idle client handshake read timeout.
+- Server shutdown on context cancellation.
+- Race detector coverage through `go test -race ./...`.
+- A short fake-backend soak test with concurrent connections to exercise connection open, proxy copy, close, and shutdown paths.
+- Minecraft protocol smoke tests using lightweight fake backends:
+  - Status flow: handshake with next state `status`, status request, JSON status response, ping request, and pong response through the router.
+  - Login start flow: handshake with next state `login`, login start packet, and login disconnect packet through the router.
+- Optional real Minecraft server E2E smoke test:
+  - Manual GitHub Actions workflow only.
+  - Uses a real Paper server via Docker and verifies status plus login-start traffic through the gateway.
+  - See [docs/e2e.md](e2e.md).
+
+The soak test is intentionally small. It is meant to catch obvious lifecycle regressions, data races, and stuck connection handlers during CI. It is not a high-load benchmark, not a capacity test, and not a substitute for an end-to-end test against real Minecraft clients and servers.
+
+The protocol smoke tests use fixed protocol framing helpers and fake TCP backends. They verify that the router preserves the packet stream across state transitions that real clients use first: status and login start. They are not a full protocol compatibility suite. They do not validate encryption, compression, play state packets, or modded protocol extensions. The optional real-server E2E smoke test covers the first status and login-start responses from a real Paper server, but still does not complete encrypted login or play state.
+
+## Next Implementation Priorities
+
+1. Add config reload on SIGHUP or watched file updates.
+2. Add Prometheus metrics for accepted, denied, failed, and proxied connections.
+3. Add fallback or maintenance responses for status pings.
+4. Add Kubernetes label or annotation discovery.
+5. Add wake-up controller behavior for scaled-to-zero servers.
+6. Add CRD only after static and label based models are stable.
