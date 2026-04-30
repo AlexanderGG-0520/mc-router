@@ -128,3 +128,8 @@ RBAC is not included because the MVP does not watch Kubernetes resources.
 - Parser and network proxy are separate packages to keep tests focused.
 
 See [docs/security.md](docs/security.md) for more detail.
+
+## Contributing
+
+Use a feature branch for every change and open a pull request against `main`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/development.md](docs/development.md) for the workflow, pre-PR checks, and GitHub branch protection recommendations.
