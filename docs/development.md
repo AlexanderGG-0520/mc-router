@@ -64,6 +64,7 @@ If the repository has not run a workflow yet, GitHub may not offer the check nam
 ## GitHub UI Setup
 
 If branch protection or rulesets are configured in the GitHub UI, use `main` as the target and keep the required checks limited to fast, deterministic validation. Add the optional real-server E2E later only if the workflow becomes stable enough and no longer depends on manual EULA acceptance.
+
 ## Troubleshooting: Codex CLI and GitHub CLI on Windows
 
 When using GitHub CLI from Codex CLI on Windows, GitHub API commands need network access in the workspace sandbox:
