@@ -64,3 +64,23 @@ If the repository has not run a workflow yet, GitHub may not offer the check nam
 ## GitHub UI Setup
 
 If branch protection or rulesets are configured in the GitHub UI, use `main` as the target and keep the required checks limited to fast, deterministic validation. Add the optional real-server E2E later only if the workflow becomes stable enough and no longer depends on manual EULA acceptance.
+## Troubleshooting: Codex CLI and GitHub CLI on Windows
+
+When using GitHub CLI from Codex CLI on Windows, GitHub API commands need network access in the workspace sandbox:
+
+```toml
+[sandbox_workspace_write]
+network_access = true
+```
+
+If `gh auth status` reports an invalid token while `api.github.com:443` is reachable, check whether `[windows] sandbox = "elevated"` is preventing `gh` from reading the same Windows keyring or Credential Manager entry as the normal user session. In this environment, switching temporarily to `[windows] sandbox = "unelevated"` allowed `gh auth status`, `gh api user`, and `gh pr create` to succeed, but treat that as an environment-specific workaround instead of a blanket recommendation.
+
+Before GitHub API operations from Codex CLI, confirm:
+
+```powershell
+Test-NetConnection api.github.com -Port 443
+gh auth status
+gh api user
+```
+
+If any check fails, do not run `gh auth login`, `gh auth logout`, or `gh auth token` from Codex automatically. Switch to a normal PowerShell session, inspect GitHub CLI authentication there, and resume once `gh auth status` and `gh api user` succeed.
