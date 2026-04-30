@@ -83,7 +83,14 @@ func (s *Server) ReloadFile(path string) error {
 		return err
 	}
 	s.UpdateConfig(cfg, routeTable)
-	s.logger.Info("reload_success", "config", path, "routes", len(cfg.Routes), "listen", cfg.Listen)
+	s.logger.Info(
+		"reload_success",
+		"config", path,
+		"routes", len(cfg.Routes),
+		"listen", s.listenAddress,
+		"configured_listen", cfg.Listen,
+		"listen_change_ignored", cfg.Listen != s.listenAddress,
+	)
 	return nil
 }
 
