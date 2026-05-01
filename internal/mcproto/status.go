@@ -55,11 +55,8 @@ func ReadPacket(r io.Reader, maxPacketLength int32) (int32, []byte, error) {
 	if err != nil {
 		return 0, nil, fmt.Errorf("packet id: %w", err)
 	}
-	remaining, err := io.ReadAll(reader)
-	if err != nil {
-		return 0, nil, fmt.Errorf("read packet data: %w", err)
-	}
-	return packetID, remaining, nil
+	remainingOffset := len(payload) - reader.Len()
+	return packetID, payload[remainingOffset:], nil
 }
 
 func BuildPacket(packetID int32, fields ...[]byte) []byte {
