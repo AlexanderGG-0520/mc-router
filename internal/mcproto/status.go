@@ -73,7 +73,8 @@ func BuildStatusResponsePacket(status StatusResponse) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal status response: %w", err)
 	}
-	return BuildPacket(StatusResponsePacketID, EncodeString(string(raw))), nil
+	field := append(WriteVarInt(int32(len(raw))), raw...)
+	return BuildPacket(StatusResponsePacketID, field), nil
 }
 
 func BuildStatusPongPacket(payload []byte) []byte {
