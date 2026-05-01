@@ -28,6 +28,7 @@ Implemented in this skeleton:
 - TCP proxying to selected backend `host:port`.
 - Unknown host deny policy, with optional default route policy.
 - Structured JSON logging through Go `log/slog`.
+- Prometheus metrics endpoint when explicitly enabled.
 - Handshake read timeout and backend dial timeout.
 - Graceful shutdown on SIGINT/SIGTERM.
 - Unit tests for VarInt, handshake parsing, config loading, and route matching.
@@ -40,7 +41,6 @@ Deferred by design:
 - Scale-to-zero wake-up and scale-down control.
 - Fallback server behavior.
 - Simple Voice Chat or extra UDP/TCP port routing.
-- Prometheus metrics.
 - REST API.
 - Web UI.
 - CRD definitions and controllers.
@@ -53,6 +53,10 @@ Static YAML is the first supported route source:
 listen: ":25565"
 handshakeTimeout: "5s"
 backendDialTimeout: "5s"
+metrics:
+  enabled: true
+  listen: ":9090"
+  path: "/metrics"
 unknownHostPolicy: "deny"
 defaultRoute:
   backend: "lobby.default.svc.cluster.local:25565"
@@ -68,6 +72,8 @@ routes:
 
 - `deny`: close connections for hosts that do not match an explicit route.
 - `default`: send unknown hosts to `defaultRoute.backend`.
+
+Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenticated Prometheus text metrics on `metrics.listen` and `metrics.path`. Do not expose this HTTP listener directly to the public internet; it is intended for internal scraping, such as from a Kubernetes cluster Prometheus.
 
 ## Run Locally
 
@@ -92,7 +98,7 @@ The normal test suite uses fake protocol backends and does not start a real Mine
 
 ```powershell
 docker build -t mc-gateway:dev .
-docker run --rm -p 25565:25565 -v ${PWD}/examples/config.yaml:/etc/mc-gateway/config.yaml:ro mc-gateway:dev
+docker run --rm -p 25565:25565 -p 127.0.0.1:9090:9090 -v ${PWD}/examples/config.yaml:/etc/mc-gateway/config.yaml:ro mc-gateway:dev
 ```
 
 The Dockerfile uses a multi-stage build and `gcr.io/distroless/static-debian12:nonroot` for the runtime image. Distroless keeps the image small and removes shell/package-manager attack surface while retaining a minimal base with non-root support. Alpine is easier to debug interactively, but the runtime container should not require a shell for the MVP. If operational debugging becomes painful, a separate debug image target can be added later.

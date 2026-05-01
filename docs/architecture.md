@@ -13,6 +13,7 @@ The design is intentionally smaller than a Kubernetes controller. Static routes 
 - `internal/mcproto`: Minecraft VarInt and handshake parsing.
 - `internal/router`: normalized hostname to backend selection.
 - `internal/proxy`: listener, per-connection handling, backend dial, TCP copy.
+- `internal/metrics`: Prometheus registry, low-cardinality proxy metrics, and optional HTTP metrics server.
 - `internal/logging`: structured JSON logger setup.
 
 ## Connection Flow
@@ -64,7 +65,49 @@ Known limitations:
 
 - The gateway does not send Minecraft protocol disconnect packets yet.
 - Copy close reasons identify the first completed direction; low-level TCP reset details are not classified beyond that.
-- There is no per-connection byte or duration metric yet.
+
+## Metrics
+
+Prometheus metrics are exposed by an optional HTTP server. Metrics are disabled by default to preserve the previous runtime surface, avoid hot-path collector work, and avoid exposing an unauthenticated listener unless operators opt in:
+
+```yaml
+metrics:
+  enabled: true
+  listen: ":9090"
+  path: "/metrics"
+```
+
+When enabled, failure to bind `metrics.listen` fails startup. During shutdown, the metrics HTTP server follows the same process context and shuts down gracefully.
+
+Current metrics are intentionally low-cardinality:
+
+- `mc_gateway_connections_total{result,reason}`
+- `mc_gateway_backend_dials_total{result,reason}`
+- `mc_gateway_reload_total{result}`
+- `mc_gateway_route_decisions_total{result}`
+- `mc_gateway_active_connections`
+- `mc_gateway_config_generation`
+- `mc_gateway_routes`
+- `mc_gateway_connection_duration_seconds`
+- `mc_gateway_backend_dial_duration_seconds`
+
+Do not add remote address, username, requested server address, or backend host labels. Host-level or backend-level metrics should be considered later with an explicit cardinality budget.
+
+Lifecycle `reason` values used by logs and metrics are kept aligned:
+
+- `success`
+- `unknown`
+- `client_close`
+- `backend_close`
+- `backend_dial_failed`
+- `backend_dial_timeout`
+- `handshake_malformed`
+- `handshake_timeout`
+- `initial_write_failed`
+- `route_denied`
+- `context_cancelled`
+
+`mc_gateway_routes` counts explicit `routes` entries only. The `defaultRoute` is not included. `mc_gateway_config_generation` starts at `1` for the startup config and increments only after a successful reload.
 
 ## Route Sources
 
@@ -86,6 +129,8 @@ Reload behavior:
 6. Active connections keep using the snapshot they selected at connection start and are not disconnected by reload.
 
 If reload fails because the file cannot be read, YAML is malformed, validation fails, or router construction fails, the existing snapshot stays active and the gateway logs `reload_failed`. A successful reload logs `reload_success`. The listener address is still a startup setting; changing `listen` in the file requires a restart to bind a different address.
+
+Metrics server settings are also startup settings. SIGHUP reload updates route snapshots and route-related metrics, but changes to `metrics.enabled`, `metrics.listen`, or `metrics.path` require a process restart.
 
 The implementation uses an immutable snapshot stored in `atomic.Value`. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
 

@@ -44,9 +44,16 @@ type Config struct {
 	Listen             string       `yaml:"listen"`
 	HandshakeTimeout   Duration     `yaml:"handshakeTimeout"`
 	BackendDialTimeout Duration     `yaml:"backendDialTimeout"`
+	Metrics            Metrics      `yaml:"metrics"`
 	DefaultRoute       DefaultRoute `yaml:"defaultRoute"`
 	Routes             []Route      `yaml:"routes"`
 	UnknownHostPolicy  string       `yaml:"unknownHostPolicy"`
+}
+
+type Metrics struct {
+	Enabled bool   `yaml:"enabled"`
+	Listen  string `yaml:"listen"`
+	Path    string `yaml:"path"`
 }
 
 type DefaultRoute struct {
@@ -90,6 +97,10 @@ func Defaults() Config {
 		HandshakeTimeout:   Duration{Duration: 5 * time.Second},
 		BackendDialTimeout: Duration{Duration: 5 * time.Second},
 		UnknownHostPolicy:  UnknownHostDeny,
+		Metrics: Metrics{
+			Listen: ":9090",
+			Path:   "/metrics",
+		},
 		DefaultRoute: DefaultRoute{
 			Mode: RouteModeAllow,
 		},
@@ -106,6 +117,17 @@ func (c Config) Validate() error {
 	}
 	if c.BackendDialTimeout.Duration <= 0 {
 		errs = append(errs, errors.New("backendDialTimeout must be positive"))
+	}
+	if c.Metrics.Enabled {
+		if strings.TrimSpace(c.Metrics.Listen) == "" {
+			errs = append(errs, errors.New("metrics.listen must not be empty when metrics.enabled is true"))
+		}
+		if strings.TrimSpace(c.Metrics.Path) == "" {
+			errs = append(errs, errors.New("metrics.path must not be empty when metrics.enabled is true"))
+		}
+		if !strings.HasPrefix(c.Metrics.Path, "/") {
+			errs = append(errs, errors.New("metrics.path must start with /"))
+		}
 	}
 	switch c.UnknownHostPolicy {
 	case UnknownHostDeny:

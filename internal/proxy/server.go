@@ -12,16 +12,19 @@ import (
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	"github.com/AlexanderGG-0520/mc-router/internal/mcproto"
+	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/router"
 )
 
 type Server struct {
-	state  atomic.Pointer[serverState]
-	logger *slog.Logger
-	limits mcproto.Limits
+	state   atomic.Pointer[serverState]
+	logger  *slog.Logger
+	limits  mcproto.Limits
+	metrics *gatewaymetrics.Recorder
 
 	listenAddress string
 	dialContext   dialContextFunc
+	generation    atomic.Int64
 
 	listenerMu sync.Mutex
 	listener   net.Listener
@@ -36,15 +39,15 @@ type serverState struct {
 type dialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
 
 const (
-	reasonBackendClose       = "backend_close"
-	reasonBackendDialFailed  = "backend_dial_failed"
-	reasonBackendDialTimeout = "backend_dial_timeout"
-	reasonClientClose        = "client_close"
-	reasonContextCancelled   = "context_cancelled"
-	reasonHandshakeMalformed = "handshake_malformed"
-	reasonHandshakeTimeout   = "handshake_timeout"
-	reasonInitialWriteFailed = "initial_write_failed"
-	reasonRouteDenied        = "route_denied"
+	reasonBackendClose       = gatewaymetrics.ReasonBackendClose
+	reasonBackendDialFailed  = gatewaymetrics.ReasonBackendDialFailed
+	reasonBackendDialTimeout = gatewaymetrics.ReasonBackendDialTimeout
+	reasonClientClose        = gatewaymetrics.ReasonClientClose
+	reasonContextCancelled   = gatewaymetrics.ReasonContextCancelled
+	reasonHandshakeMalformed = gatewaymetrics.ReasonHandshakeMalformed
+	reasonHandshakeTimeout   = gatewaymetrics.ReasonHandshakeTimeout
+	reasonInitialWriteFailed = gatewaymetrics.ReasonInitialWriteFailed
+	reasonRouteDenied        = gatewaymetrics.ReasonRouteDenied
 )
 
 func NewServer(cfg config.Config, routeTable *router.Router, logger *slog.Logger) *Server {
@@ -52,14 +55,22 @@ func NewServer(cfg config.Config, routeTable *router.Router, logger *slog.Logger
 		panic("proxy: nil router")
 	}
 	dialer := net.Dialer{}
+	recorder := gatewaymetrics.NewRecorder(cfg.Metrics.Enabled)
 	s := &Server{
 		logger:        logger,
 		limits:        mcproto.DefaultLimits(),
+		metrics:       recorder,
 		listenAddress: cfg.Listen,
 		dialContext:   dialer.DialContext,
 	}
+	s.generation.Store(1)
 	s.state.Store(&serverState{cfg: cfg, router: routeTable})
+	recorder.SetConfig(1, cfg)
 	return s
+}
+
+func (s *Server) Metrics() *gatewaymetrics.Recorder {
+	return s.metrics
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -74,15 +85,18 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) ReloadFile(path string) error {
 	cfg, err := config.LoadFile(path)
 	if err != nil {
+		s.metrics.Reload(gatewaymetrics.ReloadResultFailed)
 		s.logger.Error("reload_failed", "config", path, "error", err)
 		return err
 	}
 	routeTable, err := router.New(cfg)
 	if err != nil {
+		s.metrics.Reload(gatewaymetrics.ReloadResultFailed)
 		s.logger.Error("reload_failed", "config", path, "error", err)
 		return err
 	}
 	s.UpdateConfig(cfg, routeTable)
+	s.metrics.Reload(gatewaymetrics.ReloadResultSuccess)
 	s.logger.Info(
 		"reload_success",
 		"config", path,
@@ -99,6 +113,8 @@ func (s *Server) UpdateConfig(cfg config.Config, routeTable *router.Router) {
 		panic("proxy: nil router")
 	}
 	s.state.Store(&serverState{cfg: cfg, router: routeTable})
+	generation := s.generation.Add(1)
+	s.metrics.SetConfig(generation, cfg)
 }
 
 func (s *Server) currentState() *serverState {
@@ -152,6 +168,13 @@ func (s *Server) Shutdown() {
 func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 	defer s.wg.Done()
 	defer client.Close()
+	start := time.Now()
+	connectionResult := gatewaymetrics.ConnectionResultFailed
+	connectionReason := gatewaymetrics.ReasonUnknown
+	s.metrics.ConnectionAccepted()
+	defer func() {
+		s.metrics.ConnectionFinished(connectionResult, connectionReason, time.Since(start))
+	}()
 
 	state := s.currentState()
 	remoteAddr := client.RemoteAddr().String()
@@ -165,6 +188,8 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		if isTimeout(err) {
 			reason = reasonHandshakeTimeout
 		}
+		connectionResult = gatewaymetrics.ConnectionResultDenied
+		connectionReason = reason
 		s.logger.Warn("connection rejected", "reason", reason, "remote", remoteAddr, "error", err)
 		return
 	}
@@ -176,21 +201,32 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 	routeAddress := handshake.RouteAddress()
 	selection, err := state.router.Select(routeAddress)
 	if err != nil {
+		s.metrics.RouteDecision(gatewaymetrics.RouteDecisionDenied)
+		connectionResult = gatewaymetrics.ConnectionResultDenied
+		connectionReason = reasonRouteDenied
 		s.logger.Info("connection rejected", "reason", reasonRouteDenied, "remote", remoteAddr, "server_address", routeAddress, "error", err)
 		return
 	}
+	s.metrics.RouteDecision(routeDecisionResult(selection.MatchedBy))
 
 	dialCtx, cancel := context.WithTimeout(ctx, state.cfg.BackendDialTimeout.Duration)
 	defer cancel()
+	dialStart := time.Now()
 	backend, err := s.dialContext(dialCtx, "tcp", selection.Backend)
 	if err != nil {
 		reason := classifyDialError(err)
+		s.metrics.BackendDialFinished(gatewaymetrics.ConnectionResultFailed, reason, time.Since(dialStart))
+		connectionResult = gatewaymetrics.ConnectionResultFailed
+		connectionReason = reason
 		s.logger.Warn("connection rejected", "reason", reason, "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend, "error", err)
 		return
 	}
+	s.metrics.BackendDialFinished(gatewaymetrics.ReasonSuccess, gatewaymetrics.ReasonSuccess, time.Since(dialStart))
 	defer backend.Close()
 
 	if err := writeAll(backend, rawHandshake); err != nil {
+		connectionResult = gatewaymetrics.ConnectionResultFailed
+		connectionReason = reasonInitialWriteFailed
 		s.logger.Warn("connection rejected", "reason", reasonInitialWriteFailed, "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend, "error", err)
 		return
 	}
@@ -205,6 +241,8 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		"matched_by", selection.MatchedBy,
 	)
 	result := s.proxy(ctx, client, backend)
+	connectionResult = gatewaymetrics.ConnectionResultClosed
+	connectionReason = result.reason
 	s.logger.Info(
 		"proxy connection closed",
 		"reason", result.reason,
@@ -214,6 +252,13 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		"direction", result.direction,
 		"bytes_copied", result.bytesCopied,
 	)
+}
+
+func routeDecisionResult(matchedBy string) string {
+	if matchedBy == "default" {
+		return gatewaymetrics.RouteDecisionDefault
+	}
+	return gatewaymetrics.RouteDecisionMatched
 }
 
 type proxyResult struct {
