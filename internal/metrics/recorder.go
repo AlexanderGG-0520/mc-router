@@ -29,6 +29,7 @@ const (
 	RouteDecisionDenied  = "denied"
 	RouteDecisionMatched = "matched"
 
+	FallbackStateLogin  = "login"
 	FallbackStateStatus = "status"
 
 	ReloadResultFailed  = "failed"

@@ -72,6 +72,15 @@ routes:
 	if cfg.Fallback.Status.RespondOnBackendFailure {
 		t.Fatal("fallback status backend failure response enabled by default")
 	}
+	if cfg.Fallback.Login.Enabled {
+		t.Fatal("fallback login enabled by default")
+	}
+	if cfg.Fallback.Login.Message != "Server unavailable. Please try again later." {
+		t.Fatalf("fallback login message = %q", cfg.Fallback.Login.Message)
+	}
+	if cfg.Fallback.Login.RespondOnRouteDenied == nil || !*cfg.Fallback.Login.RespondOnRouteDenied {
+		t.Fatal("fallback login route denied response disabled by default")
+	}
 }
 
 func TestLoadAcceptsMetricsConfig(t *testing.T) {
@@ -171,6 +180,53 @@ routes:
 	}
 	if *cfg.Fallback.Status.RespondOnRouteDenied {
 		t.Fatal("fallback route denied response enabled")
+	}
+}
+
+func TestLoadAcceptsFallbackLoginConfig(t *testing.T) {
+	cfg, err := Load([]byte(`
+fallback:
+  enabled: true
+  login:
+    enabled: true
+    respondOnRouteDenied: false
+    message: "Try again later"
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "smp.default.svc.cluster.local:25565"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Fallback.Enabled || !cfg.Fallback.Login.Enabled {
+		t.Fatal("fallback login disabled")
+	}
+	if cfg.Fallback.Login.Message != "Try again later" {
+		t.Fatalf("fallback login message = %q", cfg.Fallback.Login.Message)
+	}
+	if cfg.Fallback.Login.RespondOnRouteDenied == nil {
+		t.Fatal("fallback login route denied response is nil")
+	}
+	if *cfg.Fallback.Login.RespondOnRouteDenied {
+		t.Fatal("fallback login route denied response enabled")
+	}
+}
+
+func TestLoadRejectsInvalidFallbackLoginConfig(t *testing.T) {
+	_, err := Load([]byte(`
+fallback:
+  enabled: true
+  login:
+    enabled: true
+    message: ""
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "smp.default.svc.cluster.local:25565"
+`))
+	if err == nil {
+		t.Fatal("expected invalid fallback login config error")
 	}
 }
 

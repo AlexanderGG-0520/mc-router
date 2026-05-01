@@ -27,7 +27,7 @@ Implemented in this skeleton:
 - Requested `serverAddress` based static route matching.
 - TCP proxying to selected backend `host:port`.
 - Unknown host deny policy, with optional default route policy.
-- Optional status ping fallback response for denied routes and backend dial failures.
+- Optional fallback responses for denied status pings, backend status dial failures, and denied login starts.
 - Structured JSON logging through Go `log/slog`.
 - Prometheus metrics endpoint when explicitly enabled, including low-cardinality fallback response counters.
 - Handshake read timeout and backend dial timeout.
@@ -40,7 +40,7 @@ Deferred by design:
 
 - Kubernetes auto-discovery from labels, annotations, or CRDs.
 - Scale-to-zero wake-up and scale-down control.
-- Login and maintenance fallback behavior.
+- Maintenance fallback behavior.
 - Simple Voice Chat or extra UDP/TCP port routing.
 - REST API.
 - Web UI.
@@ -60,6 +60,10 @@ metrics:
   path: "/metrics"
 fallback:
   enabled: true
+  login:
+    enabled: false
+    respondOnRouteDenied: true
+    message: "Server unavailable. Please try again later."
   status:
     enabled: true
     respondOnRouteDenied: true
@@ -87,9 +91,9 @@ routes:
 
 Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenticated Prometheus text metrics on `metrics.listen` and `metrics.path`. Do not expose this HTTP listener directly to the public internet; it is intended for internal scraping, such as from a Kubernetes cluster Prometheus.
 
-Fallback responses are counted with `mc_gateway_fallback_responses_total{state,reason}` after a fallback status response packet is successfully written. Labels are intentionally bounded: `state` is currently `status`, and `reason` is one of `route_denied`, `backend_dial_failed`, or `backend_dial_timeout`.
+Fallback responses are counted with `mc_gateway_fallback_responses_total{state,reason}` after a fallback response packet is successfully written. Labels are intentionally bounded: `state` is `status` or `login`, and `reason` is one of the documented low-cardinality lifecycle reasons.
 
-Fallback responses are disabled by default. Set `fallback.enabled: true` and `fallback.status.enabled: true` to answer selected status pings with a minimal Minecraft status response. Route denied responses default to enabled once status fallback is enabled; backend failure responses require `fallback.status.respondOnBackendFailure: true` because they can reveal that a configured route exists. Login fallback is not implemented yet.
+Fallback responses are disabled by default. Set `fallback.enabled: true` and `fallback.status.enabled: true` to answer selected status pings with a minimal Minecraft status response. Route denied status responses default to enabled once status fallback is enabled; backend failure status responses require `fallback.status.respondOnBackendFailure: true` because they can reveal that a configured route exists. Set `fallback.login.enabled: true` to return a protocol 767 login-state disconnect packet for denied login starts.
 
 ## Run Locally
 

@@ -210,6 +210,12 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 			}
 			return
 		}
+		if loginFallbackForRouteDeniedEnabled(state.cfg, handshake) {
+			if err := s.serveLoginDisconnectFallback(client, state.cfg, handshake, remoteAddr, routeAddress); err != nil {
+				s.logger.Warn("fallback login disconnect failed", "reason", reasonRouteDenied, "state", "login", "remote", remoteAddr, "server_address", routeAddress, "error", err)
+			}
+			return
+		}
 		s.logger.Info("connection rejected", "reason", reasonRouteDenied, "remote", remoteAddr, "server_address", routeAddress, "error", err)
 		return
 	}
@@ -291,6 +297,17 @@ func statusFallbackEnabled(cfg config.Config, handshake mcproto.Handshake) bool 
 	return cfg.Fallback.Enabled && cfg.Fallback.Status.Enabled && handshake.NextState == mcproto.NextStateStatus
 }
 
+func loginFallbackForRouteDeniedEnabled(cfg config.Config, handshake mcproto.Handshake) bool {
+	if !loginFallbackEnabled(cfg, handshake) {
+		return false
+	}
+	return cfg.Fallback.Login.RespondOnRouteDenied == nil || *cfg.Fallback.Login.RespondOnRouteDenied
+}
+
+func loginFallbackEnabled(cfg config.Config, handshake mcproto.Handshake) bool {
+	return cfg.Fallback.Enabled && cfg.Fallback.Login.Enabled && handshake.NextState == mcproto.NextStateLogin
+}
+
 func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteAddr string, routeAddress string, reason string, backendAddress string) error {
 	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
 		return err
@@ -346,8 +363,38 @@ func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteA
 	return nil
 }
 
+func (s *Server) serveLoginDisconnectFallback(client net.Conn, cfg config.Config, handshake mcproto.Handshake, remoteAddr string, routeAddress string) error {
+	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
+		return err
+	}
+	packetID, payload, err := mcproto.ReadPacket(client, s.limits.MaxPacketLength)
+	if err != nil {
+		return err
+	}
+	if packetID != mcproto.LoginStartPacketID {
+		return errors.New("malformed login start")
+	}
+	if err := mcproto.ValidateLoginStartPayload(handshake.ProtocolVersion, payload); err != nil {
+		return err
+	}
+	response, err := mcproto.BuildLoginDisconnectPacket(handshake.ProtocolVersion, cfg.Fallback.Login.Message)
+	if err != nil {
+		return err
+	}
+	if err := writeAll(client, response); err != nil {
+		return err
+	}
+	s.metrics.FallbackResponse(gatewaymetrics.FallbackStateLogin, reasonRouteDenied)
+	s.logFallbackSent("fallback login disconnect sent", gatewaymetrics.FallbackStateLogin, reasonRouteDenied, remoteAddr, routeAddress, "")
+	return nil
+}
+
 func (s *Server) logStatusFallbackSent(message string, reason string, remoteAddr string, routeAddress string, backendAddress string) {
-	attrs := []any{"reason", reason, "state", "status", "remote", remoteAddr, "server_address", routeAddress}
+	s.logFallbackSent(message, gatewaymetrics.FallbackStateStatus, reason, remoteAddr, routeAddress, backendAddress)
+}
+
+func (s *Server) logFallbackSent(message string, state string, reason string, remoteAddr string, routeAddress string, backendAddress string) {
+	attrs := []any{"reason", reason, "state", state, "remote", remoteAddr, "server_address", routeAddress}
 	if backendAddress != "" {
 		attrs = append(attrs, "backend", backendAddress)
 	}

@@ -193,6 +193,135 @@ func TestStatusFallbackDoesNotHandleLoginRouteDenied(t *testing.T) {
 	assertMetricAbsentOrZero(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "status", "reason": "route_denied"})
 }
 
+func TestLoginFallbackDisabledDeniesUnknownHostWithClose(t *testing.T) {
+	cfg := loginFallbackConfig()
+	cfg.Fallback.Login.Enabled = false
+	cfg.Metrics = testMetricsConfig()
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg)
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(mcproto.ProtocolMinecraft1211, "unknown.example.com", 25565, mcproto.NextStateLogin),
+		buildLoginStartPacket("FallbackUser")...,
+	))
+	defer client.Close()
+	readClosed(t, client)
+	assertMetricAbsentOrZero(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "login", "reason": "route_denied"})
+}
+
+func TestLoginFallbackRespondsForRouteDeniedLoginStart(t *testing.T) {
+	cfg := loginFallbackConfig()
+	cfg.Metrics = testMetricsConfig()
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg)
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(mcproto.ProtocolMinecraft1211, "unknown.example.com", 25565, mcproto.NextStateLogin),
+		buildLoginStartPacket("FallbackUser")...,
+	))
+	defer conn.Close()
+
+	reasonJSON, reason := readLoginDisconnectReason(t, conn)
+	if reasonJSON != `{"text":"Server \"unavailable\""}` {
+		t.Fatalf("login disconnect reason JSON = %q", reasonJSON)
+	}
+	if reason.Text != `Server "unavailable"` {
+		t.Fatalf("login disconnect reason = %q", reason.Text)
+	}
+	waitMetricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "denied"}, 1)
+	waitMetricValue(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "login", "reason": "route_denied"}, 1)
+}
+
+func TestLoginFallbackRouteDeniedResponseCanBeDisabled(t *testing.T) {
+	cfg := loginFallbackConfig()
+	cfg.Fallback.Login.RespondOnRouteDenied = boolPtr(false)
+	cfg.Metrics = testMetricsConfig()
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg)
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(mcproto.ProtocolMinecraft1211, "unknown.example.com", 25565, mcproto.NextStateLogin),
+		buildLoginStartPacket("FallbackUser")...,
+	))
+	defer client.Close()
+	readClosed(t, client)
+	assertMetricAbsentOrZero(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "login", "reason": "route_denied"})
+}
+
+func TestLoginFallbackClosesMalformedLoginStart(t *testing.T) {
+	cfg := loginFallbackConfig()
+	cfg.Metrics = testMetricsConfig()
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg)
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(mcproto.ProtocolMinecraft1211, "unknown.example.com", 25565, mcproto.NextStateLogin),
+		mcproto.BuildPacket(0x01)...,
+	))
+	defer client.Close()
+	readClosed(t, client)
+	assertMetricAbsentOrZero(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "login", "reason": "route_denied"})
+}
+
+func TestLoginFallbackClosesUnsupportedProtocol(t *testing.T) {
+	cfg := loginFallbackConfig()
+	cfg.Metrics = testMetricsConfig()
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg)
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateLogin),
+		buildLoginStartPacket("FallbackUser")...,
+	))
+	defer client.Close()
+	readClosed(t, client)
+	assertMetricAbsentOrZero(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "login", "reason": "route_denied"})
+}
+
+func TestLoginFallbackDoesNotOverrideKnownRoute(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	backendBytes := acceptAndReadOnce(t, backendListener)
+
+	cfg := loginFallbackConfig()
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()}}
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	handshake := buildHandshakePacket(mcproto.ProtocolMinecraft1211, "smp.example.com", 25565, mcproto.NextStateLogin)
+	loginStart := buildLoginStartPacket("FallbackUser")
+	client := dialAndWrite(t, gatewayAddr, append(append([]byte{}, handshake...), loginStart...))
+	defer client.Close()
+	closeClientWrite(t, client)
+
+	if got := waitBytes(t, backendBytes); !bytes.Equal(got, append(append([]byte{}, handshake...), loginStart...)) {
+		t.Fatalf("backend bytes = %v, want handshake plus login start", got)
+	}
+}
+
+func TestLoginFallbackDoesNotOverrideDefaultRoute(t *testing.T) {
+	defaultBackend := listenLocalTCP(t)
+	defer defaultBackend.Close()
+	backendBytes := acceptAndReadOnce(t, defaultBackend)
+
+	cfg := loginFallbackConfig()
+	cfg.UnknownHostPolicy = config.UnknownHostDefault
+	cfg.DefaultRoute = config.DefaultRoute{Backend: defaultBackend.Addr().String(), Mode: config.RouteModeAllow}
+	cfg.Routes = nil
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	handshake := buildHandshakePacket(mcproto.ProtocolMinecraft1211, "unknown.example.com", 25565, mcproto.NextStateLogin)
+	loginStart := buildLoginStartPacket("FallbackUser")
+	client := dialAndWrite(t, gatewayAddr, append(append([]byte{}, handshake...), loginStart...))
+	defer client.Close()
+	closeClientWrite(t, client)
+
+	if got := waitBytes(t, backendBytes); !bytes.Equal(got, append(append([]byte{}, handshake...), loginStart...)) {
+		t.Fatalf("default backend bytes = %v, want handshake plus login start", got)
+	}
+}
+
 func TestStatusFallbackDoesNotOverrideDefaultRoute(t *testing.T) {
 	defaultBackend := listenLocalTCP(t)
 	defer defaultBackend.Close()
@@ -570,6 +699,46 @@ func TestStatusFallbackDoesNotHandleLoginBackendDialFailure(t *testing.T) {
 	defer client.Close()
 	readClosed(t, client)
 	assertMetricAbsentOrZero(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "status", "reason": "backend_dial_failed"})
+}
+
+func TestLoginFallbackDoesNotHandleBackendDialFailure(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	backendAddr := backendListener.Addr().String()
+	if err := backendListener.Close(); err != nil {
+		t.Fatalf("backend listener close: %v", err)
+	}
+
+	cfg := loginFallbackConfig()
+	cfg.Metrics = testMetricsConfig()
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: backendAddr}}
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg)
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(mcproto.ProtocolMinecraft1211, "smp.example.com", 25565, mcproto.NextStateLogin),
+		buildLoginStartPacket("FallbackUser")...,
+	))
+	defer client.Close()
+	readClosed(t, client)
+	waitMetricValue(t, server, "mc_gateway_backend_dials_total", map[string]string{"result": "failed", "reason": "backend_dial_failed"}, 1)
+	assertMetricAbsentOrZero(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "login", "reason": "backend_dial_failed"})
+	assertMetricAbsentOrZero(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "login", "reason": "route_denied"})
+}
+
+func TestLoginFallbackMetricsDisabledDoesNotPanic(t *testing.T) {
+	cfg := loginFallbackConfig()
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(mcproto.ProtocolMinecraft1211, "unknown.example.com", 25565, mcproto.NextStateLogin),
+		buildLoginStartPacket("FallbackUser")...,
+	))
+	defer conn.Close()
+	_, reason := readLoginDisconnectReason(t, conn)
+	if reason.Text != `Server "unavailable"` {
+		t.Fatalf("login disconnect reason = %q", reason.Text)
+	}
 }
 
 func TestStatusFallbackBackendFailureClosesMalformedStatusRequest(t *testing.T) {
@@ -1363,6 +1532,30 @@ func backendFailureStatusFallbackConfig() config.Config {
 	return cfg
 }
 
+func loginFallbackConfig() config.Config {
+	return config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		Fallback: config.Fallback{
+			Enabled: true,
+			Login: config.FallbackLogin{
+				Enabled:              true,
+				RespondOnRouteDenied: boolPtr(true),
+				Message:              `Server "unavailable"`,
+			},
+		},
+		UnknownHostPolicy: config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"},
+		},
+	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
+}
+
 func readStatusResponse(t *testing.T, conn net.Conn) mcproto.StatusResponse {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -1399,6 +1592,29 @@ func readStatusPong(t *testing.T, conn net.Conn) int64 {
 		t.Fatalf("pong packet id = %d, want %d", packetID, mcproto.StatusPongPacketID)
 	}
 	return parseLongPayload(t, payload)
+}
+
+func readLoginDisconnectReason(t *testing.T, conn net.Conn) (string, mcproto.StatusChatComponent) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	packetID, payload, err := mcproto.ReadPacket(conn, mcproto.DefaultLimits().MaxPacketLength)
+	if err != nil {
+		t.Fatalf("read login disconnect: %v", err)
+	}
+	if packetID != mcproto.LoginDisconnectPacketID {
+		t.Fatalf("login disconnect packet id = %d, want %d", packetID, mcproto.LoginDisconnectPacketID)
+	}
+	reasonJSON, remaining := parseStringPayload(t, payload)
+	if len(remaining) != 0 {
+		t.Fatalf("login disconnect has %d trailing bytes", len(remaining))
+	}
+	var reason mcproto.StatusChatComponent
+	if err := json.Unmarshal([]byte(reasonJSON), &reason); err != nil {
+		t.Fatalf("Unmarshal login disconnect reason: %v", err)
+	}
+	return reasonJSON, reason
 }
 
 func parseStringPayload(t *testing.T, payload []byte) (string, []byte) {
