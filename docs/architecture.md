@@ -66,6 +66,35 @@ Known limitations:
 - The gateway does not send Minecraft protocol disconnect packets yet.
 - Copy close reasons identify the first completed direction; low-level TCP reset details are not classified beyond that.
 
+## Status Fallback
+
+The gateway can optionally return a Minecraft Java Edition status response when route selection denies a status ping. This is intentionally narrow:
+
+- Only route denied decisions are eligible.
+- Only handshakes with `next_state=status` are eligible.
+- Malformed handshakes, malformed status requests, oversized packets, invalid VarInts, and unsupported next states are still closed without a friendly response.
+- Login disconnect fallback, backend dial failure fallback, maintenance mode, and play-state handling are not implemented yet.
+
+Fallback is disabled by default because answering unknown hosts can give scanners more information than a TCP close. Operators must opt in:
+
+```yaml
+fallback:
+  enabled: true
+  status:
+    enabled: true
+    motd: "Server unavailable"
+    protocolName: "mc-gateway"
+    protocolVersion: 767
+    maxPlayers: 0
+    onlinePlayers: 0
+```
+
+When enabled, the route denied status path reads exactly one status request packet `0x00`, writes a minimal status response JSON, and if the client sends a ping packet `0x01`, echoes its 8-byte payload in a pong packet `0x01`. Reads remain bounded by packet limits and `handshakeTimeout`. The status JSON includes `version.name`, `version.protocol`, `players.max`, `players.online`, and `description` as a JSON chat component. Favicon and player samples are intentionally omitted.
+
+`defaultRoute` still takes precedence over fallback. If `unknownHostPolicy=default` selects a backend, the connection is proxied normally and no fallback response is generated.
+
+Existing route decision metrics still record the denied route. Fallback-specific metrics are left for a later PR so this first implementation stays focused.
+
 ## Metrics
 
 Prometheus metrics are exposed by an optional HTTP server. Metrics are disabled by default to preserve the previous runtime surface, avoid hot-path collector work, and avoid exposing an unauthenticated listener unless operators opt in:
@@ -131,6 +160,8 @@ Reload behavior:
 If reload fails because the file cannot be read, YAML is malformed, validation fails, or router construction fails, the existing snapshot stays active and the gateway logs `reload_failed`. A successful reload logs `reload_success`. The listener address is still a startup setting; changing `listen` in the file requires a restart to bind a different address.
 
 Metrics server settings are also startup settings. SIGHUP reload updates route snapshots and route-related metrics, but changes to `metrics.enabled`, `metrics.listen`, or `metrics.path` require a process restart.
+
+Status fallback settings are part of the route config snapshot and are applied to new connections after a successful reload.
 
 The implementation uses an immutable snapshot stored in `atomic.Value`. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
 

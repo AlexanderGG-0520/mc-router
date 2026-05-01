@@ -5,6 +5,15 @@ metrics:
   enabled: true
   listen: ":9090"
   path: "/metrics"
+fallback:
+  enabled: true
+  status:
+    enabled: true
+    motd: "Server unavailable"
+    protocolName: "mc-gateway"
+    protocolVersion: 767
+    maxPlayers: 0
+    onlinePlayers: 0
 unknownHostPolicy: "deny"
 defaultRoute:
   backend: "lobby.default.svc.cluster.local:25565"
