@@ -11,6 +11,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mc-gate
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/mc-gateway /mc-gateway
 USER nonroot:nonroot
-EXPOSE 25565/tcp
+EXPOSE 25565/tcp 9090/tcp
 ENTRYPOINT ["/mc-gateway"]
 CMD ["-config", "/etc/mc-gateway/config.yaml"]

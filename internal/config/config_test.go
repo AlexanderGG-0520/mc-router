@@ -42,6 +42,52 @@ routes:
 	if cfg.Listen != ":25565" {
 		t.Fatalf("listen = %q, want default :25565", cfg.Listen)
 	}
+	if cfg.Metrics.Enabled {
+		t.Fatal("metrics enabled by default")
+	}
+	if cfg.Metrics.Listen != ":9090" {
+		t.Fatalf("metrics listen = %q, want :9090", cfg.Metrics.Listen)
+	}
+	if cfg.Metrics.Path != "/metrics" {
+		t.Fatalf("metrics path = %q, want /metrics", cfg.Metrics.Path)
+	}
+}
+
+func TestLoadAcceptsMetricsConfig(t *testing.T) {
+	cfg, err := Load([]byte(`
+metrics:
+  enabled: true
+  listen: "127.0.0.1:9091"
+  path: "/prometheus"
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "smp.default.svc.cluster.local:25565"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Metrics.Enabled {
+		t.Fatal("metrics disabled")
+	}
+	if cfg.Metrics.Listen != "127.0.0.1:9091" {
+		t.Fatalf("metrics listen = %q", cfg.Metrics.Listen)
+	}
+	if cfg.Metrics.Path != "/prometheus" {
+		t.Fatalf("metrics path = %q", cfg.Metrics.Path)
+	}
+}
+
+func TestLoadRejectsInvalidMetricsPath(t *testing.T) {
+	_, err := Load([]byte(`
+metrics:
+  enabled: true
+  path: "metrics"
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected invalid metrics path error")
+	}
 }
 
 func TestLoadRejectsExplicitEmptyListen(t *testing.T) {

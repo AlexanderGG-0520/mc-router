@@ -46,6 +46,45 @@ It creates:
 
 RBAC is omitted because the MVP does not call the Kubernetes API.
 
+## Prometheus Scraping
+
+Metrics are disabled by default. To scrape gateway metrics inside a cluster, enable the metrics listener in the ConfigMap:
+
+```yaml
+metrics:
+  enabled: true
+  listen: ":9090"
+  path: "/metrics"
+```
+
+Expose the metrics listener only on an internal Service port. Do not publish it through a public LoadBalancer or internet-facing ingress; the endpoint is unauthenticated HTTP.
+
+Example Service shape:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mc-gateway
+  namespace: mc-gateway
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app.kubernetes.io/name: mc-gateway
+  ports:
+    - name: minecraft
+      port: 25565
+      targetPort: 25565
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+```
+
+If your cluster uses the Prometheus Operator, add a `ServiceMonitor` or `PodMonitor` later according to that installation's conventions. This repository does not ship those CRDs in the MVP manifest.
+
 ## ConfigMap Updates And Reload
 
 The gateway supports `SIGHUP` config reload on supported Unix platforms, including Linux, macOS, BSD, and Solaris. In Kubernetes, this gives operators a choice after updating the ConfigMap-backed route config:

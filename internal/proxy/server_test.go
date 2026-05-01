@@ -17,6 +17,7 @@ import (
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	"github.com/AlexanderGG-0520/mc-router/internal/mcproto"
 	"github.com/AlexanderGG-0520/mc-router/internal/router"
+	dto "github.com/prometheus/client_model/go"
 )
 
 func TestProxyForwardsHandshakeAndRemainingBytesToKnownBackend(t *testing.T) {
@@ -305,6 +306,86 @@ func TestProxyContextCancellationClosesActiveConnection(t *testing.T) {
 	waitClosed(t, backendAccepted, "backend was not connected")
 	stop()
 	readClosed(t, client)
+}
+
+func TestMetricsActiveConnectionsGaugeIncrementsAndDecrements(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	backendAccepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := backendListener.Accept()
+		if err != nil {
+			backendAccepted <- nil
+			return
+		}
+		backendAccepted <- conn
+	}()
+
+	gatewayAddr, server, stop := startTestServerWithServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()},
+		},
+	})
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin))
+	backend := waitConn(t, backendAccepted)
+	waitMetricValue(t, server, "mc_gateway_active_connections", nil, 1)
+
+	_ = backend.Close()
+	readClosed(t, client)
+	_ = client.Close()
+	waitMetricValue(t, server, "mc_gateway_active_connections", nil, 0)
+}
+
+func TestMetricsRouteDeniedCounterIncrements(t *testing.T) {
+	gatewayAddr, server, stop := startTestServerWithServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"},
+		},
+	})
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateLogin))
+	readClosed(t, client)
+	_ = client.Close()
+
+	waitMetricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "denied"}, 1)
+	waitMetricValue(t, server, "mc_gateway_connections_total", map[string]string{"result": "denied", "reason": "route_denied"}, 1)
+}
+
+func TestMetricsBackendDialFailureCounterIncrements(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	backendAddr := backendListener.Addr().String()
+	if err := backendListener.Close(); err != nil {
+		t.Fatalf("backend listener close: %v", err)
+	}
+
+	gatewayAddr, server, stop := startTestServerWithServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendAddr},
+		},
+	})
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin))
+	readClosed(t, client)
+	_ = client.Close()
+
+	waitMetricValue(t, server, "mc_gateway_backend_dials_total", map[string]string{"result": "failed", "reason": "backend_dial_failed"}, 1)
+	waitMetricValue(t, server, "mc_gateway_connections_total", map[string]string{"result": "failed", "reason": "backend_dial_failed"}, 1)
 }
 
 func TestProxyHandlesMultipleClientsIndependently(t *testing.T) {
@@ -604,6 +685,40 @@ func TestReloadFileDoesNotCloseActiveConnections(t *testing.T) {
 	}
 }
 
+func TestReloadMetricsUpdateOnSuccessAndFailure(t *testing.T) {
+	firstBackend := listenLocalTCP(t)
+	defer firstBackend.Close()
+	secondBackend := listenLocalTCP(t)
+	defer secondBackend.Close()
+
+	configPath := writeRouteConfig(t, firstBackend.Addr().String())
+	_, server, stop := startReloadableTestServer(t, configPath)
+	defer stop()
+	waitMetricValue(t, server, "mc_gateway_config_generation", nil, 1)
+	waitMetricValue(t, server, "mc_gateway_routes", nil, 1)
+
+	writeRoutesConfigAt(t, configPath, []config.Route{
+		{ServerAddress: "smp.example.com", Backend: secondBackend.Addr().String()},
+		{ServerAddress: "build.example.com", Backend: firstBackend.Addr().String()},
+	})
+	if err := server.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile valid config: %v", err)
+	}
+	waitMetricValue(t, server, "mc_gateway_reload_total", map[string]string{"result": "success"}, 1)
+	waitMetricValue(t, server, "mc_gateway_config_generation", nil, 2)
+	waitMetricValue(t, server, "mc_gateway_routes", nil, 2)
+
+	if err := os.WriteFile(configPath, []byte("routes:\n  - serverAddress: smp.example.com\n    backend: not-a-host-port\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := server.ReloadFile(configPath); err == nil {
+		t.Fatal("ReloadFile succeeded with invalid config")
+	}
+	waitMetricValue(t, server, "mc_gateway_reload_total", map[string]string{"result": "failed"}, 1)
+	waitMetricValue(t, server, "mc_gateway_config_generation", nil, 2)
+	waitMetricValue(t, server, "mc_gateway_routes", nil, 2)
+}
+
 func TestServeStopsOnContextCancellation(t *testing.T) {
 	listener := listenLocalTCP(t)
 	defer listener.Close()
@@ -630,6 +745,12 @@ func TestServeStopsOnContextCancellation(t *testing.T) {
 }
 
 func startTestServer(t *testing.T, cfg config.Config, configure ...func(*Server)) (string, func()) {
+	t.Helper()
+	addr, _, stop := startTestServerWithServer(t, cfg, configure...)
+	return addr, stop
+}
+
+func startTestServerWithServer(t *testing.T, cfg config.Config, configure ...func(*Server)) (string, *Server, func()) {
 	t.Helper()
 	if cfg.DefaultRoute.Mode == "" && cfg.DefaultRoute.Backend != "" {
 		cfg.DefaultRoute.Mode = config.RouteModeAllow
@@ -663,7 +784,7 @@ func startTestServer(t *testing.T, cfg config.Config, configure ...func(*Server)
 			}
 		})
 	}
-	return listener.Addr().String(), stop
+	return listener.Addr().String(), server, stop
 }
 
 func startReloadableTestServer(t *testing.T, configPath string) (string, *Server, func()) {
@@ -839,17 +960,80 @@ func writeRouteConfig(t *testing.T, backend string) string {
 
 func writeRouteConfigAt(t *testing.T, path string, backend string) {
 	t.Helper()
+	writeRoutesConfigAt(t, path, []config.Route{
+		{ServerAddress: "smp.example.com", Backend: backend},
+	})
+}
+
+func writeRoutesConfigAt(t *testing.T, path string, routes []config.Route) {
+	t.Helper()
+	var routeBody string
+	for _, route := range routes {
+		routeBody += fmt.Sprintf("  - serverAddress: %s\n    backend: %q\n", route.ServerAddress, route.Backend)
+	}
 	body := fmt.Sprintf(`listen: ":0"
 handshakeTimeout: 1s
 backendDialTimeout: 1s
 unknownHostPolicy: deny
 routes:
-  - serverAddress: smp.example.com
-    backend: %q
-`, backend)
+%s`, routeBody)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+}
+
+func waitMetricValue(t *testing.T, server *Server, name string, labels map[string]string, want float64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		got, ok := metricValue(t, server, name, labels)
+		if ok && got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("metric %s%v = %v (present %v), want %v", name, labels, got, ok, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func metricValue(t *testing.T, server *Server, name string, labels map[string]string) (float64, bool) {
+	t.Helper()
+	families, err := server.Metrics().Registry().Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			if !metricLabelsMatch(metric, labels) {
+				continue
+			}
+			switch {
+			case metric.Gauge != nil:
+				return metric.Gauge.GetValue(), true
+			case metric.Counter != nil:
+				return metric.Counter.GetValue(), true
+			case metric.Histogram != nil:
+				return float64(metric.Histogram.GetSampleCount()), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func metricLabelsMatch(metric *dto.Metric, labels map[string]string) bool {
+	if len(metric.GetLabel()) != len(labels) {
+		return false
+	}
+	for _, label := range metric.GetLabel() {
+		if labels[label.GetName()] != label.GetValue() {
+			return false
+		}
+	}
+	return true
 }
 
 func buildHandshakePacket(protocol int32, address string, port uint16, nextState int32) []byte {

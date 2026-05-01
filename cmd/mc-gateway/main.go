@@ -9,9 +9,11 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	"github.com/AlexanderGG-0520/mc-router/internal/logging"
+	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxy"
 	"github.com/AlexanderGG-0520/mc-router/internal/router"
 )
@@ -36,10 +38,17 @@ func run(configPath string, logger *slog.Logger) error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancel := context.WithCancel(signalCtx)
+	defer cancel()
 
 	server := proxy.NewServer(cfg, routeTable, logger)
+	metricsServer, err := gatewaymetrics.StartHTTP(ctx, cfg.Metrics, server.Metrics(), logger)
+	if err != nil {
+		return err
+	}
+
 	reloadCh := make(chan os.Signal, 1)
 	if signals := reloadSignals(); len(signals) > 0 {
 		signal.Notify(reloadCh, signals...)
@@ -48,7 +57,11 @@ func run(configPath string, logger *slog.Logger) error {
 	} else {
 		logger.Info("config reload signal unavailable", "platform", runtime.GOOS)
 	}
-	err = server.ListenAndServe(ctx)
+	proxyErrCh := make(chan error, 1)
+	go func() {
+		proxyErrCh <- server.ListenAndServe(ctx)
+	}()
+	err = waitForServers(ctx, cancel, server, proxyErrCh, metricsServer)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
@@ -79,5 +92,43 @@ func serveReloadSignals(ctx context.Context, reloadCh <-chan os.Signal, configPa
 		case <-reloadCh:
 			_ = reloader.ReloadFile(configPath)
 		}
+	}
+}
+
+func waitForServers(ctx context.Context, cancel context.CancelFunc, server *proxy.Server, proxyErrCh <-chan error, metricsServer *gatewaymetrics.HTTPServer) error {
+	select {
+	case err := <-proxyErrCh:
+		cancel()
+		waitMetricsShutdown(ctx, metricsServer)
+		return err
+	case err := <-metricsServerDone(metricsServer):
+		cancel()
+		server.Shutdown()
+		proxyErr := <-proxyErrCh
+		if err != nil {
+			return err
+		}
+		return proxyErr
+	}
+}
+
+func metricsServerDone(metricsServer *gatewaymetrics.HTTPServer) <-chan error {
+	if metricsServer == nil {
+		return nil
+	}
+	return metricsServer.Done()
+}
+
+func waitMetricsShutdown(ctx context.Context, metricsServer *gatewaymetrics.HTTPServer) {
+	if metricsServer == nil {
+		return
+	}
+	select {
+	case <-metricsServer.Done():
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsServer.Shutdown(shutdownCtx)
+		<-metricsServer.Done()
 	}
 }
