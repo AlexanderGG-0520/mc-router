@@ -95,6 +95,8 @@ Do not add remote address, username, requested server address, or backend host l
 
 Lifecycle `reason` values used by logs and metrics are kept aligned:
 
+- `success`
+- `unknown`
 - `client_close`
 - `backend_close`
 - `backend_dial_failed`
