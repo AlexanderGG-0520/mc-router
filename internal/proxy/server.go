@@ -55,7 +55,7 @@ func NewServer(cfg config.Config, routeTable *router.Router, logger *slog.Logger
 		panic("proxy: nil router")
 	}
 	dialer := net.Dialer{}
-	recorder := gatewaymetrics.NewRecorder()
+	recorder := gatewaymetrics.NewRecorder(cfg.Metrics.Enabled)
 	s := &Server{
 		logger:        logger,
 		limits:        mcproto.DefaultLimits(),

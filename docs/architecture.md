@@ -68,7 +68,7 @@ Known limitations:
 
 ## Metrics
 
-Prometheus metrics are exposed by an optional HTTP server. Metrics are disabled by default to preserve the previous runtime surface and to avoid exposing an unauthenticated listener unless operators opt in:
+Prometheus metrics are exposed by an optional HTTP server. Metrics are disabled by default to preserve the previous runtime surface, avoid hot-path collector work, and avoid exposing an unauthenticated listener unless operators opt in:
 
 ```yaml
 metrics:

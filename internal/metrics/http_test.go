@@ -13,7 +13,7 @@ import (
 )
 
 func TestStartHTTPDisabledDoesNothing(t *testing.T) {
-	server, err := StartHTTP(context.Background(), config.Metrics{}, NewRecorder(), testLogger())
+	server, err := StartHTTP(context.Background(), config.Metrics{}, NewRecorder(false), testLogger())
 	if err != nil {
 		t.Fatalf("StartHTTP returned error: %v", err)
 	}
@@ -22,9 +22,33 @@ func TestStartHTTPDisabledDoesNothing(t *testing.T) {
 	}
 }
 
+func TestStartHTTPRejectsDisabledRecorderWhenEnabled(t *testing.T) {
+	_, err := StartHTTP(context.Background(), config.Metrics{
+		Enabled: true,
+		Listen:  "127.0.0.1:0",
+		Path:    "/metrics",
+	}, NewRecorder(false), testLogger())
+	if err == nil {
+		t.Fatal("StartHTTP succeeded with a disabled recorder")
+	}
+}
+
+func TestDisabledRecorderIsNoop(t *testing.T) {
+	recorder := NewRecorder(false)
+	if recorder.Registry() != nil {
+		t.Fatal("disabled recorder has a registry")
+	}
+	recorder.SetConfig(1, config.Defaults())
+	recorder.ConnectionAccepted()
+	recorder.ConnectionFinished(ConnectionResultDenied, ReasonRouteDenied, time.Millisecond)
+	recorder.BackendDialFinished(ConnectionResultFailed, ReasonBackendDialFailed, time.Millisecond)
+	recorder.RouteDecision(RouteDecisionDenied)
+	recorder.Reload(ReloadResultFailed)
+}
+
 func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	recorder := NewRecorder()
+	recorder := NewRecorder(true)
 	recorder.ConnectionAccepted()
 	recorder.ConnectionFinished(ConnectionResultDenied, ReasonRouteDenied, time.Millisecond)
 

@@ -34,6 +34,7 @@ const (
 )
 
 type Recorder struct {
+	enabled  bool
 	registry *prometheus.Registry
 
 	connectionsTotal    *prometheus.CounterVec
@@ -47,8 +48,12 @@ type Recorder struct {
 	backendDialDuration prometheus.Histogram
 }
 
-func NewRecorder() *Recorder {
+func NewRecorder(enabled bool) *Recorder {
+	if !enabled {
+		return &Recorder{}
+	}
 	r := &Recorder{
+		enabled:  true,
 		registry: prometheus.NewRegistry(),
 		connectionsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "mc_gateway_connections_total",
@@ -108,30 +113,48 @@ func (r *Recorder) Registry() *prometheus.Registry {
 }
 
 func (r *Recorder) SetConfig(generation int64, cfg config.Config) {
+	if !r.enabled {
+		return
+	}
 	r.configGeneration.Set(float64(generation))
 	r.routes.Set(float64(len(cfg.Routes)))
 }
 
 func (r *Recorder) ConnectionAccepted() {
+	if !r.enabled {
+		return
+	}
 	r.connectionsTotal.WithLabelValues(ConnectionResultAccepted, ReasonUnknown).Inc()
 	r.activeConnections.Inc()
 }
 
 func (r *Recorder) ConnectionFinished(result string, reason string, duration time.Duration) {
+	if !r.enabled {
+		return
+	}
 	r.connectionsTotal.WithLabelValues(result, reason).Inc()
 	r.activeConnections.Dec()
 	r.connectionDuration.Observe(duration.Seconds())
 }
 
 func (r *Recorder) BackendDialFinished(result string, reason string, duration time.Duration) {
+	if !r.enabled {
+		return
+	}
 	r.backendDialsTotal.WithLabelValues(result, reason).Inc()
 	r.backendDialDuration.Observe(duration.Seconds())
 }
 
 func (r *Recorder) RouteDecision(result string) {
+	if !r.enabled {
+		return
+	}
 	r.routeDecisionsTotal.WithLabelValues(result).Inc()
 }
 
 func (r *Recorder) Reload(result string) {
+	if !r.enabled {
+		return
+	}
 	r.reloadTotal.WithLabelValues(result).Inc()
 }

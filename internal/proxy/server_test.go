@@ -325,6 +325,7 @@ func TestMetricsActiveConnectionsGaugeIncrementsAndDecrements(t *testing.T) {
 		Listen:             ":0",
 		HandshakeTimeout:   config.Duration{Duration: time.Second},
 		BackendDialTimeout: config.Duration{Duration: time.Second},
+		Metrics:            testMetricsConfig(),
 		UnknownHostPolicy:  config.UnknownHostDeny,
 		Routes: []config.Route{
 			{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()},
@@ -347,6 +348,7 @@ func TestMetricsRouteDeniedCounterIncrements(t *testing.T) {
 		Listen:             ":0",
 		HandshakeTimeout:   config.Duration{Duration: time.Second},
 		BackendDialTimeout: config.Duration{Duration: time.Second},
+		Metrics:            testMetricsConfig(),
 		UnknownHostPolicy:  config.UnknownHostDeny,
 		Routes: []config.Route{
 			{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"},
@@ -373,6 +375,7 @@ func TestMetricsBackendDialFailureCounterIncrements(t *testing.T) {
 		Listen:             ":0",
 		HandshakeTimeout:   config.Duration{Duration: time.Second},
 		BackendDialTimeout: config.Duration{Duration: time.Second},
+		Metrics:            testMetricsConfig(),
 		UnknownHostPolicy:  config.UnknownHostDeny,
 		Routes: []config.Route{
 			{ServerAddress: "smp.example.com", Backend: backendAddr},
@@ -691,7 +694,7 @@ func TestReloadMetricsUpdateOnSuccessAndFailure(t *testing.T) {
 	secondBackend := listenLocalTCP(t)
 	defer secondBackend.Close()
 
-	configPath := writeRouteConfig(t, firstBackend.Addr().String())
+	configPath := writeRouteConfigWithMetrics(t, firstBackend.Addr().String())
 	_, server, stop := startReloadableTestServer(t, configPath)
 	defer stop()
 	waitMetricValue(t, server, "mc_gateway_config_generation", nil, 1)
@@ -958,6 +961,15 @@ func writeRouteConfig(t *testing.T, backend string) string {
 	return path
 }
 
+func writeRouteConfigWithMetrics(t *testing.T, backend string) string {
+	t.Helper()
+	path := t.TempDir() + "/config.yaml"
+	writeRoutesConfigAtWithMetrics(t, path, []config.Route{
+		{ServerAddress: "smp.example.com", Backend: backend},
+	})
+	return path
+}
+
 func writeRouteConfigAt(t *testing.T, path string, backend string) {
 	t.Helper()
 	writeRoutesConfigAt(t, path, []config.Route{
@@ -967,18 +979,41 @@ func writeRouteConfigAt(t *testing.T, path string, backend string) {
 
 func writeRoutesConfigAt(t *testing.T, path string, routes []config.Route) {
 	t.Helper()
+	writeRoutesConfig(t, path, routes, false)
+}
+
+func writeRoutesConfigAtWithMetrics(t *testing.T, path string, routes []config.Route) {
+	t.Helper()
+	writeRoutesConfig(t, path, routes, true)
+}
+
+func writeRoutesConfig(t *testing.T, path string, routes []config.Route, metricsEnabled bool) {
+	t.Helper()
 	var routeBody string
 	for _, route := range routes {
 		routeBody += fmt.Sprintf("  - serverAddress: %s\n    backend: %q\n", route.ServerAddress, route.Backend)
 	}
+	metricsBlock := ""
+	if metricsEnabled {
+		metricsBlock = "metrics:\n  enabled: true\n"
+	}
 	body := fmt.Sprintf(`listen: ":0"
 handshakeTimeout: 1s
 backendDialTimeout: 1s
+%s
 unknownHostPolicy: deny
 routes:
-%s`, routeBody)
+%s`, metricsBlock, routeBody)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func testMetricsConfig() config.Metrics {
+	return config.Metrics{
+		Enabled: true,
+		Listen:  "127.0.0.1:0",
+		Path:    "/metrics",
 	}
 }
 

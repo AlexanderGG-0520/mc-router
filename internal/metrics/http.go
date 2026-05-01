@@ -26,6 +26,9 @@ func StartHTTP(ctx context.Context, cfg config.Metrics, recorder *Recorder, logg
 	if recorder == nil {
 		return nil, errors.New("metrics recorder is nil")
 	}
+	if recorder.Registry() == nil {
+		return nil, errors.New("metrics recorder registry is nil")
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle(cfg.Path, promhttp.HandlerFor(recorder.Registry(), promhttp.HandlerOpts{}))
