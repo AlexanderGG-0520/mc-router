@@ -53,7 +53,14 @@ type Config struct {
 
 type Fallback struct {
 	Enabled bool           `yaml:"enabled"`
+	Login   FallbackLogin  `yaml:"login"`
 	Status  FallbackStatus `yaml:"status"`
+}
+
+type FallbackLogin struct {
+	Enabled              bool   `yaml:"enabled"`
+	RespondOnRouteDenied *bool  `yaml:"respondOnRouteDenied"`
+	Message              string `yaml:"message"`
 }
 
 type FallbackStatus struct {
@@ -119,6 +126,10 @@ func Defaults() Config {
 			Path:   "/metrics",
 		},
 		Fallback: Fallback{
+			Login: FallbackLogin{
+				RespondOnRouteDenied: boolPtr(true),
+				Message:              "Server unavailable. Please try again later.",
+			},
 			Status: FallbackStatus{
 				RespondOnRouteDenied: boolPtr(true),
 				MOTD:                 "Server unavailable",
@@ -174,6 +185,9 @@ func (c Config) Validate() error {
 		if c.Fallback.Status.OnlinePlayers < 0 {
 			errs = append(errs, errors.New("fallback.status.onlinePlayers must not be negative"))
 		}
+	}
+	if c.Fallback.Enabled && c.Fallback.Login.Enabled && strings.TrimSpace(c.Fallback.Login.Message) == "" {
+		errs = append(errs, errors.New("fallback.login.message must not be empty when fallback.enabled and fallback.login.enabled are true"))
 	}
 	switch c.UnknownHostPolicy {
 	case UnknownHostDeny:

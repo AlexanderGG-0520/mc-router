@@ -9,6 +9,11 @@ metrics:
 # generic status response for denied status pings.
 fallback:
   enabled: true
+  login:
+    # Enable only when a generic login disconnect for denied hosts is acceptable.
+    enabled: false
+    respondOnRouteDenied: true
+    message: "Server unavailable. Please try again later."
   status:
     enabled: true
     respondOnRouteDenied: true

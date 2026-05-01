@@ -42,6 +42,7 @@ func TestDisabledRecorderIsNoop(t *testing.T) {
 	recorder.ConnectionAccepted()
 	recorder.ConnectionFinished(ConnectionResultDenied, ReasonRouteDenied, time.Millisecond)
 	recorder.BackendDialFinished(ConnectionResultFailed, ReasonBackendDialFailed, time.Millisecond)
+	recorder.FallbackResponse(FallbackStateLogin, ReasonRouteDenied)
 	recorder.FallbackResponse(FallbackStateStatus, ReasonRouteDenied)
 	recorder.RouteDecision(RouteDecisionDenied)
 	recorder.Reload(ReloadResultFailed)

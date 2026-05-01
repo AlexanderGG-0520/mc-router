@@ -63,24 +63,30 @@ Lifecycle log `reason` values are intended to map cleanly to future metrics:
 
 Known limitations:
 
-- The gateway does not send Minecraft protocol disconnect packets yet.
+- The gateway sends a login-state disconnect packet only for explicitly enabled route denied login fallback.
 - Copy close reasons identify the first completed direction; low-level TCP reset details are not classified beyond that.
 
-## Status Fallback
+## Fallback Responses
 
-The gateway can optionally return a Minecraft Java Edition status response for selected status ping failures. This is intentionally narrow:
+The gateway can optionally return Minecraft Java Edition fallback responses for selected failures. This is intentionally narrow:
 
 - Route denied decisions are eligible when `respondOnRouteDenied` is enabled.
-- Backend dial failures and backend dial timeouts are eligible when `respondOnBackendFailure` is enabled.
-- Only handshakes with `next_state=status` are eligible.
+- Backend dial failures and backend dial timeouts are eligible only for status fallback when `respondOnBackendFailure` is enabled.
+- Status fallback only handles handshakes with `next_state=status`.
+- Login fallback only handles route denied handshakes with `next_state=login`.
 - Malformed handshakes, malformed status requests, oversized packets, invalid VarInts, and unsupported next states are still closed without a friendly response.
-- Login disconnect fallback, maintenance mode, initial backend write failure fallback, context cancellation fallback, and play-state handling are not implemented yet.
+- Malformed login start packets are closed without a friendly response.
+- Backend failure login fallback, maintenance mode, initial backend write failure fallback, context cancellation fallback, and play-state handling are not implemented yet.
 
-Fallback is disabled by default because answering unknown hosts can give scanners more information than a TCP close. Operators must opt in. Once status fallback is enabled, route denied responses default to enabled for backward compatibility with the first fallback implementation. Backend failure responses remain separately opt-in because they can reveal that a route exists but its backend is unavailable:
+Fallback is disabled by default because answering unknown hosts can give scanners more information than a TCP close. Operators must opt in. Once a specific fallback state is enabled, route denied responses default to enabled for backward compatibility with the first fallback implementation. Backend failure status responses remain separately opt-in because they can reveal that a route exists but its backend is unavailable:
 
 ```yaml
 fallback:
   enabled: true
+  login:
+    enabled: false
+    respondOnRouteDenied: true
+    message: "Server unavailable. Please try again later."
   status:
     enabled: true
     respondOnRouteDenied: true
@@ -92,13 +98,15 @@ fallback:
     onlinePlayers: 0
 ```
 
-When enabled for an eligible failure, the status fallback path reads exactly one status request packet `0x00`, writes a minimal status response JSON, and if the client sends a ping packet `0x01`, echoes its 8-byte payload in a pong packet `0x01`. Reads remain bounded by packet limits and `handshakeTimeout`. The status JSON includes `version.name`, `version.protocol`, `players.max`, `players.online`, and `description` as a JSON chat component. Favicon and player samples are intentionally omitted.
+When enabled for an eligible status failure, the status fallback path reads exactly one status request packet `0x00`, writes a minimal status response JSON, and if the client sends a ping packet `0x01`, echoes its 8-byte payload in a pong packet `0x01`. Reads remain bounded by packet limits and `handshakeTimeout`. The status JSON includes `version.name`, `version.protocol`, `players.max`, `players.online`, and `description` as a JSON chat component. Favicon and player samples are intentionally omitted.
+
+When enabled for an eligible login route denial, the login fallback path reads exactly one login start packet before writing a disconnect. For protocol 767, this implementation expects serverbound login start packet `0x00` with username string plus 16 UUID bytes, and it writes clientbound login disconnect packet `0x00` with a JSON chat component reason. Unsupported protocol versions, malformed login start packets, missing login start packets, and scanner-like input are closed without a friendly response. The username is not logged and is not used as a metric label.
 
 `defaultRoute` still takes precedence over route denied fallback. If `unknownHostPolicy=default` selects a backend and the dial succeeds, the connection is proxied normally. If that selected default backend cannot be dialed and backend failure fallback is enabled, the status fallback response can be returned for status-state clients.
 
-Backend failure fallback happens only after route selection has matched an explicit route or the default route and the backend dial fails or times out. It does not run for route denied, context cancellation, malformed input, login state, or failed initial writes after a backend connection was established.
+Backend failure fallback happens only for status clients after route selection has matched an explicit route or the default route and the backend dial fails or times out. It does not run for route denied, context cancellation, malformed input, login state, or failed initial writes after a backend connection was established.
 
-Existing route decision and backend dial metrics keep their original meanings. A route denied fallback still records `mc_gateway_route_decisions_total{result="denied"}`. A backend failure fallback records the route decision as `matched` or `default` and records the backend dial failure reason. A successful fallback status response also increments `mc_gateway_fallback_responses_total{state="status",reason="<reason>"}` after the status response packet is written. If the status request is malformed, the client closes before the response is written, or fallback is disabled, the fallback response counter is not incremented.
+Existing route decision and backend dial metrics keep their original meanings. A route denied fallback still records `mc_gateway_route_decisions_total{result="denied"}`. A backend failure fallback records the route decision as `matched` or `default` and records the backend dial failure reason. A successful fallback response increments `mc_gateway_fallback_responses_total{state="<state>",reason="<reason>"}` after the response packet is written. If the required request packet is malformed, the client closes before the response is written, or fallback is disabled, the fallback response counter is not incremented.
 
 ## Metrics
 
@@ -130,10 +138,10 @@ Do not add remote address, username, requested server address, backend host, MOT
 
 Fallback response metric labels are deliberately bounded:
 
-- `state`: currently only `status`; a later login disconnect fallback can add `login`.
+- `state`: `status` or `login`.
 - `reason`: `route_denied`, `backend_dial_failed`, or `backend_dial_timeout`.
 
-The fallback response counter tracks responses that were actually written, not fallback handling attempts. Ping/pong completion is not required for the counter because the status response is already visible to the client at that point.
+The fallback response counter tracks responses that were actually written, not fallback handling attempts. Ping/pong completion is not required for status fallback because the status response is already visible to the client at that point.
 
 Lifecycle `reason` values used by logs and metrics are kept aligned:
 
@@ -174,7 +182,7 @@ If reload fails because the file cannot be read, YAML is malformed, validation f
 
 Metrics server settings are also startup settings. SIGHUP reload updates route snapshots and route-related metrics, but changes to `metrics.enabled`, `metrics.listen`, or `metrics.path` require a process restart.
 
-Status fallback settings are part of the route config snapshot and are applied to new connections after a successful reload.
+Fallback settings are part of the route config snapshot and are applied to new connections after a successful reload.
 
 The implementation uses an immutable snapshot stored in `atomic.Value`. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
 

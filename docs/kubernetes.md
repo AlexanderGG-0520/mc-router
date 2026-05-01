@@ -46,9 +46,9 @@ It creates:
 
 RBAC is omitted because the MVP does not call the Kubernetes API.
 
-## Status Fallback
+## Fallback Responses
 
-Fallback status responses are disabled by default. If you want denied status pings to return a generic Minecraft server list response instead of a TCP close, enable it in the ConfigMap:
+Fallback responses are disabled by default. If you want denied status pings to return a generic Minecraft server list response instead of a TCP close, enable status fallback in the ConfigMap:
 
 ```yaml
 fallback:
@@ -64,6 +64,17 @@ fallback:
     onlinePlayers: 0
 ```
 
+If you also want denied login starts to return a Minecraft login-state disconnect packet instead of a TCP close, enable login fallback explicitly:
+
+```yaml
+fallback:
+  enabled: true
+  login:
+    enabled: true
+    respondOnRouteDenied: true
+    message: "Server unavailable. Please try again later."
+```
+
 To also return the same generic status response when a known route or default route is selected but the backend Service is unavailable or the dial times out, opt in explicitly:
 
 ```yaml
@@ -75,7 +86,7 @@ fallback:
     motd: "Server unavailable"
 ```
 
-Use a generic MOTD. Unknown host fallback can reveal that a gateway is present, and backend failure fallback can reveal that a route exists but is unavailable. Do not include namespace names, backend service names, internal domains, readiness details, or operational runbook text. This fallback is a Minecraft status response only; it is not a substitute for Kubernetes readiness, Service health, or alerting. Login disconnect fallback is not implemented yet.
+Use generic MOTD and login disconnect messages. Unknown host fallback can reveal that a gateway is present, and backend failure fallback can reveal that a route exists but is unavailable. Do not include namespace names, backend service names, internal domains, readiness details, or operational runbook text. These fallbacks are Minecraft protocol responses only; they are not a substitute for Kubernetes readiness, Service health, or alerting. Backend failure login fallback is not implemented yet.
 
 ## Prometheus Scraping
 
@@ -96,7 +107,7 @@ For fallback behavior, watch:
 sum by (state, reason) (rate(mc_gateway_fallback_responses_total[5m]))
 ```
 
-Expected `reason` values are `route_denied`, `backend_dial_failed`, and `backend_dial_timeout`. These labels are intentionally low-cardinality and do not include client IPs, requested hostnames, backend Services, namespaces, MOTD text, or usernames. Use the fallback metric together with `mc_gateway_route_decisions_total` and `mc_gateway_backend_dials_total`; route-denied fallback still records a denied route decision, while backend failure fallback keeps the route decision as matched or default and records the backend dial failure separately.
+Expected `state` values are `status` and `login`. Expected `reason` values are `route_denied`, `backend_dial_failed`, and `backend_dial_timeout`. These labels are intentionally low-cardinality and do not include client IPs, requested hostnames, backend Services, namespaces, MOTD text, disconnect messages, or usernames. Use the fallback metric together with `mc_gateway_route_decisions_total` and `mc_gateway_backend_dials_total`; route-denied fallback still records a denied route decision, while backend failure status fallback keeps the route decision as matched or default and records the backend dial failure separately.
 
 Example Service shape:
 
