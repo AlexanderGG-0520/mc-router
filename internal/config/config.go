@@ -153,10 +153,10 @@ func (c Config) Validate() error {
 	}
 	if c.Fallback.Enabled && c.Fallback.Status.Enabled {
 		if strings.TrimSpace(c.Fallback.Status.MOTD) == "" {
-			errs = append(errs, errors.New("fallback.status.motd must not be empty when fallback.status.enabled is true"))
+			errs = append(errs, errors.New("fallback.status.motd must not be empty when fallback.enabled and fallback.status.enabled are true"))
 		}
 		if strings.TrimSpace(c.Fallback.Status.ProtocolName) == "" {
-			errs = append(errs, errors.New("fallback.status.protocolName must not be empty when fallback.status.enabled is true"))
+			errs = append(errs, errors.New("fallback.status.protocolName must not be empty when fallback.enabled and fallback.status.enabled are true"))
 		}
 		if c.Fallback.Status.ProtocolVersion < 0 {
 			errs = append(errs, errors.New("fallback.status.protocolVersion must not be negative"))
