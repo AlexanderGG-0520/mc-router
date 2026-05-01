@@ -5,6 +5,8 @@ metrics:
   enabled: true
   listen: ":9090"
   path: "/metrics"
+# Fallback responses are disabled by default. This example opts in to a
+# generic status response for denied status pings.
 fallback:
   enabled: true
   status:

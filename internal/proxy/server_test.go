@@ -140,6 +140,9 @@ func TestStatusFallbackRespondsForRouteDeniedStatusPing(t *testing.T) {
 	if err := writeAll(conn, mcproto.BuildPacket(mcproto.StatusPingPacketID, mcproto.EncodeLong(pingPayload))); err != nil {
 		t.Fatalf("write ping: %v", err)
 	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	packetID, payload, err := mcproto.ReadPacket(conn, mcproto.DefaultLimits().MaxPacketLength)
 	if err != nil {
 		t.Fatalf("read pong: %v", err)
@@ -157,6 +160,22 @@ func TestStatusFallbackRespondsForRouteDeniedStatusPing(t *testing.T) {
 	default:
 	}
 	waitMetricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "denied"}, 1)
+}
+
+func TestStatusFallbackAllowsClientToSkipPing(t *testing.T) {
+	cfg := statusFallbackConfig()
+	cfg.HandshakeTimeout = config.Duration{Duration: 50 * time.Millisecond}
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer conn.Close()
+	_ = readStatusResponse(t, conn)
+	closeClientWrite(t, conn)
+	readClosed(t, conn)
 }
 
 func TestStatusFallbackDoesNotHandleLoginRouteDenied(t *testing.T) {
@@ -1168,6 +1187,9 @@ func statusFallbackConfig() config.Config {
 
 func readStatusResponse(t *testing.T, conn net.Conn) mcproto.StatusResponse {
 	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	packetID, payload, err := mcproto.ReadPacket(conn, mcproto.DefaultLimits().MaxPacketLength)
 	if err != nil {
 		t.Fatalf("read status response: %v", err)
