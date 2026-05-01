@@ -98,7 +98,7 @@ When enabled for an eligible failure, the status fallback path reads exactly one
 
 Backend failure fallback happens only after route selection has matched an explicit route or the default route and the backend dial fails or times out. It does not run for route denied, context cancellation, malformed input, login state, or failed initial writes after a backend connection was established.
 
-Existing route decision and backend dial metrics keep their original meanings. A route denied fallback still records `route_decisions_total{result="denied"}`. A backend failure fallback records the route decision as `matched` or `default` and records the backend dial failure reason. A successful fallback status response also increments `mc_gateway_fallback_responses_total{state="status",reason="<reason>"}` after the status response packet is written. If the status request is malformed, the client closes before the response is written, or fallback is disabled, the fallback response counter is not incremented.
+Existing route decision and backend dial metrics keep their original meanings. A route denied fallback still records `mc_gateway_route_decisions_total{result="denied"}`. A backend failure fallback records the route decision as `matched` or `default` and records the backend dial failure reason. A successful fallback status response also increments `mc_gateway_fallback_responses_total{state="status",reason="<reason>"}` after the status response packet is written. If the status request is malformed, the client closes before the response is written, or fallback is disabled, the fallback response counter is not incremented.
 
 ## Metrics
 
