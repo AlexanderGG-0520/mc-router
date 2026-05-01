@@ -12,6 +12,7 @@
 - JSON structured logging.
 - Optional Prometheus metrics endpoint.
 - Optional status ping fallback response for denied routes and backend dial failures.
+- Fallback response metrics for status fallback responses.
 - Graceful shutdown.
 - SIGHUP config reload for static route updates on supported platforms.
 - Unit tests for parser, config, and router behavior.
@@ -73,8 +74,8 @@ Automated tests now cover:
 - Idle client handshake read timeout.
 - Server shutdown on context cancellation.
 - SIGHUP/static config reload keeps the previous routes after invalid reloads and applies valid reloads to new connections.
-- Metrics config defaults, Prometheus text endpoint behavior, active connection gauge, route-denied counter, backend dial failure counter, reload counters, config generation gauge, and route count gauge.
-- Status fallback config defaults, denied status response JSON, backend dial failure and timeout status response JSON, status ping/pong echo, disabled fallback close behavior, login fallback close behavior, default route precedence, malformed status request close behavior, and metric preservation.
+- Metrics config defaults, Prometheus text endpoint behavior, active connection gauge, route-denied counter, backend dial failure counter, fallback response counter, reload counters, config generation gauge, and route count gauge.
+- Status fallback config defaults, denied status response JSON, backend dial failure and timeout status response JSON, status ping/pong echo, disabled fallback close behavior, login fallback close behavior, default route precedence, malformed status request close behavior, fallback response metrics, and existing metric preservation.
 - Race detector coverage through `go test -race ./...`.
 - A short fake-backend soak test with concurrent connections to exercise connection open, proxy copy, close, and shutdown paths.
 - Minecraft protocol smoke tests using lightweight fake backends:
@@ -92,8 +93,7 @@ The protocol smoke tests use fixed protocol framing helpers and fake TCP backend
 ## Next Implementation Priorities
 
 1. Add login disconnect fallback.
-2. Add fallback-specific metrics.
-3. Add Kubernetes label or annotation discovery.
-4. Add wake-up controller behavior for scaled-to-zero servers.
-5. Add CRD only after static and label based models are stable.
-6. Consider filesystem watch or admin-triggered reload if SIGHUP is not enough operationally.
+2. Add Kubernetes label or annotation discovery.
+3. Add wake-up controller behavior for scaled-to-zero servers.
+4. Add CRD only after static and label based models are stable.
+5. Consider filesystem watch or admin-triggered reload if SIGHUP is not enough operationally.

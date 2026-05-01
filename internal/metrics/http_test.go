@@ -42,6 +42,7 @@ func TestDisabledRecorderIsNoop(t *testing.T) {
 	recorder.ConnectionAccepted()
 	recorder.ConnectionFinished(ConnectionResultDenied, ReasonRouteDenied, time.Millisecond)
 	recorder.BackendDialFinished(ConnectionResultFailed, ReasonBackendDialFailed, time.Millisecond)
+	recorder.FallbackResponse(FallbackStateStatus, ReasonRouteDenied)
 	recorder.RouteDecision(RouteDecisionDenied)
 	recorder.Reload(ReloadResultFailed)
 }
@@ -51,6 +52,7 @@ func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 	recorder := NewRecorder(true)
 	recorder.ConnectionAccepted()
 	recorder.ConnectionFinished(ConnectionResultDenied, ReasonRouteDenied, time.Millisecond)
+	recorder.FallbackResponse(FallbackStateStatus, ReasonRouteDenied)
 
 	server, err := StartHTTP(ctx, config.Metrics{
 		Enabled: true,
@@ -79,6 +81,9 @@ func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "mc_gateway_connections_total") {
 		t.Fatalf("metrics body did not include connection counter:\n%s", string(body))
+	}
+	if !strings.Contains(string(body), `mc_gateway_fallback_responses_total{reason="route_denied",state="status"} 1`) {
+		t.Fatalf("metrics body did not include fallback response counter:\n%s", string(body))
 	}
 
 	cancel()

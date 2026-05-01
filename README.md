@@ -29,7 +29,7 @@ Implemented in this skeleton:
 - Unknown host deny policy, with optional default route policy.
 - Optional status ping fallback response for denied routes and backend dial failures.
 - Structured JSON logging through Go `log/slog`.
-- Prometheus metrics endpoint when explicitly enabled.
+- Prometheus metrics endpoint when explicitly enabled, including low-cardinality fallback response counters.
 - Handshake read timeout and backend dial timeout.
 - Graceful shutdown on SIGINT/SIGTERM.
 - Unit tests for VarInt, handshake parsing, config loading, and route matching.
@@ -86,6 +86,8 @@ routes:
 - `default`: send unknown hosts to `defaultRoute.backend`.
 
 Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenticated Prometheus text metrics on `metrics.listen` and `metrics.path`. Do not expose this HTTP listener directly to the public internet; it is intended for internal scraping, such as from a Kubernetes cluster Prometheus.
+
+Fallback responses are counted with `mc_gateway_fallback_responses_total{state,reason}` after a fallback status response packet is successfully written. Labels are intentionally bounded: `state` is currently `status`, and `reason` is one of `route_denied`, `backend_dial_failed`, or `backend_dial_timeout`.
 
 Fallback responses are disabled by default. Set `fallback.enabled: true` and `fallback.status.enabled: true` to answer selected status pings with a minimal Minecraft status response. Route denied responses default to enabled once status fallback is enabled; backend failure responses require `fallback.status.respondOnBackendFailure: true` because they can reveal that a configured route exists. Login fallback is not implemented yet.
 

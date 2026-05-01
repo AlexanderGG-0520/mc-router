@@ -29,6 +29,8 @@ const (
 	RouteDecisionDenied  = "denied"
 	RouteDecisionMatched = "matched"
 
+	FallbackStateStatus = "status"
+
 	ReloadResultFailed  = "failed"
 	ReloadResultSuccess = "success"
 )
@@ -39,6 +41,7 @@ type Recorder struct {
 
 	connectionsTotal    *prometheus.CounterVec
 	backendDialsTotal   *prometheus.CounterVec
+	fallbackResponses   *prometheus.CounterVec
 	reloadTotal         *prometheus.CounterVec
 	routeDecisionsTotal *prometheus.CounterVec
 	activeConnections   prometheus.Gauge
@@ -63,6 +66,10 @@ func NewRecorder(enabled bool) *Recorder {
 			Name: "mc_gateway_backend_dials_total",
 			Help: "Minecraft gateway backend dial attempts by low-cardinality result and reason.",
 		}, []string{"result", "reason"}),
+		fallbackResponses: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_fallback_responses_total",
+			Help: "Minecraft gateway fallback responses successfully written by protocol state and low-cardinality reason.",
+		}, []string{"state", "reason"}),
 		reloadTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "mc_gateway_reload_total",
 			Help: "Minecraft gateway configuration reload attempts by result.",
@@ -97,6 +104,7 @@ func NewRecorder(enabled bool) *Recorder {
 	r.registry.MustRegister(
 		r.connectionsTotal,
 		r.backendDialsTotal,
+		r.fallbackResponses,
 		r.reloadTotal,
 		r.routeDecisionsTotal,
 		r.activeConnections,
@@ -143,6 +151,13 @@ func (r *Recorder) BackendDialFinished(result string, reason string, duration ti
 	}
 	r.backendDialsTotal.WithLabelValues(result, reason).Inc()
 	r.backendDialDuration.Observe(duration.Seconds())
+}
+
+func (r *Recorder) FallbackResponse(state string, reason string) {
+	if !r.enabled {
+		return
+	}
+	r.fallbackResponses.WithLabelValues(state, reason).Inc()
 }
 
 func (r *Recorder) RouteDecision(result string) {
