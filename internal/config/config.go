@@ -45,9 +45,24 @@ type Config struct {
 	HandshakeTimeout   Duration     `yaml:"handshakeTimeout"`
 	BackendDialTimeout Duration     `yaml:"backendDialTimeout"`
 	Metrics            Metrics      `yaml:"metrics"`
+	Fallback           Fallback     `yaml:"fallback"`
 	DefaultRoute       DefaultRoute `yaml:"defaultRoute"`
 	Routes             []Route      `yaml:"routes"`
 	UnknownHostPolicy  string       `yaml:"unknownHostPolicy"`
+}
+
+type Fallback struct {
+	Enabled bool           `yaml:"enabled"`
+	Status  FallbackStatus `yaml:"status"`
+}
+
+type FallbackStatus struct {
+	Enabled         bool   `yaml:"enabled"`
+	MOTD            string `yaml:"motd"`
+	ProtocolName    string `yaml:"protocolName"`
+	ProtocolVersion int    `yaml:"protocolVersion"`
+	MaxPlayers      int    `yaml:"maxPlayers"`
+	OnlinePlayers   int    `yaml:"onlinePlayers"`
 }
 
 type Metrics struct {
@@ -101,6 +116,13 @@ func Defaults() Config {
 			Listen: ":9090",
 			Path:   "/metrics",
 		},
+		Fallback: Fallback{
+			Status: FallbackStatus{
+				MOTD:            "Server unavailable",
+				ProtocolName:    "mc-gateway",
+				ProtocolVersion: 767,
+			},
+		},
 		DefaultRoute: DefaultRoute{
 			Mode: RouteModeAllow,
 		},
@@ -127,6 +149,23 @@ func (c Config) Validate() error {
 		}
 		if !strings.HasPrefix(c.Metrics.Path, "/") {
 			errs = append(errs, errors.New("metrics.path must start with /"))
+		}
+	}
+	if c.Fallback.Enabled && c.Fallback.Status.Enabled {
+		if strings.TrimSpace(c.Fallback.Status.MOTD) == "" {
+			errs = append(errs, errors.New("fallback.status.motd must not be empty when fallback.enabled and fallback.status.enabled are true"))
+		}
+		if strings.TrimSpace(c.Fallback.Status.ProtocolName) == "" {
+			errs = append(errs, errors.New("fallback.status.protocolName must not be empty when fallback.enabled and fallback.status.enabled are true"))
+		}
+		if c.Fallback.Status.ProtocolVersion < 0 {
+			errs = append(errs, errors.New("fallback.status.protocolVersion must not be negative"))
+		}
+		if c.Fallback.Status.MaxPlayers < 0 {
+			errs = append(errs, errors.New("fallback.status.maxPlayers must not be negative"))
+		}
+		if c.Fallback.Status.OnlinePlayers < 0 {
+			errs = append(errs, errors.New("fallback.status.onlinePlayers must not be negative"))
 		}
 	}
 	switch c.UnknownHostPolicy {

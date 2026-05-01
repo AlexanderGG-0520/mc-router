@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -78,6 +79,150 @@ func TestProxyDeniesUnknownHostWithoutConnectingBackend(t *testing.T) {
 		t.Fatal("dialer was called for an unknown host")
 	default:
 	}
+}
+
+func TestStatusFallbackDisabledDeniesUnknownHostWithClose(t *testing.T) {
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"},
+		},
+	})
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer client.Close()
+	readClosed(t, client)
+}
+
+func TestStatusFallbackRespondsForRouteDeniedStatusPing(t *testing.T) {
+	dialed := make(chan struct{}, 1)
+	cfg := statusFallbackConfig()
+	cfg.Metrics = testMetricsConfig()
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg, func(server *Server) {
+		server.dialContext = func(context.Context, string, string) (net.Conn, error) {
+			dialed <- struct{}{}
+			return nil, errors.New("dial should not be called")
+		}
+	})
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer conn.Close()
+
+	status := readStatusResponse(t, conn)
+	if status.Version.Name != "mc-gateway" {
+		t.Fatalf("status version name = %q", status.Version.Name)
+	}
+	if status.Version.Protocol != 767 {
+		t.Fatalf("status protocol = %d", status.Version.Protocol)
+	}
+	if status.Players.Max != 10 {
+		t.Fatalf("status max players = %d", status.Players.Max)
+	}
+	if status.Players.Online != 2 {
+		t.Fatalf("status online players = %d", status.Players.Online)
+	}
+	if status.Description.Text != `Server "unavailable"` {
+		t.Fatalf("status motd = %q", status.Description.Text)
+	}
+
+	const pingPayload int64 = 0x1122334455667788
+	if err := writeAll(conn, mcproto.BuildPacket(mcproto.StatusPingPacketID, mcproto.EncodeLong(pingPayload))); err != nil {
+		t.Fatalf("write ping: %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	packetID, payload, err := mcproto.ReadPacket(conn, mcproto.DefaultLimits().MaxPacketLength)
+	if err != nil {
+		t.Fatalf("read pong: %v", err)
+	}
+	if packetID != mcproto.StatusPongPacketID {
+		t.Fatalf("pong packet id = %d, want %d", packetID, mcproto.StatusPongPacketID)
+	}
+	if got := parseLongPayload(t, payload); got != pingPayload {
+		t.Fatalf("pong payload = %x, want %x", got, pingPayload)
+	}
+
+	select {
+	case <-dialed:
+		t.Fatal("dialer was called for status fallback")
+	default:
+	}
+	waitMetricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "denied"}, 1)
+}
+
+func TestStatusFallbackAllowsClientToSkipPing(t *testing.T) {
+	cfg := statusFallbackConfig()
+	cfg.HandshakeTimeout = config.Duration{Duration: 50 * time.Millisecond}
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer conn.Close()
+	_ = readStatusResponse(t, conn)
+	closeClientWrite(t, conn)
+	readClosed(t, conn)
+}
+
+func TestStatusFallbackDoesNotHandleLoginRouteDenied(t *testing.T) {
+	gatewayAddr, stop := startTestServer(t, statusFallbackConfig())
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateLogin))
+	defer client.Close()
+	readClosed(t, client)
+}
+
+func TestStatusFallbackDoesNotOverrideDefaultRoute(t *testing.T) {
+	defaultBackend := listenLocalTCP(t)
+	defer defaultBackend.Close()
+	backendBytes := acceptAndReadOnce(t, defaultBackend)
+
+	cfg := statusFallbackConfig()
+	cfg.UnknownHostPolicy = config.UnknownHostDefault
+	cfg.DefaultRoute = config.DefaultRoute{
+		Backend: defaultBackend.Addr().String(),
+		Mode:    config.RouteModeAllow,
+	}
+	cfg.Routes = nil
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateStatus)
+	statusRequest := mcproto.BuildPacket(mcproto.StatusRequestPacketID)
+	client := dialAndWrite(t, gatewayAddr, append(append([]byte{}, handshake...), statusRequest...))
+	defer client.Close()
+	closeClientWrite(t, client)
+
+	if got := waitBytes(t, backendBytes); !bytes.Equal(got, append(append([]byte{}, handshake...), statusRequest...)) {
+		t.Fatalf("default backend bytes = %v, want handshake plus status request", got)
+	}
+}
+
+func TestStatusFallbackClosesMalformedStatusRequest(t *testing.T) {
+	gatewayAddr, stop := startTestServer(t, statusFallbackConfig())
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusPingPacketID, mcproto.EncodeLong(1))...,
+	))
+	defer client.Close()
+	readClosed(t, client)
 }
 
 func TestProxyUsesDefaultBackendForUnknownHostWhenConfigured(t *testing.T) {
@@ -1015,6 +1160,81 @@ func testMetricsConfig() config.Metrics {
 		Listen:  "127.0.0.1:0",
 		Path:    "/metrics",
 	}
+}
+
+func statusFallbackConfig() config.Config {
+	return config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		Fallback: config.Fallback{
+			Enabled: true,
+			Status: config.FallbackStatus{
+				Enabled:         true,
+				MOTD:            `Server "unavailable"`,
+				ProtocolName:    "mc-gateway",
+				ProtocolVersion: 767,
+				MaxPlayers:      10,
+				OnlinePlayers:   2,
+			},
+		},
+		UnknownHostPolicy: config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"},
+		},
+	}
+}
+
+func readStatusResponse(t *testing.T, conn net.Conn) mcproto.StatusResponse {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	packetID, payload, err := mcproto.ReadPacket(conn, mcproto.DefaultLimits().MaxPacketLength)
+	if err != nil {
+		t.Fatalf("read status response: %v", err)
+	}
+	if packetID != mcproto.StatusResponsePacketID {
+		t.Fatalf("status response packet id = %d, want %d", packetID, mcproto.StatusResponsePacketID)
+	}
+	statusJSON, remaining := parseStringPayload(t, payload)
+	if len(remaining) != 0 {
+		t.Fatalf("status response has %d trailing bytes", len(remaining))
+	}
+	var status mcproto.StatusResponse
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		t.Fatalf("Unmarshal status response: %v", err)
+	}
+	return status
+}
+
+func parseStringPayload(t *testing.T, payload []byte) (string, []byte) {
+	t.Helper()
+	reader := bytes.NewReader(payload)
+	length, _, err := mcproto.ReadVarInt(reader)
+	if err != nil {
+		t.Fatalf("read string length: %v", err)
+	}
+	if length < 0 || length > int32(reader.Len()) {
+		t.Fatalf("invalid string length %d with %d bytes remaining", length, reader.Len())
+	}
+	raw := make([]byte, length)
+	if _, err := io.ReadFull(reader, raw); err != nil {
+		t.Fatalf("read string: %v", err)
+	}
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read remaining string payload: %v", err)
+	}
+	return string(raw), remaining
+}
+
+func parseLongPayload(t *testing.T, payload []byte) int64 {
+	t.Helper()
+	if len(payload) != 8 {
+		t.Fatalf("long payload length = %d, want 8", len(payload))
+	}
+	return int64(binary.BigEndian.Uint64(payload))
 }
 
 func waitMetricValue(t *testing.T, server *Server, name string, labels map[string]string, want float64) {

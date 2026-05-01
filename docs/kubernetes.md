@@ -46,6 +46,24 @@ It creates:
 
 RBAC is omitted because the MVP does not call the Kubernetes API.
 
+## Status Fallback
+
+Fallback status responses are disabled by default. If you want denied status pings to return a generic Minecraft server list response instead of a TCP close, enable it in the ConfigMap:
+
+```yaml
+fallback:
+  enabled: true
+  status:
+    enabled: true
+    motd: "Server unavailable"
+    protocolName: "mc-gateway"
+    protocolVersion: 767
+    maxPlayers: 0
+    onlinePlayers: 0
+```
+
+Use a generic MOTD. Unknown host fallback can reveal that a gateway is present, so do not include namespace names, backend service names, internal domains, or operational details. Login disconnect fallback and backend failure fallback are not implemented yet.
+
 ## Prometheus Scraping
 
 Metrics are disabled by default. To scrape gateway metrics inside a cluster, enable the metrics listener in the ConfigMap:

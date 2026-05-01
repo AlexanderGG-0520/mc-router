@@ -51,6 +51,21 @@ routes:
 	if cfg.Metrics.Path != "/metrics" {
 		t.Fatalf("metrics path = %q, want /metrics", cfg.Metrics.Path)
 	}
+	if cfg.Fallback.Enabled {
+		t.Fatal("fallback enabled by default")
+	}
+	if cfg.Fallback.Status.Enabled {
+		t.Fatal("fallback status enabled by default")
+	}
+	if cfg.Fallback.Status.MOTD != "Server unavailable" {
+		t.Fatalf("fallback status motd = %q", cfg.Fallback.Status.MOTD)
+	}
+	if cfg.Fallback.Status.ProtocolName != "mc-gateway" {
+		t.Fatalf("fallback status protocol name = %q", cfg.Fallback.Status.ProtocolName)
+	}
+	if cfg.Fallback.Status.ProtocolVersion != 767 {
+		t.Fatalf("fallback status protocol version = %d", cfg.Fallback.Status.ProtocolVersion)
+	}
 }
 
 func TestLoadAcceptsMetricsConfig(t *testing.T) {
@@ -87,6 +102,56 @@ unknownHostPolicy: "deny"
 `))
 	if err == nil {
 		t.Fatal("expected invalid metrics path error")
+	}
+}
+
+func TestLoadAcceptsFallbackStatusConfig(t *testing.T) {
+	cfg, err := Load([]byte(`
+fallback:
+  enabled: true
+  status:
+    enabled: true
+    motd: "Maintenance"
+    protocolName: "mc-gateway"
+    protocolVersion: 767
+    maxPlayers: 10
+    onlinePlayers: 2
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "smp.default.svc.cluster.local:25565"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Fallback.Enabled || !cfg.Fallback.Status.Enabled {
+		t.Fatal("fallback status disabled")
+	}
+	if cfg.Fallback.Status.MOTD != "Maintenance" {
+		t.Fatalf("fallback status motd = %q", cfg.Fallback.Status.MOTD)
+	}
+	if cfg.Fallback.Status.MaxPlayers != 10 {
+		t.Fatalf("fallback max players = %d", cfg.Fallback.Status.MaxPlayers)
+	}
+	if cfg.Fallback.Status.OnlinePlayers != 2 {
+		t.Fatalf("fallback online players = %d", cfg.Fallback.Status.OnlinePlayers)
+	}
+}
+
+func TestLoadRejectsInvalidFallbackStatusConfig(t *testing.T) {
+	_, err := Load([]byte(`
+fallback:
+  enabled: true
+  status:
+    enabled: true
+    motd: "Maintenance"
+    protocolName: "mc-gateway"
+    protocolVersion: 767
+    maxPlayers: -1
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected invalid fallback status config error")
 	}
 }
 

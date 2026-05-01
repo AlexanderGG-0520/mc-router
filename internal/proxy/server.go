@@ -204,6 +204,12 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		s.metrics.RouteDecision(gatewaymetrics.RouteDecisionDenied)
 		connectionResult = gatewaymetrics.ConnectionResultDenied
 		connectionReason = reasonRouteDenied
+		if statusFallbackEnabled(state.cfg, handshake) {
+			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress); err != nil {
+				s.logger.Warn("fallback status response failed", "reason", reasonRouteDenied, "state", "status", "remote", remoteAddr, "server_address", routeAddress, "error", err)
+			}
+			return
+		}
 		s.logger.Info("connection rejected", "reason", reasonRouteDenied, "remote", remoteAddr, "server_address", routeAddress, "error", err)
 		return
 	}
@@ -259,6 +265,64 @@ func routeDecisionResult(matchedBy string) string {
 		return gatewaymetrics.RouteDecisionDefault
 	}
 	return gatewaymetrics.RouteDecisionMatched
+}
+
+func statusFallbackEnabled(cfg config.Config, handshake mcproto.Handshake) bool {
+	return cfg.Fallback.Enabled && cfg.Fallback.Status.Enabled && handshake.NextState == mcproto.NextStateStatus
+}
+
+func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteAddr string, routeAddress string) error {
+	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
+		return err
+	}
+	packetID, payload, err := mcproto.ReadPacket(client, s.limits.MaxPacketLength)
+	if err != nil {
+		return err
+	}
+	if packetID != mcproto.StatusRequestPacketID || len(payload) != 0 {
+		return errors.New("malformed status request")
+	}
+
+	status := mcproto.StatusResponse{
+		Version: mcproto.StatusVersion{
+			Name:     cfg.Fallback.Status.ProtocolName,
+			Protocol: cfg.Fallback.Status.ProtocolVersion,
+		},
+		Players: mcproto.StatusPlayers{
+			Max:    cfg.Fallback.Status.MaxPlayers,
+			Online: cfg.Fallback.Status.OnlinePlayers,
+		},
+		Description: mcproto.StatusChatComponent{
+			Text: cfg.Fallback.Status.MOTD,
+		},
+	}
+	response, err := mcproto.BuildStatusResponsePacket(status)
+	if err != nil {
+		return err
+	}
+	if err := writeAll(client, response); err != nil {
+		return err
+	}
+	s.logger.Info("fallback status response sent", "reason", reasonRouteDenied, "state", "status", "remote", remoteAddr, "server_address", routeAddress)
+
+	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
+		return err
+	}
+	packetID, payload, err = mcproto.ReadPacket(client, s.limits.MaxPacketLength)
+	if err != nil {
+		if errors.Is(err, io.EOF) || isTimeout(err) {
+			return nil
+		}
+		return err
+	}
+	if packetID != mcproto.StatusPingPacketID || len(payload) != 8 {
+		return errors.New("malformed status ping")
+	}
+	if err := writeAll(client, mcproto.BuildStatusPongPacket(payload)); err != nil {
+		return err
+	}
+	s.logger.Info("fallback status pong sent", "reason", reasonRouteDenied, "state", "status", "remote", remoteAddr, "server_address", routeAddress)
+	return nil
 }
 
 type proxyResult struct {

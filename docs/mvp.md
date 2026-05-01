@@ -11,6 +11,7 @@
 - Unknown host `deny` or `default` policy.
 - JSON structured logging.
 - Optional Prometheus metrics endpoint.
+- Optional status ping fallback response for denied routes.
 - Graceful shutdown.
 - SIGHUP config reload for static route updates on supported platforms.
 - Unit tests for parser, config, and router behavior.
@@ -23,7 +24,7 @@
 - Kubernetes API watches.
 - Labels, annotations, or CRD route discovery.
 - Scale-to-zero wake-up.
-- Fallback server.
+- Login, backend failure, and maintenance fallback responses.
 - UDP or extra TCP routing for mods such as Simple Voice Chat.
 - REST or admin API.
 - Web UI.
@@ -73,6 +74,7 @@ Automated tests now cover:
 - Server shutdown on context cancellation.
 - SIGHUP/static config reload keeps the previous routes after invalid reloads and applies valid reloads to new connections.
 - Metrics config defaults, Prometheus text endpoint behavior, active connection gauge, route-denied counter, backend dial failure counter, reload counters, config generation gauge, and route count gauge.
+- Status fallback config defaults, denied status response JSON, status ping/pong echo, disabled fallback close behavior, login route denied close behavior, default route precedence, malformed status request close behavior, and route denied metric preservation.
 - Race detector coverage through `go test -race ./...`.
 - A short fake-backend soak test with concurrent connections to exercise connection open, proxy copy, close, and shutdown paths.
 - Minecraft protocol smoke tests using lightweight fake backends:
@@ -89,8 +91,9 @@ The protocol smoke tests use fixed protocol framing helpers and fake TCP backend
 
 ## Next Implementation Priorities
 
-1. Add fallback or maintenance responses for status pings.
-2. Add Kubernetes label or annotation discovery.
-3. Add wake-up controller behavior for scaled-to-zero servers.
-4. Add CRD only after static and label based models are stable.
-5. Consider filesystem watch or admin-triggered reload if SIGHUP is not enough operationally.
+1. Add login disconnect fallback.
+2. Add backend dial failure and timeout fallback.
+3. Add Kubernetes label or annotation discovery.
+4. Add wake-up controller behavior for scaled-to-zero servers.
+5. Add CRD only after static and label based models are stable.
+6. Consider filesystem watch or admin-triggered reload if SIGHUP is not enough operationally.

@@ -5,6 +5,17 @@ metrics:
   enabled: true
   listen: ":9090"
   path: "/metrics"
+# Fallback responses are disabled by default. This example opts in to a
+# generic status response for denied status pings.
+fallback:
+  enabled: true
+  status:
+    enabled: true
+    motd: "Server unavailable"
+    protocolName: "mc-gateway"
+    protocolVersion: 767
+    maxPlayers: 0
+    onlinePlayers: 0
 unknownHostPolicy: "deny"
 defaultRoute:
   backend: "lobby.default.svc.cluster.local:25565"
