@@ -90,6 +90,14 @@ metrics:
 
 Expose the metrics listener only on an internal Service port. Do not publish it through a public LoadBalancer or internet-facing ingress; the endpoint is unauthenticated HTTP.
 
+For fallback behavior, watch:
+
+```promql
+sum by (state, reason) (rate(mc_gateway_fallback_responses_total[5m]))
+```
+
+Expected `reason` values are `route_denied`, `backend_dial_failed`, and `backend_dial_timeout`. These labels are intentionally low-cardinality and do not include client IPs, requested hostnames, backend Services, namespaces, MOTD text, or usernames. Use the fallback metric together with `mc_gateway_route_decisions_total` and `mc_gateway_backend_dials_total`; route-denied fallback still records a denied route decision, while backend failure fallback keeps the route decision as matched or default and records the backend dial failure separately.
+
 Example Service shape:
 
 ```yaml

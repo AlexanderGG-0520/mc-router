@@ -98,7 +98,7 @@ When enabled for an eligible failure, the status fallback path reads exactly one
 
 Backend failure fallback happens only after route selection has matched an explicit route or the default route and the backend dial fails or times out. It does not run for route denied, context cancellation, malformed input, login state, or failed initial writes after a backend connection was established.
 
-Existing route decision and backend dial metrics keep their original meanings. A route denied fallback still records `route_decisions_total{result="denied"}`. A backend failure fallback records the route decision as `matched` or `default` and records the backend dial failure reason. Fallback-specific metrics are left for a later PR so this implementation stays focused.
+Existing route decision and backend dial metrics keep their original meanings. A route denied fallback still records `mc_gateway_route_decisions_total{result="denied"}`. A backend failure fallback records the route decision as `matched` or `default` and records the backend dial failure reason. A successful fallback status response also increments `mc_gateway_fallback_responses_total{state="status",reason="<reason>"}` after the status response packet is written. If the status request is malformed, the client closes before the response is written, or fallback is disabled, the fallback response counter is not incremented.
 
 ## Metrics
 
@@ -117,6 +117,7 @@ Current metrics are intentionally low-cardinality:
 
 - `mc_gateway_connections_total{result,reason}`
 - `mc_gateway_backend_dials_total{result,reason}`
+- `mc_gateway_fallback_responses_total{state,reason}`
 - `mc_gateway_reload_total{result}`
 - `mc_gateway_route_decisions_total{result}`
 - `mc_gateway_active_connections`
@@ -125,7 +126,14 @@ Current metrics are intentionally low-cardinality:
 - `mc_gateway_connection_duration_seconds`
 - `mc_gateway_backend_dial_duration_seconds`
 
-Do not add remote address, username, requested server address, or backend host labels. Host-level or backend-level metrics should be considered later with an explicit cardinality budget.
+Do not add remote address, username, requested server address, backend host, MOTD, protocol version, or raw message labels. Host-level or backend-level metrics should be considered later with an explicit cardinality budget.
+
+Fallback response metric labels are deliberately bounded:
+
+- `state`: currently only `status`; a later login disconnect fallback can add `login`.
+- `reason`: `route_denied`, `backend_dial_failed`, or `backend_dial_timeout`.
+
+The fallback response counter tracks responses that were actually written, not fallback handling attempts. Ping/pong completion is not required for the counter because the status response is already visible to the client at that point.
 
 Lifecycle `reason` values used by logs and metrics are kept aligned:
 

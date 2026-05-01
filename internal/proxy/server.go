@@ -323,6 +323,7 @@ func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteA
 	if err := writeAll(client, response); err != nil {
 		return err
 	}
+	s.metrics.FallbackResponse(gatewaymetrics.FallbackStateStatus, reason)
 	s.logStatusFallbackSent("fallback status response sent", reason, remoteAddr, routeAddress, backendAddress)
 
 	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
