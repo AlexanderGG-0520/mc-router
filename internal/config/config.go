@@ -57,12 +57,14 @@ type Fallback struct {
 }
 
 type FallbackStatus struct {
-	Enabled         bool   `yaml:"enabled"`
-	MOTD            string `yaml:"motd"`
-	ProtocolName    string `yaml:"protocolName"`
-	ProtocolVersion int    `yaml:"protocolVersion"`
-	MaxPlayers      int    `yaml:"maxPlayers"`
-	OnlinePlayers   int    `yaml:"onlinePlayers"`
+	Enabled                 bool   `yaml:"enabled"`
+	RespondOnRouteDenied    *bool  `yaml:"respondOnRouteDenied"`
+	RespondOnBackendFailure bool   `yaml:"respondOnBackendFailure"`
+	MOTD                    string `yaml:"motd"`
+	ProtocolName            string `yaml:"protocolName"`
+	ProtocolVersion         int    `yaml:"protocolVersion"`
+	MaxPlayers              int    `yaml:"maxPlayers"`
+	OnlinePlayers           int    `yaml:"onlinePlayers"`
 }
 
 type Metrics struct {
@@ -118,15 +120,20 @@ func Defaults() Config {
 		},
 		Fallback: Fallback{
 			Status: FallbackStatus{
-				MOTD:            "Server unavailable",
-				ProtocolName:    "mc-gateway",
-				ProtocolVersion: 767,
+				RespondOnRouteDenied: boolPtr(true),
+				MOTD:                 "Server unavailable",
+				ProtocolName:         "mc-gateway",
+				ProtocolVersion:      767,
 			},
 		},
 		DefaultRoute: DefaultRoute{
 			Mode: RouteModeAllow,
 		},
 	}
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func (c Config) Validate() error {

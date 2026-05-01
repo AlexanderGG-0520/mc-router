@@ -68,20 +68,23 @@ Known limitations:
 
 ## Status Fallback
 
-The gateway can optionally return a Minecraft Java Edition status response when route selection denies a status ping. This is intentionally narrow:
+The gateway can optionally return a Minecraft Java Edition status response for selected status ping failures. This is intentionally narrow:
 
-- Only route denied decisions are eligible.
+- Route denied decisions are eligible when `respondOnRouteDenied` is enabled.
+- Backend dial failures and backend dial timeouts are eligible when `respondOnBackendFailure` is enabled.
 - Only handshakes with `next_state=status` are eligible.
 - Malformed handshakes, malformed status requests, oversized packets, invalid VarInts, and unsupported next states are still closed without a friendly response.
-- Login disconnect fallback, backend dial failure fallback, maintenance mode, and play-state handling are not implemented yet.
+- Login disconnect fallback, maintenance mode, initial backend write failure fallback, context cancellation fallback, and play-state handling are not implemented yet.
 
-Fallback is disabled by default because answering unknown hosts can give scanners more information than a TCP close. Operators must opt in:
+Fallback is disabled by default because answering unknown hosts can give scanners more information than a TCP close. Operators must opt in. Once status fallback is enabled, route denied responses default to enabled for backward compatibility with the first fallback implementation. Backend failure responses remain separately opt-in because they can reveal that a route exists but its backend is unavailable:
 
 ```yaml
 fallback:
   enabled: true
   status:
     enabled: true
+    respondOnRouteDenied: true
+    respondOnBackendFailure: false
     motd: "Server unavailable"
     protocolName: "mc-gateway"
     protocolVersion: 767
@@ -89,11 +92,13 @@ fallback:
     onlinePlayers: 0
 ```
 
-When enabled, the route denied status path reads exactly one status request packet `0x00`, writes a minimal status response JSON, and if the client sends a ping packet `0x01`, echoes its 8-byte payload in a pong packet `0x01`. Reads remain bounded by packet limits and `handshakeTimeout`. The status JSON includes `version.name`, `version.protocol`, `players.max`, `players.online`, and `description` as a JSON chat component. Favicon and player samples are intentionally omitted.
+When enabled for an eligible failure, the status fallback path reads exactly one status request packet `0x00`, writes a minimal status response JSON, and if the client sends a ping packet `0x01`, echoes its 8-byte payload in a pong packet `0x01`. Reads remain bounded by packet limits and `handshakeTimeout`. The status JSON includes `version.name`, `version.protocol`, `players.max`, `players.online`, and `description` as a JSON chat component. Favicon and player samples are intentionally omitted.
 
-`defaultRoute` still takes precedence over fallback. If `unknownHostPolicy=default` selects a backend, the connection is proxied normally and no fallback response is generated.
+`defaultRoute` still takes precedence over route denied fallback. If `unknownHostPolicy=default` selects a backend and the dial succeeds, the connection is proxied normally. If that selected default backend cannot be dialed and backend failure fallback is enabled, the status fallback response can be returned for status-state clients.
 
-Existing route decision metrics still record the denied route. Fallback-specific metrics are left for a later PR so this first implementation stays focused.
+Backend failure fallback happens only after route selection has matched an explicit route or the default route and the backend dial fails or times out. It does not run for route denied, context cancellation, malformed input, login state, or failed initial writes after a backend connection was established.
+
+Existing route decision and backend dial metrics keep their original meanings. A route denied fallback still records `route_decisions_total{result="denied"}`. A backend failure fallback records the route decision as `matched` or `default` and records the backend dial failure reason. Fallback-specific metrics are left for a later PR so this implementation stays focused.
 
 ## Metrics
 
