@@ -204,8 +204,8 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		s.metrics.RouteDecision(gatewaymetrics.RouteDecisionDenied)
 		connectionResult = gatewaymetrics.ConnectionResultDenied
 		connectionReason = reasonRouteDenied
-		if statusFallbackEnabled(state.cfg, handshake) {
-			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress); err != nil {
+		if statusFallbackForRouteDeniedEnabled(state.cfg, handshake) {
+			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reasonRouteDenied, ""); err != nil {
 				s.logger.Warn("fallback status response failed", "reason", reasonRouteDenied, "state", "status", "remote", remoteAddr, "server_address", routeAddress, "error", err)
 			}
 			return
@@ -224,6 +224,12 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		s.metrics.BackendDialFinished(gatewaymetrics.ConnectionResultFailed, reason, time.Since(dialStart))
 		connectionResult = gatewaymetrics.ConnectionResultFailed
 		connectionReason = reason
+		if statusFallbackForBackendFailureEnabled(state.cfg, handshake, reason) {
+			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reason, selection.Backend); err != nil {
+				s.logger.Warn("fallback status response failed", "reason", reason, "state", "status", "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend, "error", err)
+			}
+			return
+		}
 		s.logger.Warn("connection rejected", "reason", reason, "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend, "error", err)
 		return
 	}
@@ -267,11 +273,25 @@ func routeDecisionResult(matchedBy string) string {
 	return gatewaymetrics.RouteDecisionMatched
 }
 
+func statusFallbackForRouteDeniedEnabled(cfg config.Config, handshake mcproto.Handshake) bool {
+	if !statusFallbackEnabled(cfg, handshake) {
+		return false
+	}
+	return cfg.Fallback.Status.RespondOnRouteDenied == nil || *cfg.Fallback.Status.RespondOnRouteDenied
+}
+
+func statusFallbackForBackendFailureEnabled(cfg config.Config, handshake mcproto.Handshake, reason string) bool {
+	if !statusFallbackEnabled(cfg, handshake) || !cfg.Fallback.Status.RespondOnBackendFailure {
+		return false
+	}
+	return reason == reasonBackendDialFailed || reason == reasonBackendDialTimeout
+}
+
 func statusFallbackEnabled(cfg config.Config, handshake mcproto.Handshake) bool {
 	return cfg.Fallback.Enabled && cfg.Fallback.Status.Enabled && handshake.NextState == mcproto.NextStateStatus
 }
 
-func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteAddr string, routeAddress string) error {
+func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteAddr string, routeAddress string, reason string, backendAddress string) error {
 	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
 		return err
 	}
@@ -303,7 +323,7 @@ func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteA
 	if err := writeAll(client, response); err != nil {
 		return err
 	}
-	s.logger.Info("fallback status response sent", "reason", reasonRouteDenied, "state", "status", "remote", remoteAddr, "server_address", routeAddress)
+	s.logStatusFallbackSent("fallback status response sent", reason, remoteAddr, routeAddress, backendAddress)
 
 	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
 		return err
@@ -321,8 +341,16 @@ func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteA
 	if err := writeAll(client, mcproto.BuildStatusPongPacket(payload)); err != nil {
 		return err
 	}
-	s.logger.Info("fallback status pong sent", "reason", reasonRouteDenied, "state", "status", "remote", remoteAddr, "server_address", routeAddress)
+	s.logStatusFallbackSent("fallback status pong sent", reason, remoteAddr, routeAddress, backendAddress)
 	return nil
+}
+
+func (s *Server) logStatusFallbackSent(message string, reason string, remoteAddr string, routeAddress string, backendAddress string) {
+	attrs := []any{"reason", reason, "state", "status", "remote", remoteAddr, "server_address", routeAddress}
+	if backendAddress != "" {
+		attrs = append(attrs, "backend", backendAddress)
+	}
+	s.logger.Info(message, attrs...)
 }
 
 type proxyResult struct {

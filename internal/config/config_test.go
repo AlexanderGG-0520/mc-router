@@ -66,6 +66,12 @@ routes:
 	if cfg.Fallback.Status.ProtocolVersion != 767 {
 		t.Fatalf("fallback status protocol version = %d", cfg.Fallback.Status.ProtocolVersion)
 	}
+	if cfg.Fallback.Status.RespondOnRouteDenied == nil || !*cfg.Fallback.Status.RespondOnRouteDenied {
+		t.Fatal("fallback status route denied response disabled by default")
+	}
+	if cfg.Fallback.Status.RespondOnBackendFailure {
+		t.Fatal("fallback status backend failure response enabled by default")
+	}
 }
 
 func TestLoadAcceptsMetricsConfig(t *testing.T) {
@@ -116,6 +122,7 @@ fallback:
     protocolVersion: 767
     maxPlayers: 10
     onlinePlayers: 2
+    respondOnBackendFailure: true
 unknownHostPolicy: "deny"
 routes:
   - serverAddress: "smp.example.com"
@@ -135,6 +142,35 @@ routes:
 	}
 	if cfg.Fallback.Status.OnlinePlayers != 2 {
 		t.Fatalf("fallback online players = %d", cfg.Fallback.Status.OnlinePlayers)
+	}
+	if cfg.Fallback.Status.RespondOnRouteDenied == nil || !*cfg.Fallback.Status.RespondOnRouteDenied {
+		t.Fatal("fallback route denied response disabled")
+	}
+	if !cfg.Fallback.Status.RespondOnBackendFailure {
+		t.Fatal("fallback backend failure response disabled")
+	}
+}
+
+func TestLoadAcceptsExplicitFallbackRouteDeniedDisable(t *testing.T) {
+	cfg, err := Load([]byte(`
+fallback:
+  enabled: true
+  status:
+    enabled: true
+    respondOnRouteDenied: false
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "smp.default.svc.cluster.local:25565"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Fallback.Status.RespondOnRouteDenied == nil {
+		t.Fatal("fallback route denied response is nil")
+	}
+	if *cfg.Fallback.Status.RespondOnRouteDenied {
+		t.Fatal("fallback route denied response enabled")
 	}
 }
 

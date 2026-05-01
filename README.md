@@ -27,7 +27,7 @@ Implemented in this skeleton:
 - Requested `serverAddress` based static route matching.
 - TCP proxying to selected backend `host:port`.
 - Unknown host deny policy, with optional default route policy.
-- Optional status ping fallback response for denied routes.
+- Optional status ping fallback response for denied routes and backend dial failures.
 - Structured JSON logging through Go `log/slog`.
 - Prometheus metrics endpoint when explicitly enabled.
 - Handshake read timeout and backend dial timeout.
@@ -40,7 +40,7 @@ Deferred by design:
 
 - Kubernetes auto-discovery from labels, annotations, or CRDs.
 - Scale-to-zero wake-up and scale-down control.
-- Login, backend failure, and maintenance fallback behavior.
+- Login and maintenance fallback behavior.
 - Simple Voice Chat or extra UDP/TCP port routing.
 - REST API.
 - Web UI.
@@ -62,6 +62,8 @@ fallback:
   enabled: true
   status:
     enabled: true
+    respondOnRouteDenied: true
+    respondOnBackendFailure: false
     motd: "Server unavailable"
     protocolName: "mc-gateway"
     protocolVersion: 767
@@ -85,7 +87,7 @@ routes:
 
 Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenticated Prometheus text metrics on `metrics.listen` and `metrics.path`. Do not expose this HTTP listener directly to the public internet; it is intended for internal scraping, such as from a Kubernetes cluster Prometheus.
 
-Fallback responses are disabled by default. Set `fallback.enabled: true` and `fallback.status.enabled: true` to answer denied status pings with a minimal Minecraft status response. Login fallback and backend failure fallback are not implemented yet.
+Fallback responses are disabled by default. Set `fallback.enabled: true` and `fallback.status.enabled: true` to answer selected status pings with a minimal Minecraft status response. Route denied responses default to enabled once status fallback is enabled; backend failure responses require `fallback.status.respondOnBackendFailure: true` because they can reveal that a configured route exists. Login fallback is not implemented yet.
 
 ## Run Locally
 

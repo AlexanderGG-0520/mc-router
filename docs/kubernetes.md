@@ -55,6 +55,8 @@ fallback:
   enabled: true
   status:
     enabled: true
+    respondOnRouteDenied: true
+    respondOnBackendFailure: false
     motd: "Server unavailable"
     protocolName: "mc-gateway"
     protocolVersion: 767
@@ -62,7 +64,18 @@ fallback:
     onlinePlayers: 0
 ```
 
-Use a generic MOTD. Unknown host fallback can reveal that a gateway is present, so do not include namespace names, backend service names, internal domains, or operational details. Login disconnect fallback and backend failure fallback are not implemented yet.
+To also return the same generic status response when a known route or default route is selected but the backend Service is unavailable or the dial times out, opt in explicitly:
+
+```yaml
+fallback:
+  enabled: true
+  status:
+    enabled: true
+    respondOnBackendFailure: true
+    motd: "Server unavailable"
+```
+
+Use a generic MOTD. Unknown host fallback can reveal that a gateway is present, and backend failure fallback can reveal that a route exists but is unavailable. Do not include namespace names, backend service names, internal domains, readiness details, or operational runbook text. This fallback is a Minecraft status response only; it is not a substitute for Kubernetes readiness, Service health, or alerting. Login disconnect fallback is not implemented yet.
 
 ## Prometheus Scraping
 

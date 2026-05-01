@@ -422,6 +422,157 @@ func TestProxyBackendDialTimeoutClosesClient(t *testing.T) {
 	readClosed(t, client)
 }
 
+func TestStatusFallbackRespondsForBackendDialFailure(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	backendAddr := backendListener.Addr().String()
+	if err := backendListener.Close(); err != nil {
+		t.Fatalf("backend listener close: %v", err)
+	}
+
+	cfg := backendFailureStatusFallbackConfig()
+	cfg.Metrics = testMetricsConfig()
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: backendAddr}}
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg)
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer conn.Close()
+
+	status := readStatusResponse(t, conn)
+	if status.Description.Text != `Server "unavailable"` {
+		t.Fatalf("status motd = %q", status.Description.Text)
+	}
+
+	const pingPayload int64 = 0x0102030405060708
+	if err := writeAll(conn, mcproto.BuildPacket(mcproto.StatusPingPacketID, mcproto.EncodeLong(pingPayload))); err != nil {
+		t.Fatalf("write ping: %v", err)
+	}
+	if got := readStatusPong(t, conn); got != pingPayload {
+		t.Fatalf("pong payload = %x, want %x", got, pingPayload)
+	}
+
+	waitMetricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "matched"}, 1)
+	if got, ok := metricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "denied"}); ok && got != 0 {
+		t.Fatalf("route denied metric = %v, want absent or 0", got)
+	}
+	waitMetricValue(t, server, "mc_gateway_backend_dials_total", map[string]string{"result": "failed", "reason": "backend_dial_failed"}, 1)
+	waitMetricValue(t, server, "mc_gateway_connections_total", map[string]string{"result": "failed", "reason": "backend_dial_failed"}, 1)
+}
+
+func TestStatusFallbackRespondsForDefaultBackendDialFailure(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	backendAddr := backendListener.Addr().String()
+	if err := backendListener.Close(); err != nil {
+		t.Fatalf("backend listener close: %v", err)
+	}
+
+	cfg := backendFailureStatusFallbackConfig()
+	cfg.Metrics = testMetricsConfig()
+	cfg.UnknownHostPolicy = config.UnknownHostDefault
+	cfg.DefaultRoute = config.DefaultRoute{Backend: backendAddr, Mode: config.RouteModeAllow}
+	cfg.Routes = nil
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg)
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer conn.Close()
+	_ = readStatusResponse(t, conn)
+
+	waitMetricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "default"}, 1)
+	if got, ok := metricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "denied"}); ok && got != 0 {
+		t.Fatalf("route denied metric = %v, want absent or 0", got)
+	}
+}
+
+func TestStatusFallbackRespondsForBackendDialTimeout(t *testing.T) {
+	dialStarted := make(chan struct{})
+	cfg := backendFailureStatusFallbackConfig()
+	cfg.BackendDialTimeout = config.Duration{Duration: 40 * time.Millisecond}
+	gatewayAddr, stop := startTestServer(t, cfg, func(server *Server) {
+		server.dialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
+			close(dialStarted)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+	})
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer conn.Close()
+	waitClosed(t, dialStarted, "dialer was not called")
+
+	status := readStatusResponse(t, conn)
+	if status.Version.Protocol != 767 {
+		t.Fatalf("status protocol = %d", status.Version.Protocol)
+	}
+}
+
+func TestStatusFallbackBackendFailureDisabledClosesStatusClient(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	backendAddr := backendListener.Addr().String()
+	if err := backendListener.Close(); err != nil {
+		t.Fatalf("backend listener close: %v", err)
+	}
+
+	cfg := statusFallbackConfig()
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: backendAddr}}
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer client.Close()
+	readClosed(t, client)
+}
+
+func TestStatusFallbackDoesNotHandleLoginBackendDialFailure(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	backendAddr := backendListener.Addr().String()
+	if err := backendListener.Close(); err != nil {
+		t.Fatalf("backend listener close: %v", err)
+	}
+
+	cfg := backendFailureStatusFallbackConfig()
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: backendAddr}}
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin))
+	defer client.Close()
+	readClosed(t, client)
+}
+
+func TestStatusFallbackBackendFailureClosesMalformedStatusRequest(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	backendAddr := backendListener.Addr().String()
+	if err := backendListener.Close(); err != nil {
+		t.Fatalf("backend listener close: %v", err)
+	}
+
+	cfg := backendFailureStatusFallbackConfig()
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: backendAddr}}
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusPingPacketID, mcproto.EncodeLong(1))...,
+	))
+	defer client.Close()
+	readClosed(t, client)
+}
+
 func TestProxyContextCancellationClosesActiveConnection(t *testing.T) {
 	backendListener := listenLocalTCP(t)
 	defer backendListener.Close()
@@ -1185,6 +1336,12 @@ func statusFallbackConfig() config.Config {
 	}
 }
 
+func backendFailureStatusFallbackConfig() config.Config {
+	cfg := statusFallbackConfig()
+	cfg.Fallback.Status.RespondOnBackendFailure = true
+	return cfg
+}
+
 func readStatusResponse(t *testing.T, conn net.Conn) mcproto.StatusResponse {
 	t.Helper()
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -1206,6 +1363,21 @@ func readStatusResponse(t *testing.T, conn net.Conn) mcproto.StatusResponse {
 		t.Fatalf("Unmarshal status response: %v", err)
 	}
 	return status
+}
+
+func readStatusPong(t *testing.T, conn net.Conn) int64 {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	packetID, payload, err := mcproto.ReadPacket(conn, mcproto.DefaultLimits().MaxPacketLength)
+	if err != nil {
+		t.Fatalf("read pong: %v", err)
+	}
+	if packetID != mcproto.StatusPongPacketID {
+		t.Fatalf("pong packet id = %d, want %d", packetID, mcproto.StatusPongPacketID)
+	}
+	return parseLongPayload(t, payload)
 }
 
 func parseStringPayload(t *testing.T, payload []byte) (string, []byte) {

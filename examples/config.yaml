@@ -11,6 +11,10 @@ fallback:
   enabled: true
   status:
     enabled: true
+    respondOnRouteDenied: true
+    # Backend failure fallback can reveal that a configured route exists.
+    # Enable it only when a generic unavailable response is acceptable.
+    respondOnBackendFailure: false
     motd: "Server unavailable"
     protocolName: "mc-gateway"
     protocolVersion: 767
