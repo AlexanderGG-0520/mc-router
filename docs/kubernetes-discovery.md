@@ -4,7 +4,7 @@
 
 Kubernetes discovery is planned as a way to generate gateway routes from Kubernetes resources instead of maintaining every Minecraft backend route by hand in the static YAML file.
 
-The current implementation is groundwork only. It adds configuration types, validation, and a pure Service annotation parser. It does not connect to the Kubernetes API, watch resources, build route snapshots, or change runtime routing behavior.
+The current implementation is groundwork only. It adds configuration types, validation, a pure Service annotation parser, and an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values. It does not connect to the Kubernetes API, watch resources, merge discovered routes into the runtime router snapshot, or change runtime routing behavior.
 
 ## Why Service Annotation Discovery First
 
@@ -95,6 +95,20 @@ Static route overlap is not handled by the current parser. It should be handled 
 
 Duplicate discovered hosts are unsafe because a controller cannot reliably infer the operator's intended backend. If the same host is discovered more than once, every discovered route for that host should be disabled and reported with a duplicate reason. The project should avoid first-wins behavior for discovered routes.
 
+The controller core applies this policy to the discovered route set before returning a snapshot. Duplicate hosts are returned in deterministic order, and the affected resources are reported with `duplicate_host`.
+
+## Controller Core Groundwork
+
+The current controller core is a pure in-memory builder:
+
+```text
+[]ServiceInput -> discovered route snapshot
+```
+
+It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information.
+
+This is an implementation step between parser groundwork and a real Kubernetes watch controller. It still does not add `client-go`, Kubernetes API initial list, Kubernetes watch behavior, runtime snapshot integration, RBAC manifests, or metrics.
+
 ## Failure Policy Plan
 
 If Kubernetes API list or watch fails after a good snapshot exists, the gateway is expected to keep the last known good discovered snapshot.
@@ -137,10 +151,11 @@ If fallback responses are enabled on a public gateway, keep messages generic. Pu
 
 ## Implementation Slicing
 
-This PR intentionally stops at:
+The current implementation intentionally stops at:
 
 - Discovery config types and validation.
 - Kubernetes Service annotation parser tests.
+- In-memory controller core that builds discovered route snapshots from `ServiceInput` values.
 - Duplicate discovered host helper tests.
 - Documentation of the intended merge and operation policy.
 
@@ -158,4 +173,4 @@ Not implemented yet:
 
 ## Current Status
 
-Current implementation is config and parser groundwork only. It does not watch Kubernetes yet and does not alter the gateway runtime route snapshot.
+Current implementation is config, parser, and in-memory controller core groundwork only. It does not watch Kubernetes yet and does not alter the gateway runtime route snapshot.

@@ -21,6 +21,7 @@ const (
 	ReasonInvalidPort        = "invalid_port"
 	ReasonPortNotFound       = "port_not_found"
 	ReasonDuplicateHost      = "duplicate_host"
+	ReasonUnknown            = "unknown"
 	DefaultAnnotationPrefix  = "mc-router.alexandergg.com"
 	AnnotationEnabled        = "enabled"
 	AnnotationHost           = "host"
