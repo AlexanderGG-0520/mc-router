@@ -161,7 +161,9 @@ Lifecycle `reason` values used by logs and metrics are kept aligned:
 
 ## Route Sources
 
-The MVP has a single route source: static YAML.
+The MVP runtime has a single active route source: static YAML.
+
+Kubernetes Service annotation discovery groundwork exists for config validation and annotation parsing, but it does not watch Kubernetes or feed router snapshots yet. Future integration should merge route sources with static routes first, valid discovered routes next, and `defaultRoute` last. See [Kubernetes Discovery](kubernetes-discovery.md).
 
 ## Config Reload
 
