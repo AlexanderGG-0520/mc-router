@@ -112,7 +112,8 @@ Merge ignored reasons are intentionally low-cardinality:
 | `static_route_precedence` | A discovered route normalized to a host already configured by a static route. |
 | `duplicate_discovered_host` | More than one discovered route produced the same normalized host at merge time. |
 | `invalid_discovered_route` | A discovered route had an invalid host, invalid backend, or non-Service-DNS backend. |
-| `unknown` | A defensive fallback for unexpected merge-builder failures. |
+
+Unexpected merge-builder failures are not currently recovered into an ignored reason; they surface to the caller instead.
 
 The merge builder is not called by config reload, Kubernetes watches, or the runtime router snapshot yet.
 
