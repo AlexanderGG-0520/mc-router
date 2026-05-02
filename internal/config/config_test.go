@@ -51,6 +51,18 @@ routes:
 	if cfg.Metrics.Path != "/metrics" {
 		t.Fatalf("metrics path = %q, want /metrics", cfg.Metrics.Path)
 	}
+	if cfg.Discovery.Kubernetes.Enabled {
+		t.Fatal("kubernetes discovery enabled by default")
+	}
+	if cfg.Discovery.Kubernetes.Namespace != "" {
+		t.Fatalf("kubernetes discovery namespace = %q, want empty", cfg.Discovery.Kubernetes.Namespace)
+	}
+	if cfg.Discovery.Kubernetes.Mode != KubernetesDiscoveryModeAnnotations {
+		t.Fatalf("kubernetes discovery mode = %q, want %q", cfg.Discovery.Kubernetes.Mode, KubernetesDiscoveryModeAnnotations)
+	}
+	if cfg.Discovery.Kubernetes.AnnotationPrefix != DefaultKubernetesAnnotationPrefix {
+		t.Fatalf("kubernetes discovery annotation prefix = %q, want %q", cfg.Discovery.Kubernetes.AnnotationPrefix, DefaultKubernetesAnnotationPrefix)
+	}
 	if cfg.Fallback.Enabled {
 		t.Fatal("fallback enabled by default")
 	}
@@ -105,6 +117,91 @@ routes:
 	}
 	if cfg.Metrics.Path != "/prometheus" {
 		t.Fatalf("metrics path = %q", cfg.Metrics.Path)
+	}
+}
+
+func TestLoadAcceptsKubernetesDiscoveryConfig(t *testing.T) {
+	cfg, err := Load([]byte(`
+discovery:
+  kubernetes:
+    enabled: true
+    namespace: "minecraft"
+    mode: "service-annotations"
+    annotationPrefix: "mc-router.alexandergg.com"
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Discovery.Kubernetes.Enabled {
+		t.Fatal("kubernetes discovery disabled")
+	}
+	if cfg.Discovery.Kubernetes.Namespace != "minecraft" {
+		t.Fatalf("kubernetes discovery namespace = %q", cfg.Discovery.Kubernetes.Namespace)
+	}
+}
+
+func TestLoadRejectsUnknownKubernetesDiscoveryMode(t *testing.T) {
+	_, err := Load([]byte(`
+discovery:
+  kubernetes:
+    mode: "endpointslices"
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected invalid kubernetes discovery mode error")
+	}
+}
+
+func TestLoadRejectsEmptyKubernetesAnnotationPrefix(t *testing.T) {
+	_, err := Load([]byte(`
+discovery:
+  kubernetes:
+    annotationPrefix: ""
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected empty kubernetes annotation prefix error")
+	}
+}
+
+func TestLoadRejectsKubernetesAnnotationPrefixWithSlash(t *testing.T) {
+	_, err := Load([]byte(`
+discovery:
+  kubernetes:
+    annotationPrefix: "mc-router.alexandergg.com/"
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected kubernetes annotation prefix slash error")
+	}
+}
+
+func TestLoadRejectsInvalidKubernetesNamespace(t *testing.T) {
+	_, err := Load([]byte(`
+discovery:
+  kubernetes:
+    namespace: "bad/namespace"
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected invalid kubernetes namespace error")
+	}
+}
+
+func TestLoadAcceptsEmptyKubernetesNamespace(t *testing.T) {
+	cfg, err := Load([]byte(`
+discovery:
+  kubernetes:
+    enabled: true
+    namespace: ""
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Discovery.Kubernetes.Namespace != "" {
+		t.Fatalf("kubernetes discovery namespace = %q, want empty", cfg.Discovery.Kubernetes.Namespace)
 	}
 }
 

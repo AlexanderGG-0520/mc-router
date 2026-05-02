@@ -46,6 +46,8 @@ It creates:
 
 RBAC is omitted because the MVP does not call the Kubernetes API.
 
+Kubernetes Service annotation discovery is planned but not active yet. See [Kubernetes Discovery](kubernetes-discovery.md) for the config and parser groundwork, annotation format, duplicate host policy, and future controller scope.
+
 ## Fallback Responses
 
 Fallback responses are disabled by default. If you want denied status pings to return a generic Minecraft server list response instead of a TCP close, enable status fallback in the ConfigMap:
@@ -177,12 +179,4 @@ With Cilium, use standard Kubernetes NetworkPolicy first. Move to CiliumNetworkP
 
 ## Future Discovery
 
-Possible route definitions:
-
-- Service annotations:
-  - `mc-router.example.com/server-address=smp.example.com`
-  - `mc-router.example.com/backend-port=25565`
-- Namespace labels to opt into discovery.
-- CRD for explicit cross-namespace routing.
-
-Discovery should be namespace-scoped by default and should avoid requiring cluster-wide list/watch until there is a clear operational need.
+The first planned route discovery shape is Service annotation discovery. It should be namespace-scoped by default and should avoid requiring cluster-wide list/watch until there is a clear operational need. See [Kubernetes Discovery](kubernetes-discovery.md).

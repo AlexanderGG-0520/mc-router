@@ -143,6 +143,8 @@ The manifest includes:
 
 RBAC is not included because the MVP does not watch Kubernetes resources.
 
+Kubernetes Service annotation discovery is planned but currently limited to config and parser groundwork. See [docs/kubernetes-discovery.md](docs/kubernetes-discovery.md).
+
 ## Security Notes
 
 - The handshake parser caps packet length.

@@ -20,11 +20,13 @@
 - Dockerfile.
 - Minimal Kubernetes manifest.
 - GitHub Actions CI.
+- Kubernetes discovery config and Service annotation parser groundwork only.
 
 ## Not Included Yet
 
 - Kubernetes API watches.
-- Labels, annotations, or CRD route discovery.
+- Runtime Kubernetes discovery integration; current discovery work is planned/config and parser groundwork only.
+- Pod annotations, EndpointSlice discovery, or CRD route discovery.
 - Scale-to-zero wake-up.
 - Backend failure login fallback and maintenance fallback responses.
 - UDP or extra TCP routing for mods such as Simple Voice Chat.
@@ -94,7 +96,7 @@ The protocol smoke tests use fixed protocol framing helpers and fake TCP backend
 
 ## Next Implementation Priorities
 
-1. Add Kubernetes label or annotation discovery.
+1. Add Kubernetes Service annotation discovery controller and snapshot integration.
 2. Add wake-up controller behavior for scaled-to-zero servers.
 3. Add backend failure login fallback if operators need a login-state disconnect for unavailable known routes.
 4. Add CRD only after static and label based models are stable.

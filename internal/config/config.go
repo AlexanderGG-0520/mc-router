@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	UnknownHostDeny    = "deny"
-	UnknownHostDefault = "default"
-	RouteModeAllow     = "allow"
+	UnknownHostDeny                    = "deny"
+	UnknownHostDefault                 = "default"
+	RouteModeAllow                     = "allow"
+	KubernetesDiscoveryModeAnnotations = "service-annotations"
+	DefaultKubernetesAnnotationPrefix  = "mc-router.alexandergg.com"
 )
 
 type Duration struct {
@@ -46,6 +48,7 @@ type Config struct {
 	BackendDialTimeout Duration     `yaml:"backendDialTimeout"`
 	Metrics            Metrics      `yaml:"metrics"`
 	Fallback           Fallback     `yaml:"fallback"`
+	Discovery          Discovery    `yaml:"discovery"`
 	DefaultRoute       DefaultRoute `yaml:"defaultRoute"`
 	Routes             []Route      `yaml:"routes"`
 	UnknownHostPolicy  string       `yaml:"unknownHostPolicy"`
@@ -78,6 +81,17 @@ type Metrics struct {
 	Enabled bool   `yaml:"enabled"`
 	Listen  string `yaml:"listen"`
 	Path    string `yaml:"path"`
+}
+
+type Discovery struct {
+	Kubernetes KubernetesDiscovery `yaml:"kubernetes"`
+}
+
+type KubernetesDiscovery struct {
+	Enabled          bool   `yaml:"enabled"`
+	Namespace        string `yaml:"namespace"`
+	Mode             string `yaml:"mode"`
+	AnnotationPrefix string `yaml:"annotationPrefix"`
 }
 
 type DefaultRoute struct {
@@ -125,6 +139,12 @@ func Defaults() Config {
 			Listen: ":9090",
 			Path:   "/metrics",
 		},
+		Discovery: Discovery{
+			Kubernetes: KubernetesDiscovery{
+				Mode:             KubernetesDiscoveryModeAnnotations,
+				AnnotationPrefix: DefaultKubernetesAnnotationPrefix,
+			},
+		},
 		Fallback: Fallback{
 			Login: FallbackLogin{
 				RespondOnRouteDenied: boolPtr(true),
@@ -168,6 +188,9 @@ func (c Config) Validate() error {
 		if !strings.HasPrefix(c.Metrics.Path, "/") {
 			errs = append(errs, errors.New("metrics.path must start with /"))
 		}
+	}
+	if err := validateKubernetesDiscovery(c.Discovery.Kubernetes); err != nil {
+		errs = append(errs, err)
 	}
 	if c.Fallback.Enabled && c.Fallback.Status.Enabled {
 		if strings.TrimSpace(c.Fallback.Status.MOTD) == "" {
@@ -224,6 +247,58 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func validateKubernetesDiscovery(k KubernetesDiscovery) error {
+	if !k.Enabled && k.Namespace == "" && k.Mode == "" && k.AnnotationPrefix == "" {
+		return nil
+	}
+	var errs []error
+	if k.Mode != KubernetesDiscoveryModeAnnotations {
+		errs = append(errs, fmt.Errorf("discovery.kubernetes.mode only supports %q", KubernetesDiscoveryModeAnnotations))
+	}
+	if err := validateAnnotationPrefix(k.AnnotationPrefix); err != nil {
+		errs = append(errs, fmt.Errorf("discovery.kubernetes.annotationPrefix: %w", err))
+	}
+	if namespace := strings.TrimSpace(k.Namespace); namespace != "" {
+		if namespace != k.Namespace {
+			errs = append(errs, errors.New("discovery.kubernetes.namespace must not contain leading or trailing whitespace"))
+		}
+		if !isDNSLabel(namespace) {
+			errs = append(errs, errors.New("discovery.kubernetes.namespace must be empty or a DNS label"))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func validateAnnotationPrefix(prefix string) error {
+	if strings.TrimSpace(prefix) == "" {
+		return errors.New("must not be empty")
+	}
+	if strings.TrimSpace(prefix) != prefix {
+		return errors.New("must not contain leading or trailing whitespace")
+	}
+	if strings.Contains(prefix, "/") {
+		return errors.New("must not contain /")
+	}
+	if _, err := hostaddr.Normalize(prefix); err != nil {
+		return err
+	}
+	return nil
+}
+
+func isDNSLabel(value string) bool {
+	if len(value) < 1 || len(value) > 63 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		valid := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'
+		if !valid {
+			return false
+		}
+	}
+	return value[0] != '-' && value[len(value)-1] != '-'
 }
 
 func validateBackend(backend string) error {
