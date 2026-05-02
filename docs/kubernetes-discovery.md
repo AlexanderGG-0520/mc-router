@@ -109,6 +109,22 @@ It uses the Service annotation parser, collects skipped resources by low-cardina
 
 This is an implementation step between parser groundwork and a real Kubernetes watch controller. It still does not add `client-go`, Kubernetes API initial list, Kubernetes watch behavior, runtime snapshot integration, RBAC manifests, or metrics.
 
+Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
+
+| Reason | Meaning |
+| --- | --- |
+| `disabled` | The Service did not opt in with `enabled: "true"`. |
+| `invalid_annotation_prefix` | The configured annotation prefix is empty, non-canonical, or otherwise invalid. |
+| `invalid_service_name` | The Service name cannot be used as a Kubernetes DNS label. |
+| `invalid_namespace` | The namespace cannot be used as a Kubernetes DNS label. |
+| `missing_host` | The enabled Service did not provide a non-empty host annotation. |
+| `invalid_host` | The host annotation is not a valid normalized route host. |
+| `missing_port` | The enabled Service did not provide a non-empty port annotation. |
+| `invalid_port` | The port annotation is not an integer from 1 to 65535. |
+| `port_not_found` | The annotated port is not present in the Service ports list. |
+| `duplicate_host` | More than one discovered route produced the same normalized host, so all discovered routes for that host were disabled. |
+| `unknown` | A defensive fallback for unexpected controller-core failures. |
+
 ## Failure Policy Plan
 
 If Kubernetes API list or watch fails after a good snapshot exists, the gateway is expected to keep the last known good discovered snapshot.
