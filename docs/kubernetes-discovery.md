@@ -4,7 +4,7 @@
 
 Kubernetes discovery is planned as a way to generate gateway routes from Kubernetes resources instead of maintaining every Minecraft backend route by hand in the static YAML file.
 
-The current implementation is groundwork only. It adds configuration types, validation, a pure Service annotation parser, and an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values. It does not connect to the Kubernetes API, watch resources, merge discovered routes into the runtime router snapshot, or change runtime routing behavior.
+The current implementation is groundwork only. It adds configuration types, validation, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, and a pure merge builder for static plus discovered routes. It does not connect to the Kubernetes API, watch resources, merge discovered routes into the runtime router snapshot, or change runtime routing behavior.
 
 ## Why Service Annotation Discovery First
 
@@ -89,7 +89,33 @@ Future snapshot integration should merge route sources with this order:
 2. Valid discovered routes are used next.
 3. `defaultRoute` is evaluated last according to `unknownHostPolicy`.
 
-Static route overlap is not handled by the current parser. It should be handled by the future merge builder with static routes taking priority.
+The merge builder applies this policy before runtime integration exists. If a discovered route normalizes to the same host as a static route, the static route is kept and the discovered route is ignored with `static_route_precedence`.
+
+`defaultRoute` is not inserted into the explicit route list. The existing router should continue to evaluate it after explicit static and discovered routes according to `unknownHostPolicy`.
+
+## Merge Builder Groundwork
+
+The current merge builder is a pure in-memory builder:
+
+```text
+static routes + discovered routes + defaultRoute presence -> merged explicit routes
+```
+
+It normalizes route hosts, validates discovered route backends, ignores discovered routes that overlap static routes, and returns deterministic routes, ignored discovered routes, and summary counts. The discovered backend must remain a generated Kubernetes Service DNS backend in the form `service.namespace.svc.cluster.local:port`; arbitrary discovered backend hostnames are rejected by the merge builder.
+
+Duplicate discovered hosts are expected to be removed by the controller core before merge. If duplicate discovered hosts reach the merge builder anyway, the merge builder ignores all discovered routes for that host with `duplicate_discovered_host`.
+
+Merge ignored reasons are intentionally low-cardinality:
+
+| Reason | Meaning |
+| --- | --- |
+| `static_route_precedence` | A discovered route normalized to a host already configured by a static route. |
+| `duplicate_discovered_host` | More than one discovered route produced the same normalized host at merge time. |
+| `invalid_discovered_route` | A discovered route had an invalid host, invalid backend, or non-Service-DNS backend. |
+
+Unexpected merge-builder failures are not currently recovered into an ignored reason; they surface to the caller instead.
+
+The merge builder is not called by config reload, Kubernetes watches, or the runtime router snapshot yet.
 
 ## Duplicate Host Policy
 
@@ -107,7 +133,7 @@ The current controller core is a pure in-memory builder:
 
 It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information.
 
-This is an implementation step between parser groundwork and a real Kubernetes watch controller. It still does not add `client-go`, Kubernetes API initial list, Kubernetes watch behavior, runtime snapshot integration, RBAC manifests, or metrics.
+This is an implementation step between parser/controller groundwork and a real Kubernetes watch controller. It still does not add `client-go`, Kubernetes API initial list, Kubernetes watch behavior, runtime snapshot integration, RBAC manifests, or metrics.
 
 Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
 
@@ -172,6 +198,7 @@ The current implementation intentionally stops at:
 - Discovery config types and validation.
 - Kubernetes Service annotation parser tests.
 - In-memory controller core that builds discovered route snapshots from `ServiceInput` values.
+- In-memory merge builder that combines static and discovered explicit routes.
 - Duplicate discovered host helper tests.
 - Documentation of the intended merge and operation policy.
 
@@ -189,4 +216,4 @@ Not implemented yet:
 
 ## Current Status
 
-Current implementation is config, parser, and in-memory controller core groundwork only. It does not watch Kubernetes yet and does not alter the gateway runtime route snapshot.
+Current implementation is config, parser, in-memory controller core, and merge-builder groundwork only. It does not watch Kubernetes yet and does not alter the gateway runtime route snapshot.
