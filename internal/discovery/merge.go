@@ -181,18 +181,19 @@ func validateBackendPort(port string) error {
 }
 
 func validateServiceDNSBackend(host string) error {
-	const suffix = ".svc.cluster.local"
-	if !strings.HasSuffix(host, suffix) {
-		return fmt.Errorf("must end with %q", strings.TrimPrefix(suffix, "."))
+	parts := strings.Split(host, ".")
+	if len(parts) < 4 {
+		return errors.New("must be service.namespace.svc.<cluster-domain>")
 	}
-	prefix := strings.TrimSuffix(host, suffix)
-	parts := strings.Split(prefix, ".")
-	if len(parts) != 2 {
-		return errors.New("must be service.namespace.svc.cluster.local")
+	if !isDNSLabel(parts[0]) || !isDNSLabel(parts[1]) {
+		return errors.New("service and namespace must be DNS labels")
 	}
-	for _, part := range parts {
+	if parts[2] != "svc" {
+		return errors.New(`must include "svc" as the third DNS label`)
+	}
+	for _, part := range parts[3:] {
 		if !isDNSLabel(part) {
-			return errors.New("service and namespace must be DNS labels")
+			return errors.New("cluster domain must be DNS labels")
 		}
 	}
 	return nil
