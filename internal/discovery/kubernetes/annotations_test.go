@@ -116,6 +116,11 @@ func TestParseServiceAnnotationsUsesPrefix(t *testing.T) {
 	}
 }
 
+func TestParseServiceAnnotationsInvalidPrefixSkips(t *testing.T) {
+	result := ParseServiceAnnotations("Custom.Example.COM.", validServiceInput())
+	assertSkipped(t, result, ReasonInvalidPrefix)
+}
+
 func TestDropDuplicateHostsDisablesDuplicatedHost(t *testing.T) {
 	routes := []DiscoveredRoute{
 		{Host: "SMP.Example.COM", Backend: "smp-a.minecraft.svc.cluster.local:25565"},

@@ -131,6 +131,8 @@ Host validation is mandatory. Annotation values must not be trusted as already s
 
 The backend must be generated from Service DNS plus a validated Service port. Do not accept arbitrary backend strings from annotations.
 
+Future controller logs should report bounded skip reasons and counts. Do not dump raw Kubernetes objects, full annotation maps, or untrusted annotation values into logs.
+
 If fallback responses are enabled on a public gateway, keep messages generic. Public status or login fallback can reveal information to scanners and bots.
 
 ## Implementation Slicing

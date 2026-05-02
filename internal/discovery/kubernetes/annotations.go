@@ -166,8 +166,12 @@ func validateAnnotationPrefix(prefix string) error {
 	if strings.Contains(prefix, "/") {
 		return errors.New("annotation prefix must not contain /")
 	}
-	if _, err := hostaddr.Normalize(prefix); err != nil {
+	normalized, err := hostaddr.Normalize(prefix)
+	if err != nil {
 		return err
+	}
+	if normalized != prefix {
+		return errors.New("annotation prefix must be a canonical lowercase DNS subdomain")
 	}
 	return nil
 }

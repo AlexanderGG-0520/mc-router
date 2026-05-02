@@ -177,6 +177,18 @@ unknownHostPolicy: "deny"
 	}
 }
 
+func TestLoadRejectsNonCanonicalKubernetesAnnotationPrefix(t *testing.T) {
+	_, err := Load([]byte(`
+discovery:
+  kubernetes:
+    annotationPrefix: "MC-Router.alexandergg.com."
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected non-canonical kubernetes annotation prefix error")
+	}
+}
+
 func TestLoadRejectsInvalidKubernetesNamespace(t *testing.T) {
 	_, err := Load([]byte(`
 discovery:
