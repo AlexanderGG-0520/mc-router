@@ -72,9 +72,6 @@ func MergeRoutes(staticRoutes []config.Route, discovered []kubernetes.Discovered
 		}
 		result.Routes = append(result.Routes, normalized)
 	}
-	sort.SliceStable(result.Routes, func(i, j int) bool {
-		return lessConfigRoute(result.Routes[i], result.Routes[j])
-	})
 
 	candidates := make([]discoveredCandidate, 0, len(discovered))
 	hostCounts := make(map[string]int, len(discovered))
