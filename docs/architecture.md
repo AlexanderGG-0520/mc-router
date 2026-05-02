@@ -163,7 +163,7 @@ Lifecycle `reason` values used by logs and metrics are kept aligned:
 
 The MVP runtime has a single active route source: static YAML.
 
-Kubernetes Service annotation discovery groundwork exists for config validation, annotation parsing, in-memory discovered route snapshot building, and pure static/discovered route merging, but it does not watch Kubernetes or feed runtime router snapshots yet. Future integration should merge route sources with static routes first, valid discovered routes next, and `defaultRoute` last. See [Kubernetes Discovery](kubernetes-discovery.md).
+Kubernetes Service annotation discovery groundwork exists for config validation, annotation parsing, in-memory discovered route snapshot building, pure static/discovered route merging, and an internal runtime merge boundary. The runtime boundary currently receives no discovered routes, so the active route source is still static YAML. Future integration should feed discovered routes into that boundary with static routes first, valid discovered routes next, and `defaultRoute` last. See [Kubernetes Discovery](kubernetes-discovery.md).
 
 ## Config Reload
 
@@ -175,10 +175,11 @@ Reload behavior:
 
 1. The gateway reads the same config file path that was used at startup.
 2. The normal config parser and validation run.
-3. A new router is built from the validated config.
-4. The active config/router snapshot is replaced atomically only after all previous steps succeed.
-5. New connections use the new snapshot.
-6. Active connections keep using the snapshot they selected at connection start and are not disconnected by reload.
+3. Static routes from the validated config are merged with the current discovered route set. Today that discovered set is empty.
+4. A new router is built from the merged explicit routes and existing `defaultRoute`.
+5. The active config/router snapshot is replaced atomically only after all previous steps succeed.
+6. New connections use the new snapshot.
+7. Active connections keep using the snapshot they selected at connection start and are not disconnected by reload.
 
 If reload fails because the file cannot be read, YAML is malformed, validation fails, or router construction fails, the existing snapshot stays active and the gateway logs `reload_failed`. A successful reload logs `reload_success`. The listener address is still a startup setting; changing `listen` in the file requires a restart to bind a different address.
 

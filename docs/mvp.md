@@ -20,12 +20,12 @@
 - Dockerfile.
 - Minimal Kubernetes manifest.
 - GitHub Actions CI.
-- Kubernetes discovery config, Service annotation parser, in-memory controller core, and merge-builder groundwork only.
+- Kubernetes discovery config, Service annotation parser, in-memory controller core, merge-builder, and runtime merge-boundary groundwork only.
 
 ## Not Included Yet
 
 - Kubernetes API watches.
-- Runtime Kubernetes discovery integration; current discovery work is planned/config, parser, in-memory controller core, and merge-builder groundwork only.
+- Runtime Kubernetes discovery provider integration; current discovery work is planned/config, parser, in-memory controller core, merge-builder, and runtime merge-boundary groundwork only.
 - Pod annotations, EndpointSlice discovery, or CRD route discovery.
 - Scale-to-zero wake-up.
 - Backend failure login fallback and maintenance fallback responses.
