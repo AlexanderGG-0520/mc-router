@@ -95,10 +95,49 @@ func TestRebuildRouteSnapshot_StaticWins(t *testing.T) {
 	}
 }
 
+func TestRebuildRouteSnapshotInvalidConfigDoesNotCallProvider(t *testing.T) {
+	// Invalid config (empty Listen)
+	cfg := config.Config{}
+	provider := &panicProvider{t: t}
+
+	ctx := context.Background()
+	_, err := RebuildRouteSnapshot(ctx, cfg, provider)
+	if err == nil {
+		t.Fatal("RebuildRouteSnapshot() error = nil, want config validation error")
+	}
+}
+
+func TestRebuildRouteSnapshotInvalidConfigTakesPrecedenceOverProviderError(t *testing.T) {
+	// Invalid config (empty Listen)
+	cfg := config.Config{}
+	// Provider that would return error if called
+	provider := &errorProvider{err: errors.New("provider error")}
+
+	ctx := context.Background()
+	_, err := RebuildRouteSnapshot(ctx, cfg, provider)
+	if err == nil {
+		t.Fatal("RebuildRouteSnapshot() error = nil, want config validation error")
+	}
+	// The error should be from config validation, not provider
+	if err.Error() == "provider error" {
+		t.Errorf("error = %v, want config validation error", err)
+	}
+}
+
 type errorProvider struct {
 	err error
 }
 
 func (p *errorProvider) Routes(ctx context.Context) ([]kubernetes.DiscoveredRoute, error) {
 	return nil, p.err
+}
+
+type panicProvider struct {
+	t *testing.T
+}
+
+func (p *panicProvider) Routes(ctx context.Context) ([]kubernetes.DiscoveredRoute, error) {
+	p.t.Helper()
+	p.t.Fatal("provider.Routes(ctx) was called for invalid config")
+	return nil, nil
 }

@@ -164,32 +164,29 @@ Lifecycle `reason` values used by logs and metrics are kept aligned:
 The MVP runtime has a single active route source: static YAML.
 
 Groundwork for Kubernetes Service annotation discovery exists, including:
-- Discovery config validation and annotation parsing.
-- In-memory controller core for building discovered route snapshots.
-- Internal `RouteProvider` interface and `MemoryProvider` implementation.
-- Internal `RebuildRouteSnapshot` helper for unified static/discovered route management.
+- Discovery configuration validation and annotation parsing.
+- In-memory controller core and `RouteProvider` interface.
+- `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary.
 
-The runtime boundary currently receives an empty discovered route set, so the active route source is still static YAML. Future integration should feed discovered routes into that boundary with static routes first, valid discovered routes next, and `defaultRoute` last. See [Kubernetes Discovery](kubernetes-discovery.md).
+The runtime boundary currently receives an empty discovered route set. Future integration will feed discovered routes into this boundary with static routes taking precedence. See [Kubernetes Discovery](kubernetes-discovery.md).
 
 ## Config Reload
 
-`mc-gateway` can reload the static YAML config after receiving `SIGHUP` on platforms that support that signal. Reload is intentionally limited to rebuilding the validated route config and swapping the active router snapshot. It does not add a REST API, admin API, Web UI, filesystem watcher, or Kubernetes API watch.
-
-Windows local development does not use `SIGHUP`; restart the process after config changes there. A future admin command can cover platforms where process signals are awkward.
+`mc-gateway` can reload its static YAML config after receiving `SIGHUP` on supported platforms. Reload is limited to rebuilding the route configuration and swapping the active router snapshot.
 
 Reload behavior:
 
-1. The gateway reads the same config file path that was used at startup.
-2. The normal config parser and validation run.
-3. Static routes from the validated config are merged with routes from the current `RouteProvider` using `RebuildRouteSnapshot`. Today that provider is empty.
-4. If either config loading or route discovery fails, the reload fails and the current snapshot stays active.
-5. A new router is built from the merged explicit routes and existing `defaultRoute`.
-6. The active config/router snapshot is replaced atomically only after all previous steps succeed.
-7. New connections use the new snapshot.
-8. Active connections keep using the snapshot they selected at connection start and are not disconnected by reload.
+1. The gateway reads the configuration file from its startup path.
+2. Static configuration is parsed and validated.
+3. Valid static configuration is merged with routes from the `RouteProvider`.
+4. A new router is built from the merged routes and `defaultRoute`.
+5. The active snapshot is replaced atomically only after all previous steps succeed.
+6. New connections use the new snapshot; existing connections are not affected.
 
-If reload fails because the file cannot be read, YAML is malformed, validation fails, or router construction fails, the existing snapshot stays active and the gateway logs `reload_failed`. A successful reload logs `reload_success`. The listener address is still a startup setting; changing `listen` in the file requires a restart to bind a different address.
+If reload fails at any step, the gateway logs `reload_failed` and the existing snapshot remains active.
+
+A successful reload logs `reload_success`. The listener address is still a startup setting; changing `listen` in the file requires a restart to bind a different address.
 
 Metrics server settings are also startup settings. SIGHUP reload updates route snapshots and route-related metrics, but changes to `metrics.enabled`, `metrics.listen`, or `metrics.path` require a process restart.
 

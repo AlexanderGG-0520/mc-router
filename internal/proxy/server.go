@@ -90,6 +90,9 @@ func BuildRouteSnapshot(cfg config.Config, discoveredRoutes []kubernetes.Discove
 // RebuildRouteSnapshot creates a new RouteSnapshot by combining the validated configuration
 // and routes from the given provider. If provider is nil, it behaves like BuildRouteSnapshot(cfg, nil).
 func RebuildRouteSnapshot(ctx context.Context, cfg config.Config, provider discovery.RouteProvider) (RouteSnapshot, error) {
+	if err := cfg.Validate(); err != nil {
+		return RouteSnapshot{}, err
+	}
 	var discovered []kubernetes.DiscoveredRoute
 	if provider != nil {
 		var err error

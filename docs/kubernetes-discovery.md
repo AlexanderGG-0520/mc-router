@@ -212,7 +212,7 @@ If fallback responses are enabled on a public gateway, keep messages generic. Pu
 
 ## Discovered Route Provider Interface
 
-The project now includes a internal provider interface to bridge the controller core and the runtime route snapshot boundary:
+The project now includes an internal provider interface to bridge the controller core and the runtime route snapshot boundary:
 
 ```go
 type RouteProvider interface {
@@ -228,7 +228,7 @@ A `MemoryProvider` is implemented for testing and early development. It stores a
 
 ### Snapshot Rebuild Helper
 
-A internal helper function `RebuildRouteSnapshot` is provided to combine a validated static configuration with routes from a `RouteProvider`:
+An internal helper function `RebuildRouteSnapshot` is provided to combine a validated static configuration with routes from a `RouteProvider`:
 
 ```go
 func RebuildRouteSnapshot(ctx context.Context, cfg config.Config, provider discovery.RouteProvider) (RouteSnapshot, error)
