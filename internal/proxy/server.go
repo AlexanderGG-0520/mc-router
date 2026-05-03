@@ -100,6 +100,7 @@ func RebuildRouteSnapshot(ctx context.Context, cfg config.Config, provider disco
 		if err != nil {
 			return RouteSnapshot{}, err
 		}
+		discovered = append([]kubernetes.DiscoveredRoute(nil), discovered...)
 	}
 	return BuildRouteSnapshot(cfg, discovered)
 }
