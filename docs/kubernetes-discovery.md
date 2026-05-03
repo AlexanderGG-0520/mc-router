@@ -210,6 +210,32 @@ Future controller logs should report bounded skip reasons and counts. Do not dum
 
 If fallback responses are enabled on a public gateway, keep messages generic. Public status or login fallback can reveal information to scanners and bots.
 
+## Discovered Route Provider Interface
+
+The project now includes an internal provider interface to bridge the controller core and the runtime route snapshot boundary:
+
+```go
+type RouteProvider interface {
+    Routes(ctx context.Context) ([]kubernetes.DiscoveredRoute, error)
+}
+```
+
+This interface allows the gateway runtime to fetch a snapshot of discovered routes without knowing the details of the underlying discovery source (e.g., Kubernetes API, memory).
+
+### Memory Provider
+
+A `MemoryProvider` is implemented for testing and early development. It stores a list of discovered routes in memory and returns a safe copy when requested.
+
+### Snapshot Rebuild Helper
+
+An internal helper function `RebuildRouteSnapshot` is provided to combine a validated static configuration with routes from a `RouteProvider`:
+
+```go
+func RebuildRouteSnapshot(ctx context.Context, cfg config.Config, provider discovery.RouteProvider) (RouteSnapshot, error)
+```
+
+If the provider is `nil`, it behaves as if discovery is disabled. If the provider returns an error, the rebuild fails, preventing a partial or stale route update from being applied to the runtime.
+
 ## Implementation Slicing
 
 The current implementation intentionally stops at:
@@ -218,6 +244,8 @@ The current implementation intentionally stops at:
 - Kubernetes Service annotation parser tests.
 - In-memory controller core that builds discovered route snapshots from `ServiceInput` values.
 - In-memory merge builder that combines static and discovered explicit routes.
+- Internal `RouteProvider` interface and `MemoryProvider` implementation.
+- `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary that currently receives an empty discovered route set.
 - Duplicate discovered host helper tests.
 - Documentation of the intended merge and operation policy.
@@ -228,7 +256,7 @@ Not implemented yet:
 - Kubernetes API initial list.
 - Service watch controller.
 - EndpointSlice watch controller.
-- Kubernetes discovered route provider integration.
+- Background watch/reload loop for provider updates.
 - RBAC manifests.
 - CRDs.
 - Wake-up or scale-to-zero controller behavior.
@@ -236,4 +264,4 @@ Not implemented yet:
 
 ## Current Status
 
-Current implementation is config, parser, in-memory controller core, merge-builder, and runtime merge-boundary groundwork only. It does not watch Kubernetes yet and does not provide discovered routes to the gateway runtime.
+Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, and runtime merge-boundary groundwork only. It does not watch Kubernetes yet and does not automatically update routes at runtime.
