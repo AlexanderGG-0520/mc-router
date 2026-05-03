@@ -226,6 +226,20 @@ This interface allows the gateway runtime to fetch a snapshot of discovered rout
 
 A `MemoryProvider` is implemented for testing and early development. It stores a list of discovered routes in memory and returns a safe copy when requested.
 
+### Kubernetes Service Initial List Groundwork
+
+The project now includes `client-go` dependency and initial list groundwork for Kubernetes Services.
+
+- `ServiceLister` interface: abstracts listing Services and converting them to `ServiceInput`.
+- `ClientServiceLister`: implementation using `client-go`.
+- `ToServiceInput`: pure conversion from `corev1.Service` to `ServiceInput`.
+
+This implementation allows fetching a one-time snapshot of Services from the Kubernetes API and preparing them for the controller core. It does not start a background watch loop, use informers, or integrate with the runtime `Server` state yet.
+
+### ExternalName Service Policy
+
+Initial implementation skips `ExternalName` Services. The gateway discovery model relies on generating backends in the form `service.namespace.svc.cluster.local:port`. `ExternalName` Services point to arbitrary external DNS names, which breaks this assumption and can lead to untrusted or non-canonical backend addresses being generated.
+
 ### Snapshot Rebuild Helper
 
 An internal helper function `RebuildRouteSnapshot` is provided to combine a validated static configuration with routes from a `RouteProvider`:
@@ -245,6 +259,9 @@ The current implementation intentionally stops at:
 - In-memory controller core that builds discovered route snapshots from `ServiceInput` values.
 - In-memory merge builder that combines static and discovered explicit routes.
 - Internal `RouteProvider` interface and `MemoryProvider` implementation.
+- `client-go` dependency added.
+- `ServiceLister` groundwork for Kubernetes API initial list.
+- `ToServiceInput` conversion from Kubernetes `corev1.Service`.
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary that currently receives an empty discovered route set.
 - Duplicate discovered host helper tests.
@@ -252,16 +269,15 @@ The current implementation intentionally stops at:
 
 Not implemented yet:
 
-- Kubernetes client-go dependency.
-- Kubernetes API initial list.
-- Service watch controller.
-- EndpointSlice watch controller.
-- Background watch/reload loop for provider updates.
+- Kubernetes API watch / informer loop.
+- Background goroutine watch controller.
+- Namespace file read for `discovery.kubernetes.namespace == ""`.
 - RBAC manifests.
 - CRDs.
 - Wake-up or scale-to-zero controller behavior.
 - REST API or Web UI.
+- Discovery metrics and logging.
 
 ## Current Status
 
-Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, and runtime merge-boundary groundwork only. It does not watch Kubernetes yet and does not automatically update routes at runtime.
+Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, client-go initial list groundwork, and runtime merge-boundary groundwork only. It does not watch Kubernetes yet and does not automatically update routes at runtime.
