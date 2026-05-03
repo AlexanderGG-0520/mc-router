@@ -1341,6 +1341,31 @@ func TestReloadFileBuildsStaticOnlyRouteSnapshot(t *testing.T) {
 	}
 }
 
+func TestNewServerFromSnapshotCopiesMutableSnapshotData(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.Routes = []config.Route{
+		{ServerAddress: "smp.example.com", Backend: "static.example.com:25565"},
+	}
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "SMP.Example.COM.", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+
+	server := NewServerFromSnapshot(snapshot, testLogger())
+	snapshot.Config.Routes[0].Backend = "mutated.example.com:25565"
+	snapshot.DiscoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence] = 99
+
+	state := server.currentState()
+	if state.cfg.Routes[0].Backend != "static.example.com:25565" {
+		t.Fatalf("stored backend = %q, want static.example.com:25565", state.cfg.Routes[0].Backend)
+	}
+	if state.discoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence] != 1 {
+		t.Fatalf("stored ignored count = %d, want 1", state.discoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence])
+	}
+}
+
 func TestServeStopsOnContextCancellation(t *testing.T) {
 	listener := listenLocalTCP(t)
 	defer listener.Close()

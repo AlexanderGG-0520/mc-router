@@ -88,6 +88,7 @@ func BuildRouteSnapshot(cfg config.Config, discoveredRoutes []kubernetes.Discove
 }
 
 func newServer(snapshot RouteSnapshot, logger *slog.Logger) *Server {
+	snapshot = cloneRouteSnapshot(snapshot)
 	cfg := snapshot.Config
 	routeTable := snapshot.Router
 	if routeTable == nil {
@@ -152,6 +153,7 @@ func (s *Server) UpdateConfig(cfg config.Config, routeTable *router.Router) {
 }
 
 func (s *Server) UpdateRouteSnapshot(snapshot RouteSnapshot) {
+	snapshot = cloneRouteSnapshot(snapshot)
 	cfg := snapshot.Config
 	routeTable := snapshot.Router
 	if routeTable == nil {
@@ -160,6 +162,25 @@ func (s *Server) UpdateRouteSnapshot(snapshot RouteSnapshot) {
 	s.state.Store(&serverState{cfg: cfg, router: routeTable, discoveryMerge: snapshot.DiscoveryMerge})
 	generation := s.generation.Add(1)
 	s.metrics.SetConfig(generation, cfg)
+}
+
+func cloneRouteSnapshot(snapshot RouteSnapshot) RouteSnapshot {
+	snapshot.Config.Routes = append([]config.Route(nil), snapshot.Config.Routes...)
+	snapshot.DiscoveryMerge.Routes = append([]config.Route(nil), snapshot.DiscoveryMerge.Routes...)
+	snapshot.DiscoveryMerge.Ignored = append([]discovery.IgnoredDiscoveredRoute(nil), snapshot.DiscoveryMerge.Ignored...)
+	snapshot.DiscoveryMerge.Stats.IgnoredByReason = cloneStringIntMap(snapshot.DiscoveryMerge.Stats.IgnoredByReason)
+	return snapshot
+}
+
+func cloneStringIntMap(values map[string]int) map[string]int {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]int, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (s *Server) currentState() *serverState {
