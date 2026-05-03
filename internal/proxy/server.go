@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
+	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
+	"github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	"github.com/AlexanderGG-0520/mc-router/internal/mcproto"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/router"
@@ -32,11 +34,18 @@ type Server struct {
 }
 
 type serverState struct {
-	cfg    config.Config
-	router *router.Router
+	cfg            config.Config
+	router         *router.Router
+	discoveryMerge discovery.MergeResult
 }
 
 type dialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
+
+type RouteSnapshot struct {
+	Config         config.Config
+	Router         *router.Router
+	DiscoveryMerge discovery.MergeResult
+}
 
 const (
 	reasonBackendClose       = gatewaymetrics.ReasonBackendClose
@@ -51,6 +60,37 @@ const (
 )
 
 func NewServer(cfg config.Config, routeTable *router.Router, logger *slog.Logger) *Server {
+	return newServer(RouteSnapshot{Config: cfg, Router: routeTable}, logger)
+}
+
+func NewServerFromSnapshot(snapshot RouteSnapshot, logger *slog.Logger) *Server {
+	return newServer(snapshot, logger)
+}
+
+func BuildRouteSnapshot(cfg config.Config, discoveredRoutes []kubernetes.DiscoveredRoute) (RouteSnapshot, error) {
+	if err := cfg.Validate(); err != nil {
+		return RouteSnapshot{}, err
+	}
+	merge := discovery.MergeRoutes(cfg.Routes, discoveredRoutes, discovery.MergeOptions{
+		DefaultRoute: cfg.DefaultRoute,
+	})
+	mergedConfig := cfg
+	mergedConfig.Routes = merge.Routes
+	routeTable, err := router.New(mergedConfig)
+	if err != nil {
+		return RouteSnapshot{}, err
+	}
+	return RouteSnapshot{
+		Config:         mergedConfig,
+		Router:         routeTable,
+		DiscoveryMerge: merge,
+	}, nil
+}
+
+func newServer(snapshot RouteSnapshot, logger *slog.Logger) *Server {
+	snapshot = cloneRouteSnapshot(snapshot)
+	cfg := snapshot.Config
+	routeTable := snapshot.Router
 	if routeTable == nil {
 		panic("proxy: nil router")
 	}
@@ -64,7 +104,7 @@ func NewServer(cfg config.Config, routeTable *router.Router, logger *slog.Logger
 		dialContext:   dialer.DialContext,
 	}
 	s.generation.Store(1)
-	s.state.Store(&serverState{cfg: cfg, router: routeTable})
+	s.state.Store(&serverState{cfg: cfg, router: routeTable, discoveryMerge: snapshot.DiscoveryMerge})
 	recorder.SetConfig(1, cfg)
 	return s
 }
@@ -89,32 +129,58 @@ func (s *Server) ReloadFile(path string) error {
 		s.logger.Error("reload_failed", "config", path, "error", err)
 		return err
 	}
-	routeTable, err := router.New(cfg)
+	snapshot, err := BuildRouteSnapshot(cfg, nil)
 	if err != nil {
 		s.metrics.Reload(gatewaymetrics.ReloadResultFailed)
 		s.logger.Error("reload_failed", "config", path, "error", err)
 		return err
 	}
-	s.UpdateConfig(cfg, routeTable)
+	s.UpdateRouteSnapshot(snapshot)
 	s.metrics.Reload(gatewaymetrics.ReloadResultSuccess)
 	s.logger.Info(
 		"reload_success",
 		"config", path,
-		"routes", len(cfg.Routes),
+		"routes", len(snapshot.Config.Routes),
 		"listen", s.listenAddress,
-		"configured_listen", cfg.Listen,
-		"listen_change_ignored", cfg.Listen != s.listenAddress,
+		"configured_listen", snapshot.Config.Listen,
+		"listen_change_ignored", snapshot.Config.Listen != s.listenAddress,
 	)
 	return nil
 }
 
 func (s *Server) UpdateConfig(cfg config.Config, routeTable *router.Router) {
+	s.UpdateRouteSnapshot(RouteSnapshot{Config: cfg, Router: routeTable})
+}
+
+func (s *Server) UpdateRouteSnapshot(snapshot RouteSnapshot) {
+	snapshot = cloneRouteSnapshot(snapshot)
+	cfg := snapshot.Config
+	routeTable := snapshot.Router
 	if routeTable == nil {
 		panic("proxy: nil router")
 	}
-	s.state.Store(&serverState{cfg: cfg, router: routeTable})
+	s.state.Store(&serverState{cfg: cfg, router: routeTable, discoveryMerge: snapshot.DiscoveryMerge})
 	generation := s.generation.Add(1)
 	s.metrics.SetConfig(generation, cfg)
+}
+
+func cloneRouteSnapshot(snapshot RouteSnapshot) RouteSnapshot {
+	snapshot.Config.Routes = append([]config.Route(nil), snapshot.Config.Routes...)
+	snapshot.DiscoveryMerge.Routes = append([]config.Route(nil), snapshot.DiscoveryMerge.Routes...)
+	snapshot.DiscoveryMerge.Ignored = append([]discovery.IgnoredDiscoveredRoute(nil), snapshot.DiscoveryMerge.Ignored...)
+	snapshot.DiscoveryMerge.Stats.IgnoredByReason = cloneStringIntMap(snapshot.DiscoveryMerge.Stats.IgnoredByReason)
+	return snapshot
+}
+
+func cloneStringIntMap(values map[string]int) map[string]int {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]int, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (s *Server) currentState() *serverState {

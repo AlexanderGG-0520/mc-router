@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
+	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
+	"github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	"github.com/AlexanderGG-0520/mc-router/internal/mcproto"
 	"github.com/AlexanderGG-0520/mc-router/internal/router"
 	dto "github.com/prometheus/client_model/go"
@@ -1208,6 +1210,162 @@ func TestReloadMetricsUpdateOnSuccessAndFailure(t *testing.T) {
 	waitMetricValue(t, server, "mc_gateway_routes", nil, 2)
 }
 
+func TestBuildRouteSnapshotWithEmptyDiscoveredRoutesMatchesStaticRouter(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.Routes = []config.Route{
+		{ServerAddress: "SMP.Example.COM.", Backend: "static.example.com:25565"},
+	}
+
+	snapshot, err := BuildRouteSnapshot(cfg, nil)
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	selection, err := snapshot.Router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if selection.Backend != "static.example.com:25565" {
+		t.Fatalf("backend = %q, want static.example.com:25565", selection.Backend)
+	}
+	if snapshot.DiscoveryMerge.Stats.DiscoveredRoutes != 0 {
+		t.Fatalf("discovered routes = %d, want 0", snapshot.DiscoveryMerge.Stats.DiscoveredRoutes)
+	}
+	if len(snapshot.DiscoveryMerge.Ignored) != 0 {
+		t.Fatalf("ignored routes = %d, want 0", len(snapshot.DiscoveryMerge.Ignored))
+	}
+}
+
+func TestBuildRouteSnapshotIncludesInMemoryDiscoveredRoute(t *testing.T) {
+	cfg := validProxyConfig()
+
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "SMP.Example.COM.", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	selection, err := snapshot.Router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if selection.Backend != "smp.minecraft.svc.cluster.local:25565" {
+		t.Fatalf("backend = %q, want smp.minecraft.svc.cluster.local:25565", selection.Backend)
+	}
+	if snapshot.DiscoveryMerge.Stats.MergedRoutes != 1 {
+		t.Fatalf("merged routes = %d, want 1", snapshot.DiscoveryMerge.Stats.MergedRoutes)
+	}
+}
+
+func TestBuildRouteSnapshotKeepsStaticRouteWhenDiscoveredConflicts(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.Routes = []config.Route{
+		{ServerAddress: "SMP.Example.COM.", Backend: "static.example.com:25565"},
+	}
+
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	selection, err := snapshot.Router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if selection.Backend != "static.example.com:25565" {
+		t.Fatalf("backend = %q, want static.example.com:25565", selection.Backend)
+	}
+	if snapshot.DiscoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence] != 1 {
+		t.Fatalf("static precedence ignored count = %d, want 1", snapshot.DiscoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence])
+	}
+}
+
+func TestBuildRouteSnapshotDoesNotInsertDefaultRouteIntoExplicitRoutes(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.UnknownHostPolicy = config.UnknownHostDefault
+	cfg.DefaultRoute = config.DefaultRoute{Backend: "default.example.com:25565", Mode: config.RouteModeAllow}
+
+	snapshot, err := BuildRouteSnapshot(cfg, nil)
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	if len(snapshot.Config.Routes) != 0 {
+		t.Fatalf("explicit routes = %d, want 0", len(snapshot.Config.Routes))
+	}
+	selection, err := snapshot.Router.Select("unknown.example.com")
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if selection.Backend != "default.example.com:25565" {
+		t.Fatalf("default backend = %q, want default.example.com:25565", selection.Backend)
+	}
+}
+
+func TestBuildRouteSnapshotValidatesStaticConfigBeforeMerge(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.Routes = []config.Route{
+		{ServerAddress: "bad host.example.com", Backend: "static.example.com:25565"},
+	}
+
+	_, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err == nil {
+		t.Fatal("BuildRouteSnapshot succeeded with invalid static config")
+	}
+}
+
+func TestReloadFileBuildsStaticOnlyRouteSnapshot(t *testing.T) {
+	firstBackend := listenLocalTCP(t)
+	defer firstBackend.Close()
+	secondBackend := listenLocalTCP(t)
+	defer secondBackend.Close()
+
+	configPath := writeRouteConfig(t, firstBackend.Addr().String())
+	_, server, stop := startReloadableTestServer(t, configPath)
+	defer stop()
+
+	writeRoutesConfigAt(t, configPath, []config.Route{
+		{ServerAddress: "smp.example.com", Backend: secondBackend.Addr().String()},
+		{ServerAddress: "build.example.com", Backend: firstBackend.Addr().String()},
+	})
+	if err := server.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+	state := server.currentState()
+	if state.discoveryMerge.Stats.DiscoveredRoutes != 0 {
+		t.Fatalf("reload discovered routes = %d, want 0", state.discoveryMerge.Stats.DiscoveredRoutes)
+	}
+	if state.discoveryMerge.Stats.MergedRoutes != 2 {
+		t.Fatalf("reload merged routes = %d, want 2", state.discoveryMerge.Stats.MergedRoutes)
+	}
+}
+
+func TestNewServerFromSnapshotCopiesMutableSnapshotData(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.Routes = []config.Route{
+		{ServerAddress: "smp.example.com", Backend: "static.example.com:25565"},
+	}
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "SMP.Example.COM.", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+
+	server := NewServerFromSnapshot(snapshot, testLogger())
+	snapshot.Config.Routes[0].Backend = "mutated.example.com:25565"
+	snapshot.DiscoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence] = 99
+
+	state := server.currentState()
+	if state.cfg.Routes[0].Backend != "static.example.com:25565" {
+		t.Fatalf("stored backend = %q, want static.example.com:25565", state.cfg.Routes[0].Backend)
+	}
+	if state.discoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence] != 1 {
+		t.Fatalf("stored ignored count = %d, want 1", state.discoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence])
+	}
+}
+
 func TestServeStopsOnContextCancellation(t *testing.T) {
 	listener := listenLocalTCP(t)
 	defer listener.Close()
@@ -1239,17 +1397,23 @@ func startTestServer(t *testing.T, cfg config.Config, configure ...func(*Server)
 	return addr, stop
 }
 
+func validProxyConfig() config.Config {
+	cfg := config.Defaults()
+	cfg.Listen = ":0"
+	return cfg
+}
+
 func startTestServerWithServer(t *testing.T, cfg config.Config, configure ...func(*Server)) (string, *Server, func()) {
 	t.Helper()
 	if cfg.DefaultRoute.Mode == "" && cfg.DefaultRoute.Backend != "" {
 		cfg.DefaultRoute.Mode = config.RouteModeAllow
 	}
-	routeTable, err := router.New(cfg)
+	snapshot, err := BuildRouteSnapshot(cfg, nil)
 	if err != nil {
-		t.Fatalf("router.New: %v", err)
+		t.Fatalf("BuildRouteSnapshot: %v", err)
 	}
 	listener := listenLocalTCP(t)
-	server := NewServer(cfg, routeTable, testLogger())
+	server := NewServerFromSnapshot(snapshot, testLogger())
 	for _, fn := range configure {
 		fn(server)
 	}
@@ -1282,12 +1446,12 @@ func startReloadableTestServer(t *testing.T, configPath string) (string, *Server
 	if err != nil {
 		t.Fatalf("config.LoadFile: %v", err)
 	}
-	routeTable, err := router.New(cfg)
+	snapshot, err := BuildRouteSnapshot(cfg, nil)
 	if err != nil {
-		t.Fatalf("router.New: %v", err)
+		t.Fatalf("BuildRouteSnapshot: %v", err)
 	}
 	listener := listenLocalTCP(t)
-	server := NewServer(cfg, routeTable, testLogger())
+	server := NewServerFromSnapshot(snapshot, testLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
