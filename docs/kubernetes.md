@@ -44,7 +44,16 @@ It creates:
 - TCP liveness probe
 - Non-root security context
 
-RBAC is omitted because the MVP does not call the Kubernetes API.
+## RBAC
+
+RBAC manifests are not included yet because the current implementation does not require a background watch loop. However, the groundwork for Kubernetes Service discovery now includes a Service lister that requires the following permissions in the watched namespace:
+
+- `get`, `list` on `services`
+
+Future watch-based discovery will also require:
+
+- `watch` on `services`
+- `get`, `list`, `watch` on `endpointslices` (if endpoint awareness is added)
 
 Kubernetes Service annotation discovery is planned but not active yet. See [Kubernetes Discovery](kubernetes-discovery.md) for the config and parser groundwork, annotation format, duplicate host policy, and future controller scope.
 
