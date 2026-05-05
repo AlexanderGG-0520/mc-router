@@ -31,8 +31,9 @@ func (l *ClientServiceLister) ListServices(ctx context.Context, namespace string
 	}
 
 	res := make([]ServiceInput, 0, len(services.Items))
-	for _, svc := range services.Items {
-		if input, ok := ToServiceInput(&svc); ok {
+	for i := range services.Items {
+		svc := &services.Items[i]
+		if input, ok := ToServiceInput(svc); ok {
 			res = append(res, input)
 		}
 	}
