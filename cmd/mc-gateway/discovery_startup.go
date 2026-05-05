@@ -98,7 +98,7 @@ func listStartupDiscoveredRoutes(ctx context.Context, cfg config.Config, deps di
 	}
 	services, err := lister.ListServices(ctx, namespace)
 	if err != nil {
-		return startupDiscoveredRoutes{}, fmt.Errorf("list Kubernetes Services in namespace %q: %w", namespace, err)
+		return startupDiscoveredRoutes{}, fmt.Errorf("list Kubernetes Services in resolved namespace: %w", err)
 	}
 	result := k8sdiscovery.BuildDiscoveredRoutes(services, k8sdiscovery.Options{
 		AnnotationPrefix: kubernetesConfig.AnnotationPrefix,
