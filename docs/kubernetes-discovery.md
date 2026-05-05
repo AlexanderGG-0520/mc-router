@@ -166,7 +166,7 @@ The current controller core is a pure in-memory builder:
 
 It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information.
 
-This is an implementation step between parser/controller groundwork and a real Kubernetes watch controller. It still does not add `client-go`, Kubernetes API initial list, Kubernetes watch behavior, discovered route provider integration, RBAC manifests, or metrics.
+This is an implementation step between parser/controller groundwork and a real Kubernetes watch controller. The controller core stays separate from the later `client-go` initial list helper, Kubernetes watch behavior, runtime provider integration, RBAC manifests, and metrics.
 
 Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
 
