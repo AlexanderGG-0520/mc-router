@@ -177,6 +177,93 @@ func TestServiceWatchControllerWatchFailureReturnsError(t *testing.T) {
 	}
 }
 
+func TestServiceWatchControllerWatchErrorEventReturnsError(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	watcher := watch.NewFake()
+	watchStarted := make(chan struct{})
+	client.Fake.PrependWatchReactor("services", func(k8stesting.Action) (bool, watch.Interface, error) {
+		close(watchStarted)
+		return true, watcher, nil
+	})
+	sink := newRecordingRouteSink()
+
+	controller, err := NewServiceWatchController(client, "minecraft", sink, ServiceWatchControllerOptions{})
+	if err != nil {
+		t.Fatalf("NewServiceWatchController error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- controller.Run(ctx)
+	}()
+
+	select {
+	case <-watchStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for watch to start")
+	}
+
+	watcher.Error(&metav1.Status{
+		Status:  metav1.StatusFailure,
+		Message: "watch stream failed",
+		Reason:  metav1.StatusReasonInternalError,
+		Code:    500,
+	})
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Run() error = nil, want error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Run to return after watch.Error event")
+	}
+}
+
+func TestServiceWatchControllerClosedWatchChannelReturnsError(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	watcher := watch.NewFake()
+	watchStarted := make(chan struct{})
+	client.Fake.PrependWatchReactor("services", func(k8stesting.Action) (bool, watch.Interface, error) {
+		close(watchStarted)
+		return true, watcher, nil
+	})
+	sink := newRecordingRouteSink()
+
+	controller, err := NewServiceWatchController(client, "minecraft", sink, ServiceWatchControllerOptions{})
+	if err != nil {
+		t.Fatalf("NewServiceWatchController error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- controller.Run(ctx)
+	}()
+
+	select {
+	case <-watchStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for watch to start")
+	}
+
+	watcher.Stop()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("Run() error = nil, want error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Run to return after watch channel closed")
+	}
+}
+
 func TestNewServiceWatchControllerRejectsAllNamespacesSentinel(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	sink := newRecordingRouteSink()
