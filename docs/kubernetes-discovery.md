@@ -4,7 +4,9 @@
 
 Kubernetes discovery is planned as a way to generate gateway routes from Kubernetes resources instead of maintaining every Minecraft backend route by hand in the static YAML file.
 
-The current implementation can perform a startup-only Kubernetes Service initial list when `discovery.kubernetes.enabled` is true. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a pure merge builder for static plus discovered routes, and a runtime route snapshot boundary. It does not watch resources, start a background controller, or automatically update routes after startup.
+The current implementation can perform a startup-only Kubernetes Service initial list when `discovery.kubernetes.enabled` is true. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, and a runtime route snapshot boundary.
+
+The watch controller core can update a route sink such as the in-memory provider when it is run directly, but the gateway runtime does not start it yet. Runtime route snapshots are still not automatically updated after startup.
 
 ## Why Service Annotation Discovery First
 
@@ -148,7 +150,7 @@ The ordering is intentional:
 
 Invalid static config fails before the merge builder runs. The merge builder does not try to repair or reinterpret invalid static routes. Merge ignored routes and stats are retained on the route snapshot boundary for future logging and metrics, but discovery metrics are not implemented yet.
 
-Kubernetes watches and controllers do not exist yet, so no goroutine, informer, or background API connection feeds this boundary after startup.
+A standalone Kubernetes Service watch controller core exists, but no runtime goroutine or background API connection feeds this boundary after startup yet.
 
 ## Startup Initial List
 
@@ -168,7 +170,7 @@ Invalid Service annotations are skipped and reported in the in-memory discovery 
 
 ## Reload Limitation
 
-`SIGHUP` reload does not re-run the Kubernetes API initial list. The discovered routes captured at startup remain active and are re-merged with the newly loaded static config. This avoids accidentally dropping discovered routes on reload, but it also means changes to Service annotations, Kubernetes Services, or discovery config values require a process restart until watch/snapshot integration is added.
+`SIGHUP` reload does not re-run the Kubernetes API initial list. The discovered routes captured at startup remain active and are re-merged with the newly loaded static config. This avoids accidentally dropping discovered routes on reload, but it also means changes to Service annotations, Kubernetes Services, or discovery config values require a process restart until the watch controller is connected to runtime snapshot updates.
 
 ## Duplicate Host Policy
 
@@ -186,7 +188,7 @@ The current controller core is a pure in-memory builder:
 
 It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information.
 
-This is an implementation step between parser/controller groundwork and a real Kubernetes watch controller. The controller core stays separate from the later `client-go` initial list helper, Kubernetes watch behavior, runtime provider integration, RBAC manifests, and metrics.
+This is an implementation step between parser/controller groundwork and Kubernetes API integration. The controller core stays separate from runtime provider integration and metrics.
 
 Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
 
@@ -215,21 +217,21 @@ When `discovery.kubernetes.enabled` is `true`, startup fails for:
 
 Failing startup is intentional because silently falling back to static-only routing can hide missing discovered routes.
 
-If Kubernetes API list or watch fails after a good snapshot exists, the gateway is expected to keep the last known good discovered snapshot. That behavior belongs to the future watch/snapshot integration. When a discovered Service route is removed or no longer valid, the discovered route is expected to disappear from the active route snapshot only after that future integration observes the change.
+If Kubernetes API list or watch fails after a good snapshot exists, the gateway is expected to keep the last known good discovered snapshot. The standalone watch controller updates its sink after successful list/watch events; the exact runtime failure policy belongs to the future runtime integration PR. When a discovered Service route is removed or no longer valid, the discovered route is expected to disappear from the active route snapshot only after that future integration observes the change.
 
 ## RBAC
 
-The repository includes a namespace-scoped RBAC example for startup initial list discovery:
+The repository includes a namespace-scoped RBAC example for Kubernetes Service discovery:
 
 ```text
 deploy/kubernetes/discovery-rbac.yaml
 ```
 
-With startup initial list enabled, the ServiceAccount used by the gateway needs only these namespace-scoped permissions:
+With startup initial list and the Service watch controller core, the ServiceAccount used by the gateway needs only these namespace-scoped permissions:
 
-- `get`, `list` on `services`
+- `get`, `list`, `watch` on `services`
 
-Future watch-based discovery will also need `watch` on `services`. EndpointSlice, Pod, or cluster-wide permissions should be added only if a later implementation actually needs them.
+EndpointSlice, Pod, Secret, or cluster-wide permissions should be added only if a later implementation actually needs them.
 
 All-namespaces discovery is not implemented. Supporting it later would require an explicit ClusterRole/ClusterRoleBinding design and separate review.
 
@@ -289,7 +291,15 @@ The project now includes `client-go` dependency and initial list groundwork for 
 - `ClientServiceLister`: implementation using `client-go`.
 - `ToServiceInput`: pure conversion from `corev1.Service` to `ServiceInput`.
 
-This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for the controller core and feeds discovered routes into the startup route snapshot. It does not start a background watch loop or use informers.
+This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for the controller core and feeds discovered routes into the startup route snapshot. It does not start the Service watch controller core in the gateway runtime yet.
+
+### Kubernetes Service Watch Controller Core
+
+The project includes a namespace-scoped Service watch controller core. It performs an initial Service list, starts a direct `client-go` watch from the returned resource version, rebuilds discovered routes after Service add/update/delete events, and publishes the complete valid route set to a route sink.
+
+The controller uses direct watch instead of an informer in this first core because it keeps the API small and makes fake-client tests explicit: list, watch events, and sink updates are all visible at the controller boundary. Initial list failure, watch setup failure, watch error events, and unexpected watch channel close return errors to the controller caller. Runtime retry and last-known-good policy will be finalized when the controller is connected to runtime snapshot updates.
+
+It does not touch the gateway runtime server state and does not swap active `RouteSnapshot` values. Runtime auto-update remains a separate integration step.
 
 ### Current Namespace Helper
 
@@ -329,8 +339,8 @@ The current implementation intentionally stops at:
 
 Not implemented yet:
 
-- Kubernetes API watch / informer loop.
-- Background goroutine watch controller.
+- Runtime-owned Kubernetes API watch / informer loop.
+- Background goroutine that starts the watch controller from the gateway runtime.
 - Runtime auto-update after startup.
 - Periodic resync.
 - ClusterRole or all-namespaces RBAC manifests.
@@ -341,4 +351,4 @@ Not implemented yet:
 
 ## Current Status
 
-Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, startup-only client-go initial list, and runtime merge-boundary integration. It does not watch Kubernetes yet and does not automatically update routes after startup.
+Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, startup-only client-go initial list, namespace-scoped Service watch controller core, and runtime merge-boundary integration. The gateway runtime does not start the watch controller yet and does not automatically update routes after startup.

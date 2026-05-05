@@ -47,7 +47,7 @@ It creates:
 
 ## RBAC
 
-The namespace-scoped startup discovery RBAC example is in:
+The namespace-scoped Service discovery RBAC example is in:
 
 ```text
 deploy/kubernetes/discovery-rbac.yaml
@@ -55,15 +55,11 @@ deploy/kubernetes/discovery-rbac.yaml
 
 The base manifest creates the `mc-router` ServiceAccount and the Deployment uses `serviceAccountName: mc-router`. The RBAC example binds that ServiceAccount to a Role in the `mc-gateway` namespace. If you deploy the gateway in another namespace, change the namespace fields consistently.
 
-If `discovery.kubernetes.enabled` is true, startup performs a Kubernetes Service initial list and the gateway ServiceAccount requires the following permissions in the watched namespace:
+If `discovery.kubernetes.enabled` is true, startup performs a Kubernetes Service initial list. The repository also includes a namespace-scoped Service watch controller core for the next runtime integration step. The gateway ServiceAccount requires the following permissions in the watched namespace:
 
-- `get`, `list` on `services`
+- `get`, `list`, `watch` on `services`
 
-Future watch-based discovery will also require:
-
-- `watch` on `services`
-
-Kubernetes Service annotation discovery is startup-only today. It does not watch for later Service changes. See [Kubernetes Discovery](kubernetes-discovery.md) for the config, annotation format, duplicate host policy, startup failure policy, and future controller scope.
+Kubernetes Service annotation discovery is still startup-only in the gateway runtime. The watch controller core is not started by the runtime yet, so later Service changes do not update active route snapshots. See [Kubernetes Discovery](kubernetes-discovery.md) for the config, annotation format, duplicate host policy, startup failure policy, and future controller scope.
 
 ClusterRole and ClusterRoleBinding examples are not included because all-namespaces discovery is not implemented. EndpointSlice, Pod, Secret, and cluster-wide permissions are intentionally not granted by the startup initial list RBAC.
 
@@ -169,7 +165,7 @@ The gateway supports `SIGHUP` config reload on supported Unix platforms, includi
 
 Reload is atomic from the gateway's point of view. If the updated config is invalid, the running route snapshot stays active. Active connections are not disconnected by reload; new connections use the new route snapshot after a successful reload.
 
-Kubernetes discovery is not re-run during `SIGHUP` reload. If discovery was enabled at startup, the startup-discovered routes remain active and are re-merged with the reloaded static config. Changes to Service annotations or discovery config require a process restart until watch-based discovery is implemented.
+Kubernetes discovery is not re-run during `SIGHUP` reload. If discovery was enabled at startup, the startup-discovered routes remain active and are re-merged with the reloaded static config. Changes to Service annotations or discovery config require a process restart until the Service watch controller is connected to runtime snapshot updates.
 
 Kubernetes ConfigMap projected volumes are updated asynchronously. Do not send `SIGHUP` until the mounted file has the expected content in the Pod. If you need deterministic rollout behavior across replicas, use a rolling restart instead of relying on manual signal timing.
 
@@ -204,4 +200,4 @@ With Cilium, use standard Kubernetes NetworkPolicy first. Move to CiliumNetworkP
 
 ## Future Discovery
 
-The first route discovery shape is startup-only Service annotation discovery. It is namespace-scoped and avoids requiring cluster-wide list/watch. See [Kubernetes Discovery](kubernetes-discovery.md).
+The first route discovery shape is Service annotation discovery. It is namespace-scoped and avoids requiring cluster-wide list/watch. Runtime startup uses a one-time initial list today; a namespace-scoped Service watch controller core exists for the next runtime integration step. See [Kubernetes Discovery](kubernetes-discovery.md).

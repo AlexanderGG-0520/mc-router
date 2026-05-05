@@ -1,4 +1,4 @@
-# Namespace-scoped RBAC for startup-only Kubernetes Service discovery.
+# Namespace-scoped RBAC for Kubernetes Service discovery.
 # Assumes the mc-gateway namespace and mc-router ServiceAccount from
 # deploy/kubernetes/mc-gateway.yaml exist. Change the namespace consistently
 # if the gateway is deployed somewhere else.
@@ -10,7 +10,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["get", "list"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -18,14 +18,14 @@
 - SIGHUP config reload for static route updates on supported platforms.
 - Unit tests for parser, config, and router behavior.
 - Dockerfile.
-- Minimal Kubernetes manifest and namespace-scoped startup discovery RBAC example.
+- Minimal Kubernetes manifest and namespace-scoped discovery RBAC example.
 - GitHub Actions CI.
-- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, startup-only client-go initial list, namespace-scoped RBAC example, and runtime merge-boundary integration.
+- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, startup-only client-go initial list, namespace-scoped Service watch controller core, namespace-scoped RBAC example, and runtime merge-boundary integration.
 
 ## Not Included Yet
 
-- Kubernetes API watches or background controller goroutines.
-- Background watch/reload loop for provider updates; current discovery work is startup-only and does not automatically update routes after startup.
+- Runtime-owned Kubernetes API watches or background controller goroutines.
+- Background watch/reload loop for runtime provider updates; current runtime discovery work is startup-only and does not automatically update routes after startup.
 - Kubernetes Service re-list during `SIGHUP` reload.
 - ClusterRole or all-namespaces discovery RBAC.
 - Pod annotations, EndpointSlice discovery, or CRD route discovery.
@@ -99,7 +99,7 @@ The protocol smoke tests use fixed protocol framing helpers and fake TCP backend
 
 ## Next Implementation Priorities
 
-1. Add Kubernetes Service annotation watch controller and snapshot integration, including the additional `watch` RBAC verb.
+1. Connect the Kubernetes Service watch controller core to runtime snapshot updates.
 2. Add wake-up controller behavior for scaled-to-zero servers.
 3. Add backend failure login fallback if operators need a login-state disconnect for unavailable known routes.
 4. Add CRD only after static and label based models are stable.
