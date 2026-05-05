@@ -217,15 +217,23 @@ Failing startup is intentional because silently falling back to static-only rout
 
 If Kubernetes API list or watch fails after a good snapshot exists, the gateway is expected to keep the last known good discovered snapshot. That behavior belongs to the future watch/snapshot integration. When a discovered Service route is removed or no longer valid, the discovered route is expected to disappear from the active route snapshot only after that future integration observes the change.
 
-## RBAC Plan
+## RBAC
 
-RBAC manifests are not included yet. With startup initial list enabled, the ServiceAccount used by the gateway needs namespace-scoped permissions:
+The repository includes a namespace-scoped RBAC example for startup initial list discovery:
+
+```text
+deploy/kubernetes/discovery-rbac.yaml
+```
+
+With startup initial list enabled, the ServiceAccount used by the gateway needs only these namespace-scoped permissions:
 
 - `get`, `list` on `services`
 
 Future watch-based discovery will also need `watch` on `services`. EndpointSlice, Pod, or cluster-wide permissions should be added only if a later implementation actually needs them.
 
-Reading the ServiceAccount namespace file is not a Kubernetes API call and is not controlled by Kubernetes RBAC. It depends on the Pod's projected ServiceAccount volume.
+All-namespaces discovery is not implemented. Supporting it later would require an explicit ClusterRole/ClusterRoleBinding design and separate review.
+
+Reading the ServiceAccount namespace file is not a Kubernetes API call and is not controlled by Kubernetes RBAC. It depends on the Pod's projected ServiceAccount volume. The gateway does not need permissions for Secrets and must not read the ServiceAccount token for namespace resolution.
 
 ## Metrics Plan
 
@@ -325,7 +333,7 @@ Not implemented yet:
 - Background goroutine watch controller.
 - Runtime auto-update after startup.
 - Periodic resync.
-- RBAC manifests.
+- ClusterRole or all-namespaces RBAC manifests.
 - CRDs.
 - Wake-up or scale-to-zero controller behavior.
 - REST API or Web UI.

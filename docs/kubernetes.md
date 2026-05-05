@@ -37,6 +37,7 @@ deploy/kubernetes/mc-gateway.yaml
 It creates:
 
 - Namespace
+- ServiceAccount
 - ConfigMap
 - Deployment
 - LoadBalancer Service
@@ -46,16 +47,25 @@ It creates:
 
 ## RBAC
 
-RBAC manifests are not included yet. If `discovery.kubernetes.enabled` is true, startup performs a Kubernetes Service initial list and the gateway ServiceAccount requires the following permissions in the watched namespace:
+The namespace-scoped startup discovery RBAC example is in:
+
+```text
+deploy/kubernetes/discovery-rbac.yaml
+```
+
+The base manifest creates the `mc-router` ServiceAccount and the Deployment uses `serviceAccountName: mc-router`. The RBAC example binds that ServiceAccount to a Role in the `mc-gateway` namespace. If you deploy the gateway in another namespace, change the namespace fields consistently.
+
+If `discovery.kubernetes.enabled` is true, startup performs a Kubernetes Service initial list and the gateway ServiceAccount requires the following permissions in the watched namespace:
 
 - `get`, `list` on `services`
 
 Future watch-based discovery will also require:
 
 - `watch` on `services`
-- `get`, `list`, `watch` on `endpointslices` (if endpoint awareness is added)
 
 Kubernetes Service annotation discovery is startup-only today. It does not watch for later Service changes. See [Kubernetes Discovery](kubernetes-discovery.md) for the config, annotation format, duplicate host policy, startup failure policy, and future controller scope.
+
+ClusterRole and ClusterRoleBinding examples are not included because all-namespaces discovery is not implemented. EndpointSlice, Pod, Secret, and cluster-wide permissions are intentionally not granted by the startup initial list RBAC.
 
 If `discovery.kubernetes.namespace` is empty, startup resolves the current namespace from the Pod's ServiceAccount namespace file at `/var/run/secrets/kubernetes.io/serviceaccount/namespace`. This file read is not Kubernetes API RBAC; it comes from the mounted ServiceAccount volume. The gateway does not read the ServiceAccount token for namespace resolution.
 

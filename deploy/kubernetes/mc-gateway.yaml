@@ -4,6 +4,12 @@ metadata:
   name: mc-gateway
 ---
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mc-router
+  namespace: mc-gateway
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mc-gateway-config
@@ -38,6 +44,7 @@ spec:
       labels:
         app.kubernetes.io/name: mc-gateway
     spec:
+      serviceAccountName: mc-router
       securityContext:
         runAsNonRoot: true
         seccompProfile:
