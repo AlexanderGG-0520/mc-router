@@ -57,6 +57,8 @@ Future watch-based discovery will also require:
 
 Kubernetes Service annotation discovery is planned but not active yet. See [Kubernetes Discovery](kubernetes-discovery.md) for the config and parser groundwork, annotation format, duplicate host policy, and future controller scope.
 
+If `discovery.kubernetes.namespace` is empty, the planned in-cluster behavior is to resolve the current namespace from the Pod's ServiceAccount namespace file at `/var/run/secrets/kubernetes.io/serviceaccount/namespace`. This file read is not Kubernetes API RBAC; it comes from the mounted ServiceAccount volume. The gateway does not need to read the ServiceAccount token for namespace resolution.
+
 ## Fallback Responses
 
 Fallback responses are disabled by default. If you want denied status pings to return a generic Minecraft server list response instead of a TCP close, enable status fallback in the ConfigMap:
