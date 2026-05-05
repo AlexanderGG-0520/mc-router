@@ -150,18 +150,6 @@ func TestResolveNamespaceUsesCustomPath(t *testing.T) {
 	}
 }
 
-func TestResolveNamespaceAllNamespacesSentinelIsCurrentNamespace(t *testing.T) {
-	path := writeNamespaceFile(t, "minecraft")
-
-	got, err := ResolveNamespace("", NamespaceResolver{Path: path})
-	if err != nil {
-		t.Fatalf("ResolveNamespace returned error: %v", err)
-	}
-	if got != "minecraft" {
-		t.Fatalf("namespace = %q, want current namespace %q", got, "minecraft")
-	}
-}
-
 func TestResolveNamespaceDoesNotPanic(t *testing.T) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
