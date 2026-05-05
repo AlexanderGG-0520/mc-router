@@ -161,15 +161,16 @@ Lifecycle `reason` values used by logs and metrics are kept aligned:
 
 ## Route Sources
 
-The MVP runtime has a single active route source: static YAML.
+The runtime always supports static YAML routes. When Kubernetes discovery is enabled, startup also performs one namespace-scoped Kubernetes Service initial list and merges discovered routes into the initial route snapshot.
 
-Groundwork for Kubernetes Service annotation discovery exists, including:
+Kubernetes Service annotation discovery includes:
 - Discovery configuration validation and annotation parsing.
 - In-memory controller core and `RouteProvider` interface.
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary.
+- Startup-only `client-go` Service initial list.
 
-The runtime boundary currently receives an empty discovered route set. Future integration will feed discovered routes into this boundary with static routes taking precedence. See [Kubernetes Discovery](kubernetes-discovery.md).
+Static routes take precedence over discovered routes. `defaultRoute` remains outside the explicit route list and is evaluated after static and discovered routes. See [Kubernetes Discovery](kubernetes-discovery.md).
 
 ## Config Reload
 
@@ -179,7 +180,7 @@ Reload behavior:
 
 1. The gateway reads the configuration file from its startup path.
 2. Static configuration is parsed and validated.
-3. Valid static configuration is merged with routes from the `RouteProvider`.
+3. Valid static configuration is merged with the discovered routes captured at startup.
 4. A new router is built from the merged routes and `defaultRoute`.
 5. The active snapshot is replaced atomically only after all previous steps succeed.
 6. New connections use the new snapshot; existing connections are not affected.
@@ -191,6 +192,8 @@ A successful reload logs `reload_success`. The listener address is still a start
 Metrics server settings are also startup settings. SIGHUP reload updates route snapshots and route-related metrics, but changes to `metrics.enabled`, `metrics.listen`, or `metrics.path` require a process restart.
 
 Fallback settings are part of the route config snapshot and are applied to new connections after a successful reload.
+
+Kubernetes discovery does not re-list Services during reload. Startup-discovered routes are preserved and re-merged with the new static config until watch-based discovery is added.
 
 The implementation uses an immutable snapshot stored in `atomic.Value`. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
 

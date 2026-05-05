@@ -20,12 +20,13 @@
 - Dockerfile.
 - Minimal Kubernetes manifest.
 - GitHub Actions CI.
-- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, client-go initial list groundwork, and runtime merge-boundary groundwork only.
+- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, startup-only client-go initial list, and runtime merge-boundary integration.
 
 ## Not Included Yet
 
 - Kubernetes API watches or background controller goroutines.
-- Background watch/reload loop for provider updates; current discovery work is config, current namespace helper, parser, in-memory controller core, merge-builder, provider interface, client-go initial list groundwork, and runtime merge-boundary groundwork only.
+- Background watch/reload loop for provider updates; current discovery work is startup-only and does not automatically update routes after startup.
+- Kubernetes Service re-list during `SIGHUP` reload.
 - Pod annotations, EndpointSlice discovery, or CRD route discovery.
 - Scale-to-zero wake-up.
 - Backend failure login fallback and maintenance fallback responses.
@@ -77,6 +78,7 @@ Automated tests now cover:
 - Idle client handshake read timeout.
 - Server shutdown on context cancellation.
 - SIGHUP/static config reload keeps the previous routes after invalid reloads and applies valid reloads to new connections.
+- Startup-only Kubernetes Service annotation discovery with fake clients, including current namespace resolution, initial list failure policy, invalid annotation skips, duplicate discovered host handling, static route precedence, ExternalName skips, and reload preservation of startup-discovered routes.
 - Metrics config defaults, Prometheus text endpoint behavior, active connection gauge, route-denied counter, backend dial failure counter, fallback response counter, reload counters, config generation gauge, and route count gauge.
 - Status fallback config defaults, denied status response JSON, backend dial failure and timeout status response JSON, status ping/pong echo, disabled fallback close behavior, default route precedence, malformed status request close behavior, fallback response metrics, and existing metric preservation.
 - Login fallback config defaults, denied login disconnect JSON, malformed login start close behavior, known route/default route precedence, backend dial failure close behavior, and login fallback response metrics.

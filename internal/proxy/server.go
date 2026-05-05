@@ -34,17 +34,19 @@ type Server struct {
 }
 
 type serverState struct {
-	cfg            config.Config
-	router         *router.Router
-	discoveryMerge discovery.MergeResult
+	cfg              config.Config
+	router           *router.Router
+	discoveryMerge   discovery.MergeResult
+	discoveredRoutes []kubernetes.DiscoveredRoute
 }
 
 type dialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
 
 type RouteSnapshot struct {
-	Config         config.Config
-	Router         *router.Router
-	DiscoveryMerge discovery.MergeResult
+	Config           config.Config
+	Router           *router.Router
+	DiscoveryMerge   discovery.MergeResult
+	DiscoveredRoutes []kubernetes.DiscoveredRoute
 }
 
 const (
@@ -81,9 +83,10 @@ func BuildRouteSnapshot(cfg config.Config, discoveredRoutes []kubernetes.Discove
 		return RouteSnapshot{}, err
 	}
 	return RouteSnapshot{
-		Config:         mergedConfig,
-		Router:         routeTable,
-		DiscoveryMerge: merge,
+		Config:           mergedConfig,
+		Router:           routeTable,
+		DiscoveryMerge:   merge,
+		DiscoveredRoutes: append([]kubernetes.DiscoveredRoute(nil), discoveredRoutes...),
 	}, nil
 }
 
@@ -122,7 +125,12 @@ func newServer(snapshot RouteSnapshot, logger *slog.Logger) *Server {
 		dialContext:   dialer.DialContext,
 	}
 	s.generation.Store(1)
-	s.state.Store(&serverState{cfg: cfg, router: routeTable, discoveryMerge: snapshot.DiscoveryMerge})
+	s.state.Store(&serverState{
+		cfg:              cfg,
+		router:           routeTable,
+		discoveryMerge:   snapshot.DiscoveryMerge,
+		discoveredRoutes: snapshot.DiscoveredRoutes,
+	})
 	recorder.SetConfig(1, cfg)
 	return s
 }
@@ -147,7 +155,8 @@ func (s *Server) ReloadFile(path string) error {
 		s.logger.Error("reload_failed", "config", path, "error", err)
 		return err
 	}
-	snapshot, err := BuildRouteSnapshot(cfg, nil)
+	current := s.currentState()
+	snapshot, err := BuildRouteSnapshot(cfg, current.discoveredRoutes)
 	if err != nil {
 		s.metrics.Reload(gatewaymetrics.ReloadResultFailed)
 		s.logger.Error("reload_failed", "config", path, "error", err)
@@ -177,13 +186,19 @@ func (s *Server) UpdateRouteSnapshot(snapshot RouteSnapshot) {
 	if routeTable == nil {
 		panic("proxy: nil router")
 	}
-	s.state.Store(&serverState{cfg: cfg, router: routeTable, discoveryMerge: snapshot.DiscoveryMerge})
+	s.state.Store(&serverState{
+		cfg:              cfg,
+		router:           routeTable,
+		discoveryMerge:   snapshot.DiscoveryMerge,
+		discoveredRoutes: snapshot.DiscoveredRoutes,
+	})
 	generation := s.generation.Add(1)
 	s.metrics.SetConfig(generation, cfg)
 }
 
 func cloneRouteSnapshot(snapshot RouteSnapshot) RouteSnapshot {
 	snapshot.Config.Routes = append([]config.Route(nil), snapshot.Config.Routes...)
+	snapshot.DiscoveredRoutes = append([]kubernetes.DiscoveredRoute(nil), snapshot.DiscoveredRoutes...)
 	snapshot.DiscoveryMerge.Routes = append([]config.Route(nil), snapshot.DiscoveryMerge.Routes...)
 	snapshot.DiscoveryMerge.Ignored = append([]discovery.IgnoredDiscoveredRoute(nil), snapshot.DiscoveryMerge.Ignored...)
 	snapshot.DiscoveryMerge.Stats.IgnoredByReason = cloneStringIntMap(snapshot.DiscoveryMerge.Stats.IgnoredByReason)
