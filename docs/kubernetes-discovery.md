@@ -41,13 +41,27 @@ discovery:
 Defaults:
 
 - `enabled` defaults to `false`.
-- `namespace` defaults to empty, which is reserved to mean the current namespace.
+- `namespace` defaults to empty, which means the gateway should resolve the current namespace from its in-cluster ServiceAccount namespace file.
 - `mode` currently only accepts `service-annotations`.
 - `annotationPrefix` defaults to `mc-router.alexandergg.com`.
 
 `annotationPrefix` must not be empty and must not include a slash. All-namespaces discovery is not implemented.
 
 Reload behavior for discovery config will be defined in a later snapshot integration PR. Today, changing these values has no runtime effect because Kubernetes watches are not implemented.
+
+## Namespace Resolution
+
+When `discovery.kubernetes.namespace` is set to a non-empty value, that explicit namespace is used and no namespace file is read.
+
+When `discovery.kubernetes.namespace` is empty, the gateway treats it as current-namespace discovery. The current namespace is resolved by reading only this Kubernetes ServiceAccount namespace file:
+
+```text
+/var/run/secrets/kubernetes.io/serviceaccount/namespace
+```
+
+The file content is trimmed for spaces and newlines, then validated as a Kubernetes DNS label. Missing files, unreadable files, empty files, or invalid namespace values are errors. When discovery startup wiring is added, `discovery.kubernetes.enabled: true` with an empty namespace and an unreadable namespace file is expected to fail startup rather than silently list the wrong scope.
+
+The empty namespace value is not treated as all-namespaces discovery, and `metav1.NamespaceAll` is not used. Cluster-wide discovery remains unsupported.
 
 ## Annotation Example
 
@@ -180,9 +194,11 @@ When a discovered Service route is removed or no longer valid, the discovered ro
 
 ## RBAC Plan
 
-RBAC is not included yet because the current implementation does not call the Kubernetes API.
+RBAC is not included yet because the current implementation does not run a background watch controller.
 
 A future Service annotation controller should start with namespace-scoped permissions for Services, and only add EndpointSlice, Pod, or cluster-wide permissions if a later implementation actually needs them.
+
+Reading the ServiceAccount namespace file is not a Kubernetes API call and is not controlled by Kubernetes RBAC. It depends on the Pod's projected ServiceAccount volume.
 
 ## Metrics Plan
 
@@ -201,6 +217,10 @@ Discovery metrics should stay low-cardinality. Do not use namespace, Service nam
 Anyone who can write Service annotations in a watched namespace can change routing for the gateway.
 
 All-namespaces watch is deferred to reduce the blast radius of early discovery behavior.
+
+Namespace resolution reads only the ServiceAccount namespace file. It must not read the ServiceAccount token or CA certificate files.
+
+Future logs should include bounded failure context for namespace resolution, but should avoid dumping raw namespace file content. Namespace names should not be used as metrics labels because they are high-cardinality operational data.
 
 Host validation is mandatory. Annotation values must not be trusted as already safe.
 
@@ -236,6 +256,10 @@ The project now includes `client-go` dependency and initial list groundwork for 
 
 This implementation allows fetching a one-time snapshot of Services from the Kubernetes API and preparing them for the controller core. It does not start a background watch loop, use informers, or integrate with the runtime `Server` state yet.
 
+### Current Namespace Helper
+
+The project now includes a helper for resolving the namespace that should be passed to `ServiceLister.ListServices(ctx, namespace)`. It preserves the explicit namespace path and only reads the ServiceAccount namespace file when the configured namespace is empty. The helper is standalone groundwork; runtime startup does not call it yet.
+
 ### ExternalName Service Policy
 
 Initial implementation skips `ExternalName` Services. The gateway discovery model relies on generating backends in the form `service.namespace.svc.cluster.local:port`. `ExternalName` Services point to arbitrary external DNS names, which breaks this assumption and can lead to untrusted or non-canonical backend addresses being generated.
@@ -262,6 +286,7 @@ The current implementation intentionally stops at:
 - `client-go` dependency added.
 - `ServiceLister` groundwork for Kubernetes API initial list.
 - `ToServiceInput` conversion from Kubernetes `corev1.Service`.
+- Current namespace resolution helper for `discovery.kubernetes.namespace == ""`.
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary that currently receives an empty discovered route set.
 - Duplicate discovered host helper tests.
@@ -271,7 +296,6 @@ Not implemented yet:
 
 - Kubernetes API watch / informer loop.
 - Background goroutine watch controller.
-- Namespace file read for `discovery.kubernetes.namespace == ""`.
 - RBAC manifests.
 - CRDs.
 - Wake-up or scale-to-zero controller behavior.
@@ -280,4 +304,4 @@ Not implemented yet:
 
 ## Current Status
 
-Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, client-go initial list groundwork, and runtime merge-boundary groundwork only. It does not watch Kubernetes yet and does not automatically update routes at runtime.
+Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, client-go initial list groundwork, and runtime merge-boundary groundwork only. It does not watch Kubernetes yet and does not automatically update routes at runtime.
