@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	"github.com/AlexanderGG-0520/mc-router/internal/logging"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxy"
@@ -32,16 +31,16 @@ func main() {
 }
 
 func run(configPath string, logger *slog.Logger) error {
-	snapshot, err := loadRouteSnapshot(configPath)
-	if err != nil {
-		return err
-	}
-	cfg := snapshot.Config
-
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
+
+	snapshot, err := loadRouteSnapshot(ctx, configPath, logger)
+	if err != nil {
+		return err
+	}
+	cfg := snapshot.Config
 
 	server := proxy.NewServerFromSnapshot(snapshot, logger)
 	metricsServer, err := gatewaymetrics.StartHTTP(ctx, cfg.Metrics, server.Metrics(), logger)
@@ -70,18 +69,6 @@ func run(configPath string, logger *slog.Logger) error {
 
 type configReloader interface {
 	ReloadFile(path string) error
-}
-
-func loadRouteSnapshot(configPath string) (proxy.RouteSnapshot, error) {
-	cfg, err := config.LoadFile(configPath)
-	if err != nil {
-		return proxy.RouteSnapshot{}, err
-	}
-	snapshot, err := proxy.BuildRouteSnapshot(cfg, nil)
-	if err != nil {
-		return proxy.RouteSnapshot{}, err
-	}
-	return snapshot, nil
 }
 
 func serveReloadSignals(ctx context.Context, reloadCh <-chan os.Signal, configPath string, reloader configReloader) {

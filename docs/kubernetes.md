@@ -46,7 +46,7 @@ It creates:
 
 ## RBAC
 
-RBAC manifests are not included yet because the current implementation does not require a background watch loop. However, the groundwork for Kubernetes Service discovery now includes a Service lister that requires the following permissions in the watched namespace:
+RBAC manifests are not included yet. If `discovery.kubernetes.enabled` is true, startup performs a Kubernetes Service initial list and the gateway ServiceAccount requires the following permissions in the watched namespace:
 
 - `get`, `list` on `services`
 
@@ -55,9 +55,11 @@ Future watch-based discovery will also require:
 - `watch` on `services`
 - `get`, `list`, `watch` on `endpointslices` (if endpoint awareness is added)
 
-Kubernetes Service annotation discovery is planned but not active yet. See [Kubernetes Discovery](kubernetes-discovery.md) for the config and parser groundwork, annotation format, duplicate host policy, and future controller scope.
+Kubernetes Service annotation discovery is startup-only today. It does not watch for later Service changes. See [Kubernetes Discovery](kubernetes-discovery.md) for the config, annotation format, duplicate host policy, startup failure policy, and future controller scope.
 
-If `discovery.kubernetes.namespace` is empty, the planned in-cluster behavior is to resolve the current namespace from the Pod's ServiceAccount namespace file at `/var/run/secrets/kubernetes.io/serviceaccount/namespace`. This file read is not Kubernetes API RBAC; it comes from the mounted ServiceAccount volume. The gateway does not need to read the ServiceAccount token for namespace resolution.
+If `discovery.kubernetes.namespace` is empty, startup resolves the current namespace from the Pod's ServiceAccount namespace file at `/var/run/secrets/kubernetes.io/serviceaccount/namespace`. This file read is not Kubernetes API RBAC; it comes from the mounted ServiceAccount volume. The gateway does not read the ServiceAccount token for namespace resolution.
+
+When discovery is enabled, failure to resolve the namespace, create in-cluster Kubernetes config, or list Services fails startup. Keep `discovery.kubernetes.enabled: false` for static-only operation outside a Kubernetes Pod.
 
 ## Fallback Responses
 
@@ -157,6 +159,8 @@ The gateway supports `SIGHUP` config reload on supported Unix platforms, includi
 
 Reload is atomic from the gateway's point of view. If the updated config is invalid, the running route snapshot stays active. Active connections are not disconnected by reload; new connections use the new route snapshot after a successful reload.
 
+Kubernetes discovery is not re-run during `SIGHUP` reload. If discovery was enabled at startup, the startup-discovered routes remain active and are re-merged with the reloaded static config. Changes to Service annotations or discovery config require a process restart until watch-based discovery is implemented.
+
 Kubernetes ConfigMap projected volumes are updated asynchronously. Do not send `SIGHUP` until the mounted file has the expected content in the Pod. If you need deterministic rollout behavior across replicas, use a rolling restart instead of relying on manual signal timing.
 
 Example command shape:
@@ -190,4 +194,4 @@ With Cilium, use standard Kubernetes NetworkPolicy first. Move to CiliumNetworkP
 
 ## Future Discovery
 
-The first planned route discovery shape is Service annotation discovery. It should be namespace-scoped by default and should avoid requiring cluster-wide list/watch until there is a clear operational need. See [Kubernetes Discovery](kubernetes-discovery.md).
+The first route discovery shape is startup-only Service annotation discovery. It is namespace-scoped and avoids requiring cluster-wide list/watch. See [Kubernetes Discovery](kubernetes-discovery.md).

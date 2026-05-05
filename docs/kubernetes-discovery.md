@@ -4,7 +4,7 @@
 
 Kubernetes discovery is planned as a way to generate gateway routes from Kubernetes resources instead of maintaining every Minecraft backend route by hand in the static YAML file.
 
-The current implementation is groundwork only. It adds configuration types, validation, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a pure merge builder for static plus discovered routes, and a runtime route snapshot boundary that can accept discovered routes in memory. It does not connect to the Kubernetes API, watch resources, provide discovered routes at runtime, or change runtime routing behavior.
+The current implementation can perform a startup-only Kubernetes Service initial list when `discovery.kubernetes.enabled` is true. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a pure merge builder for static plus discovered routes, and a runtime route snapshot boundary. It does not watch resources, start a background controller, or automatically update routes after startup.
 
 ## Why Service Annotation Discovery First
 
@@ -47,7 +47,7 @@ Defaults:
 
 `annotationPrefix` must not be empty and must not include a slash. All-namespaces discovery is not implemented.
 
-Reload behavior for discovery config will be defined in a later snapshot integration PR. Today, changing these values has no runtime effect because Kubernetes watches are not implemented.
+Kubernetes discovery settings are startup settings in the current implementation. `SIGHUP` reload does not re-run the Kubernetes initial list.
 
 ## Namespace Resolution
 
@@ -59,7 +59,7 @@ When `discovery.kubernetes.namespace` is empty, the gateway treats it as current
 /var/run/secrets/kubernetes.io/serviceaccount/namespace
 ```
 
-The file content is trimmed for spaces and newlines, then validated as a Kubernetes DNS label. Missing files, unreadable files, empty files, or invalid namespace values are errors. When discovery startup wiring is added, `discovery.kubernetes.enabled: true` with an empty namespace and an unreadable namespace file is expected to fail startup rather than silently list the wrong scope.
+The file content is trimmed for spaces and newlines, then validated as a Kubernetes DNS label. Missing files, unreadable files, empty files, or invalid namespace values are errors. With `discovery.kubernetes.enabled: true`, namespace resolution failures fail startup rather than silently listing the wrong scope.
 
 The empty namespace value is not treated as all-namespaces discovery, and `metav1.NamespaceAll` is not used. Cluster-wide discovery remains unsupported.
 
@@ -137,7 +137,7 @@ Runtime route snapshot construction now has an internal boundary:
 validated config + discovered routes -> merged route snapshot + router
 ```
 
-Startup and config reload both pass through this boundary, but the discovered route provider is still empty. That means the current runtime still behaves as static-config-only unless a future provider supplies discovered routes.
+Startup and config reload both pass through this boundary. At startup, `discovery.kubernetes.enabled: true` feeds discovered routes from one Kubernetes Service initial list into this boundary. When discovery is disabled, the provider is empty and the runtime remains static-config-only.
 
 The ordering is intentional:
 
@@ -148,7 +148,27 @@ The ordering is intentional:
 
 Invalid static config fails before the merge builder runs. The merge builder does not try to repair or reinterpret invalid static routes. Merge ignored routes and stats are retained on the route snapshot boundary for future logging and metrics, but discovery metrics are not implemented yet.
 
-Kubernetes watches and controllers do not exist yet, so no goroutine, client, informer, or API connection feeds this boundary today.
+Kubernetes watches and controllers do not exist yet, so no goroutine, informer, or background API connection feeds this boundary after startup.
+
+## Startup Initial List
+
+When `discovery.kubernetes.enabled` is `false`, startup does not create an in-cluster Kubernetes client config, read the ServiceAccount namespace file, or call the Kubernetes API. Existing static-only behavior is preserved for non-Kubernetes environments.
+
+When `discovery.kubernetes.enabled` is `true`, startup performs this sequence:
+
+1. Parse and validate the static YAML config.
+2. Resolve the namespace from `discovery.kubernetes.namespace` or the current namespace file.
+3. Create an in-cluster Kubernetes client config with `rest.InClusterConfig`.
+4. List Services once in the resolved namespace.
+5. Convert Services to `ServiceInput`, skipping `ExternalName` Services.
+6. Build discovered routes from Service annotations.
+7. Merge static and discovered routes into the startup route snapshot.
+
+Invalid Service annotations are skipped and reported in the in-memory discovery result. Duplicate discovered hosts are also skipped. Neither condition fails startup as long as the Kubernetes API list itself succeeded.
+
+## Reload Limitation
+
+`SIGHUP` reload does not re-run the Kubernetes API initial list. The discovered routes captured at startup remain active and are re-merged with the newly loaded static config. This avoids accidentally dropping discovered routes on reload, but it also means changes to Service annotations, Kubernetes Services, or discovery config values require a process restart until watch/snapshot integration is added.
 
 ## Duplicate Host Policy
 
@@ -184,19 +204,26 @@ Skip reasons are intentionally low-cardinality so future logs and metrics can ag
 | `duplicate_host` | More than one discovered route produced the same normalized host, so all discovered routes for that host were disabled. |
 | `unknown` | A defensive fallback for unexpected controller-core failures. |
 
-## Failure Policy Plan
+## Failure Policy
 
-If Kubernetes API list or watch fails after a good snapshot exists, the gateway is expected to keep the last known good discovered snapshot.
+When `discovery.kubernetes.enabled` is `true`, startup fails for:
 
-The startup policy for `discovery.kubernetes.enabled: true` when the initial list fails is not finalized. Failing startup is the safer default because it avoids silently serving an incomplete route set.
+- namespace resolution failure
+- in-cluster config creation failure
+- initial Service list API failure
+- invalid static config
 
-When a discovered Service route is removed or no longer valid, the discovered route is expected to disappear from the active route snapshot after the future watch/snapshot integration observes the change.
+Failing startup is intentional because silently falling back to static-only routing can hide missing discovered routes.
+
+If Kubernetes API list or watch fails after a good snapshot exists, the gateway is expected to keep the last known good discovered snapshot. That behavior belongs to the future watch/snapshot integration. When a discovered Service route is removed or no longer valid, the discovered route is expected to disappear from the active route snapshot only after that future integration observes the change.
 
 ## RBAC Plan
 
-RBAC is not included yet because the current implementation does not run a background watch controller.
+RBAC manifests are not included yet. With startup initial list enabled, the ServiceAccount used by the gateway needs namespace-scoped permissions:
 
-A future Service annotation controller should start with namespace-scoped permissions for Services, and only add EndpointSlice, Pod, or cluster-wide permissions if a later implementation actually needs them.
+- `get`, `list` on `services`
+
+Future watch-based discovery will also need `watch` on `services`. EndpointSlice, Pod, or cluster-wide permissions should be added only if a later implementation actually needs them.
 
 Reading the ServiceAccount namespace file is not a Kubernetes API call and is not controlled by Kubernetes RBAC. It depends on the Pod's projected ServiceAccount volume.
 
@@ -254,11 +281,11 @@ The project now includes `client-go` dependency and initial list groundwork for 
 - `ClientServiceLister`: implementation using `client-go`.
 - `ToServiceInput`: pure conversion from `corev1.Service` to `ServiceInput`.
 
-This implementation allows fetching a one-time snapshot of Services from the Kubernetes API and preparing them for the controller core. It does not start a background watch loop, use informers, or integrate with the runtime `Server` state yet.
+This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for the controller core and feeds discovered routes into the startup route snapshot. It does not start a background watch loop or use informers.
 
 ### Current Namespace Helper
 
-The project now includes a helper for resolving the namespace that should be passed to `ServiceLister.ListServices(ctx, namespace)`. It preserves the explicit namespace path and only reads the ServiceAccount namespace file when the configured namespace is empty. The helper is standalone groundwork; runtime startup does not call it yet.
+The project includes a helper for resolving the namespace that is passed to `ServiceLister.ListServices(ctx, namespace)`. It preserves the explicit namespace path and only reads the ServiceAccount namespace file when the configured namespace is empty.
 
 ### ExternalName Service Policy
 
@@ -284,11 +311,11 @@ The current implementation intentionally stops at:
 - In-memory merge builder that combines static and discovered explicit routes.
 - Internal `RouteProvider` interface and `MemoryProvider` implementation.
 - `client-go` dependency added.
-- `ServiceLister` groundwork for Kubernetes API initial list.
+- Startup-only `ServiceLister` Kubernetes API initial list.
 - `ToServiceInput` conversion from Kubernetes `corev1.Service`.
 - Current namespace resolution helper for `discovery.kubernetes.namespace == ""`.
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
-- Runtime route snapshot boundary that currently receives an empty discovered route set.
+- Runtime route snapshot boundary that receives startup-discovered routes when Kubernetes discovery is enabled.
 - Duplicate discovered host helper tests.
 - Documentation of the intended merge and operation policy.
 
@@ -296,12 +323,14 @@ Not implemented yet:
 
 - Kubernetes API watch / informer loop.
 - Background goroutine watch controller.
+- Runtime auto-update after startup.
+- Periodic resync.
 - RBAC manifests.
 - CRDs.
 - Wake-up or scale-to-zero controller behavior.
 - REST API or Web UI.
-- Discovery metrics and logging.
+- Discovery metrics.
 
 ## Current Status
 
-Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, client-go initial list groundwork, and runtime merge-boundary groundwork only. It does not watch Kubernetes yet and does not automatically update routes at runtime.
+Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, startup-only client-go initial list, and runtime merge-boundary integration. It does not watch Kubernetes yet and does not automatically update routes after startup.

@@ -1341,6 +1341,45 @@ func TestReloadFileBuildsStaticOnlyRouteSnapshot(t *testing.T) {
 	}
 }
 
+func TestReloadFilePreservesStartupDiscoveredRoutes(t *testing.T) {
+	staticBackend := listenLocalTCP(t)
+	defer staticBackend.Close()
+
+	configPath := writeRouteConfig(t, staticBackend.Addr().String())
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("config.LoadFile: %v", err)
+	}
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "discovered.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	secondBackend := listenLocalTCP(t)
+	defer secondBackend.Close()
+	writeRoutesConfigAt(t, configPath, []config.Route{
+		{ServerAddress: "smp.example.com", Backend: secondBackend.Addr().String()},
+	})
+	if err := server.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+
+	state := server.currentState()
+	if state.discoveryMerge.Stats.DiscoveredRoutes != 1 {
+		t.Fatalf("reload discovered routes = %d, want 1", state.discoveryMerge.Stats.DiscoveredRoutes)
+	}
+	selection, err := state.router.Select("discovered.example.com")
+	if err != nil {
+		t.Fatalf("Select discovered route after reload: %v", err)
+	}
+	if selection.Backend != "smp.minecraft.svc.cluster.local:25565" {
+		t.Fatalf("discovered backend = %q, want smp.minecraft.svc.cluster.local:25565", selection.Backend)
+	}
+}
+
 func TestNewServerFromSnapshotCopiesMutableSnapshotData(t *testing.T) {
 	cfg := validProxyConfig()
 	cfg.Routes = []config.Route{
@@ -1355,6 +1394,7 @@ func TestNewServerFromSnapshotCopiesMutableSnapshotData(t *testing.T) {
 
 	server := NewServerFromSnapshot(snapshot, testLogger())
 	snapshot.Config.Routes[0].Backend = "mutated.example.com:25565"
+	snapshot.DiscoveredRoutes[0].Backend = "mutated.minecraft.svc.cluster.local:25565"
 	snapshot.DiscoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence] = 99
 
 	state := server.currentState()
@@ -1363,6 +1403,9 @@ func TestNewServerFromSnapshotCopiesMutableSnapshotData(t *testing.T) {
 	}
 	if state.discoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence] != 1 {
 		t.Fatalf("stored ignored count = %d, want 1", state.discoveryMerge.Stats.IgnoredByReason[discovery.ReasonStaticRoutePrecedence])
+	}
+	if state.discoveredRoutes[0].Backend != "smp.minecraft.svc.cluster.local:25565" {
+		t.Fatalf("stored discovered backend = %q, want smp.minecraft.svc.cluster.local:25565", state.discoveredRoutes[0].Backend)
 	}
 }
 
