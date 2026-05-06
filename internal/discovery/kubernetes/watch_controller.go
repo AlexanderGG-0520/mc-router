@@ -16,6 +16,11 @@ type RouteSink interface {
 	Update([]DiscoveredRoute)
 }
 
+// RouteResultSink accepts the full controller result for callers that need skip stats.
+type RouteResultSink interface {
+	UpdateResult(Result)
+}
+
 type ServiceWatchControllerOptions struct {
 	AnnotationPrefix string
 }
@@ -144,6 +149,10 @@ func (c *ServiceWatchController) updateSink(services map[string]ServiceInput) {
 	}
 
 	result := BuildDiscoveredRoutes(inputs, c.options)
+	if sink, ok := c.sink.(RouteResultSink); ok {
+		sink.UpdateResult(result)
+		return
+	}
 	c.sink.Update(result.Routes)
 }
 

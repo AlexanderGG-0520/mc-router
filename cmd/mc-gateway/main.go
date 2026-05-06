@@ -43,6 +43,12 @@ func run(configPath string, logger *slog.Logger) error {
 	cfg := snapshot.Config
 
 	server := proxy.NewServerFromSnapshot(snapshot, logger)
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(ctx, snapshot.StaticConfig, server, logger, defaultDiscoveryRuntimeDeps())
+	if err != nil {
+		return err
+	}
+	defer runtimeDiscovery.Stop()
+
 	metricsServer, err := gatewaymetrics.StartHTTP(ctx, cfg.Metrics, server.Metrics(), logger)
 	if err != nil {
 		return err

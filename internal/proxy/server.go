@@ -31,9 +31,12 @@ type Server struct {
 	listenerMu sync.Mutex
 	listener   net.Listener
 	wg         sync.WaitGroup
+
+	snapshotMu sync.Mutex
 }
 
 type serverState struct {
+	staticConfig     config.Config
 	cfg              config.Config
 	router           *router.Router
 	discoveryMerge   discovery.MergeResult
@@ -43,6 +46,7 @@ type serverState struct {
 type dialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
 
 type RouteSnapshot struct {
+	StaticConfig     config.Config
 	Config           config.Config
 	Router           *router.Router
 	DiscoveryMerge   discovery.MergeResult
@@ -76,13 +80,14 @@ func BuildRouteSnapshot(cfg config.Config, discoveredRoutes []kubernetes.Discove
 	merge := discovery.MergeRoutes(cfg.Routes, discoveredRoutes, discovery.MergeOptions{
 		DefaultRoute: cfg.DefaultRoute,
 	})
-	mergedConfig := cfg
+	mergedConfig := cloneConfig(cfg)
 	mergedConfig.Routes = merge.Routes
 	routeTable, err := router.New(mergedConfig)
 	if err != nil {
 		return RouteSnapshot{}, err
 	}
 	return RouteSnapshot{
+		StaticConfig:     cloneConfig(cfg),
 		Config:           mergedConfig,
 		Router:           routeTable,
 		DiscoveryMerge:   merge,
@@ -110,6 +115,10 @@ func RebuildRouteSnapshot(ctx context.Context, cfg config.Config, provider disco
 
 func newServer(snapshot RouteSnapshot, logger *slog.Logger) *Server {
 	snapshot = cloneRouteSnapshot(snapshot)
+	staticConfig := snapshot.StaticConfig
+	if staticConfig.Listen == "" {
+		staticConfig = snapshot.Config
+	}
 	cfg := snapshot.Config
 	routeTable := snapshot.Router
 	if routeTable == nil {
@@ -126,6 +135,7 @@ func newServer(snapshot RouteSnapshot, logger *slog.Logger) *Server {
 	}
 	s.generation.Store(1)
 	s.state.Store(&serverState{
+		staticConfig:     cloneConfig(staticConfig),
 		cfg:              cfg,
 		router:           routeTable,
 		discoveryMerge:   snapshot.DiscoveryMerge,
@@ -155,6 +165,10 @@ func (s *Server) ReloadFile(path string) error {
 		s.logger.Error("reload_failed", "config", path, "error", err)
 		return err
 	}
+
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+
 	current := s.currentState()
 	snapshot, err := BuildRouteSnapshot(cfg, current.discoveredRoutes)
 	if err != nil {
@@ -162,7 +176,7 @@ func (s *Server) ReloadFile(path string) error {
 		s.logger.Error("reload_failed", "config", path, "error", err)
 		return err
 	}
-	s.UpdateRouteSnapshot(snapshot)
+	s.updateRouteSnapshotLocked(snapshot)
 	s.metrics.Reload(gatewaymetrics.ReloadResultSuccess)
 	s.logger.Info(
 		"reload_success",
@@ -180,13 +194,64 @@ func (s *Server) UpdateConfig(cfg config.Config, routeTable *router.Router) {
 }
 
 func (s *Server) UpdateRouteSnapshot(snapshot RouteSnapshot) {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+	s.updateRouteSnapshotLocked(snapshot)
+}
+
+func (s *Server) UpdateDiscoveredRoutes(ctx context.Context, discoveredRoutes []kubernetes.DiscoveredRoute) error {
+	if ctx == nil {
+		return errors.New("context is nil")
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	discoveredRoutes = append([]kubernetes.DiscoveredRoute(nil), discoveredRoutes...)
+
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	current := s.currentState()
+	snapshot, err := BuildRouteSnapshot(current.staticConfig, discoveredRoutes)
+	if err != nil {
+		return err
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	s.updateRouteSnapshotLocked(snapshot)
+	return nil
+}
+
+func (s *Server) Snapshot() RouteSnapshot {
+	return cloneRouteSnapshot(stateToSnapshot(s.currentState()))
+}
+
+func (s *Server) updateRouteSnapshotLocked(snapshot RouteSnapshot) {
 	snapshot = cloneRouteSnapshot(snapshot)
+	staticConfig := snapshot.StaticConfig
+	if staticConfig.Listen == "" {
+		staticConfig = snapshot.Config
+	}
 	cfg := snapshot.Config
 	routeTable := snapshot.Router
 	if routeTable == nil {
 		panic("proxy: nil router")
 	}
 	s.state.Store(&serverState{
+		staticConfig:     cloneConfig(staticConfig),
 		cfg:              cfg,
 		router:           routeTable,
 		discoveryMerge:   snapshot.DiscoveryMerge,
@@ -197,12 +262,26 @@ func (s *Server) UpdateRouteSnapshot(snapshot RouteSnapshot) {
 }
 
 func cloneRouteSnapshot(snapshot RouteSnapshot) RouteSnapshot {
-	snapshot.Config.Routes = append([]config.Route(nil), snapshot.Config.Routes...)
+	snapshot.StaticConfig = cloneConfig(snapshot.StaticConfig)
+	snapshot.Config = cloneConfig(snapshot.Config)
 	snapshot.DiscoveredRoutes = append([]kubernetes.DiscoveredRoute(nil), snapshot.DiscoveredRoutes...)
 	snapshot.DiscoveryMerge.Routes = append([]config.Route(nil), snapshot.DiscoveryMerge.Routes...)
 	snapshot.DiscoveryMerge.Ignored = append([]discovery.IgnoredDiscoveredRoute(nil), snapshot.DiscoveryMerge.Ignored...)
 	snapshot.DiscoveryMerge.Stats.IgnoredByReason = cloneStringIntMap(snapshot.DiscoveryMerge.Stats.IgnoredByReason)
 	return snapshot
+}
+
+func cloneConfig(cfg config.Config) config.Config {
+	cfg.Routes = append([]config.Route(nil), cfg.Routes...)
+	if cfg.Fallback.Login.RespondOnRouteDenied != nil {
+		value := *cfg.Fallback.Login.RespondOnRouteDenied
+		cfg.Fallback.Login.RespondOnRouteDenied = &value
+	}
+	if cfg.Fallback.Status.RespondOnRouteDenied != nil {
+		value := *cfg.Fallback.Status.RespondOnRouteDenied
+		cfg.Fallback.Status.RespondOnRouteDenied = &value
+	}
+	return cfg
 }
 
 func cloneStringIntMap(values map[string]int) map[string]int {
@@ -222,6 +301,16 @@ func (s *Server) currentState() *serverState {
 		panic("proxy: server state is not initialized")
 	}
 	return state
+}
+
+func stateToSnapshot(state *serverState) RouteSnapshot {
+	return RouteSnapshot{
+		StaticConfig:     state.staticConfig,
+		Config:           state.cfg,
+		Router:           state.router,
+		DiscoveryMerge:   state.discoveryMerge,
+		DiscoveredRoutes: state.discoveredRoutes,
+	}
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {

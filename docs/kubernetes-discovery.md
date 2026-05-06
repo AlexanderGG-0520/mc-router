@@ -4,9 +4,9 @@
 
 Kubernetes discovery is planned as a way to generate gateway routes from Kubernetes resources instead of maintaining every Minecraft backend route by hand in the static YAML file.
 
-The current implementation can perform a startup-only Kubernetes Service initial list when `discovery.kubernetes.enabled` is true. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, and a runtime route snapshot boundary.
+The current implementation performs a Kubernetes Service initial list at startup when `discovery.kubernetes.enabled` is true, then starts a namespace-scoped Service watch controller. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, and runtime route snapshot updates.
 
-The watch controller core can update a route sink such as the in-memory provider when it is run directly, but the gateway runtime does not start it yet. Runtime route snapshots are still not automatically updated after startup.
+Watch updates rebuild the route snapshot from the latest valid static config plus the latest complete discovered route set. The active route snapshot is swapped only after rebuild succeeds.
 
 ## Why Service Annotation Discovery First
 
@@ -49,7 +49,7 @@ Defaults:
 
 `annotationPrefix` must not be empty and must not include a slash. All-namespaces discovery is not implemented.
 
-Kubernetes discovery settings are startup settings in the current implementation. `SIGHUP` reload does not re-run the Kubernetes initial list.
+Kubernetes discovery settings are startup settings in the current implementation. `SIGHUP` reload does not re-resolve the discovery namespace or restart the watch controller.
 
 ## Namespace Resolution
 
@@ -99,7 +99,7 @@ The backend host is generated from Service name and namespace. The backend port 
 
 ## Static Config Priority
 
-Future snapshot integration should merge route sources with this order:
+Runtime snapshot integration merges route sources with this order:
 
 1. Static routes win over discovered routes.
 2. Valid discovered routes are used next.
@@ -150,7 +150,7 @@ The ordering is intentional:
 
 Invalid static config fails before the merge builder runs. The merge builder does not try to repair or reinterpret invalid static routes. Merge ignored routes and stats are retained on the route snapshot boundary for future logging and metrics, but discovery metrics are not implemented yet.
 
-A standalone Kubernetes Service watch controller core exists, but no runtime goroutine or background API connection feeds this boundary after startup yet.
+When Kubernetes discovery is enabled, a runtime goroutine starts the namespace-scoped Service watch controller after the startup snapshot is built. Successful watch updates feed this boundary and atomically replace the active route snapshot for new connections.
 
 ## Startup Initial List
 
@@ -168,9 +168,23 @@ When `discovery.kubernetes.enabled` is `true`, startup performs this sequence:
 
 Invalid Service annotations are skipped and reported in the in-memory discovery result. Duplicate discovered hosts are also skipped. Neither condition fails startup as long as the Kubernetes API list itself succeeded.
 
-## Reload Limitation
+## Runtime Watch Updates
 
-`SIGHUP` reload does not re-run the Kubernetes API initial list. The discovered routes captured at startup remain active and are re-merged with the newly loaded static config. This avoids accidentally dropping discovered routes on reload, but it also means changes to Service annotations, Kubernetes Services, or discovery config values require a process restart until the watch controller is connected to runtime snapshot updates.
+The Service watch controller performs its own initial list, starts a direct `client-go` watch from the returned resource version, and sends the complete valid discovered route set to the runtime after each add/update/delete event.
+
+On each successful sink update, the runtime:
+
+1. Copies the discovered routes.
+2. Rebuilds a `RouteSnapshot` using the latest valid static config.
+3. Calls `UpdateRouteSnapshot` only if the rebuild succeeds.
+
+If a Service is deleted or becomes invalid, the next complete replacement removes its route from the active snapshot after rebuild succeeds. Duplicate discovered hosts disable all discovered routes for that host.
+
+## Reload Interaction
+
+`SIGHUP` reload does not re-run the Kubernetes API initial list and does not restart the watch controller. Reload reads the static config file, validates it, and re-merges it with the latest discovered routes already held by the runtime. A watch update re-merges the latest discovered routes with the latest valid static config.
+
+Reload and watch updates are serialized by the server's route snapshot update lock. Active connections keep the snapshot they loaded at connection start. New connections use the latest successfully swapped snapshot.
 
 ## Duplicate Host Policy
 
@@ -188,7 +202,7 @@ The current controller core is a pure in-memory builder:
 
 It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information.
 
-This is an implementation step between parser/controller groundwork and Kubernetes API integration. The controller core stays separate from runtime provider integration and metrics.
+This controller core is used by both startup discovery and runtime watch updates. Metrics remain separate and are not implemented for discovery yet.
 
 Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
 
@@ -217,7 +231,11 @@ When `discovery.kubernetes.enabled` is `true`, startup fails for:
 
 Failing startup is intentional because silently falling back to static-only routing can hide missing discovered routes.
 
-If Kubernetes API list or watch fails after a good snapshot exists, the gateway is expected to keep the last known good discovered snapshot. The standalone watch controller updates its sink after successful list/watch events; the exact runtime failure policy belongs to the future runtime integration PR. When a discovered Service route is removed or no longer valid, the discovered route is expected to disappear from the active route snapshot only after that future integration observes the change.
+Watch setup is part of startup when Kubernetes discovery is enabled. If the watch controller cannot complete its initial list and open the watch, startup fails.
+
+After the watch controller has started, watch error events or unexpected watch channel close stop watch updates and log `kubernetes_discovery_watch_failed`. The existing active route snapshot remains in place. The current implementation does not run a retry or backoff manager; operators should restart the Pod to restore watch updates after a runtime watch failure.
+
+If a watch update reaches the runtime but `RouteSnapshot` rebuild fails, the gateway logs `kubernetes_discovery_runtime_snapshot_failed` and keeps the existing active snapshot. Invalid Service annotations and duplicate discovered hosts are handled by the discovery controller as skipped resources; valid discovered routes can still update the active snapshot.
 
 ## RBAC
 
@@ -291,15 +309,15 @@ The project now includes `client-go` dependency and initial list groundwork for 
 - `ClientServiceLister`: implementation using `client-go`.
 - `ToServiceInput`: pure conversion from `corev1.Service` to `ServiceInput`.
 
-This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for the controller core and feeds discovered routes into the startup route snapshot. It does not start the Service watch controller core in the gateway runtime yet.
+This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for the controller core and feeds discovered routes into the startup route snapshot. The gateway then starts the Service watch controller for runtime updates.
 
 ### Kubernetes Service Watch Controller Core
 
 The project includes a namespace-scoped Service watch controller core. It performs an initial Service list, starts a direct `client-go` watch from the returned resource version, rebuilds discovered routes after Service add/update/delete events, and publishes the complete valid route set to a route sink.
 
-The controller uses direct watch instead of an informer in this first core because it keeps the API small and makes fake-client tests explicit: list, watch events, and sink updates are all visible at the controller boundary. Initial list failure, watch setup failure, watch error events, and unexpected watch channel close return errors to the controller caller. Runtime retry and last-known-good policy will be finalized when the controller is connected to runtime snapshot updates.
+The controller uses direct watch instead of an informer in this first runtime integration because it keeps the API small and makes fake-client tests explicit: list, watch events, and sink updates are all visible at the controller boundary. Initial list failure, watch setup failure, watch error events, and unexpected watch channel close return errors to the controller caller.
 
-It does not touch the gateway runtime server state and does not swap active `RouteSnapshot` values. Runtime auto-update remains a separate integration step.
+The gateway runtime owns the active `RouteSnapshot` swap. The watch controller only publishes complete discovered route replacements to a sink.
 
 ### Current Namespace Helper
 
@@ -329,19 +347,18 @@ The current implementation intentionally stops at:
 - In-memory merge builder that combines static and discovered explicit routes.
 - Internal `RouteProvider` interface and `MemoryProvider` implementation.
 - `client-go` dependency added.
-- Startup-only `ServiceLister` Kubernetes API initial list.
+- Startup `ServiceLister` Kubernetes API initial list.
 - `ToServiceInput` conversion from Kubernetes `corev1.Service`.
 - Current namespace resolution helper for `discovery.kubernetes.namespace == ""`.
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary that receives startup-discovered routes when Kubernetes discovery is enabled.
+- Runtime route snapshot updates from the namespace-scoped Service watch controller.
 - Duplicate discovered host helper tests.
 - Documentation of the intended merge and operation policy.
 
 Not implemented yet:
 
-- Runtime-owned Kubernetes API watch / informer loop.
-- Background goroutine that starts the watch controller from the gateway runtime.
-- Runtime auto-update after startup.
+- Retry or backoff manager for runtime watch failures.
 - Periodic resync.
 - ClusterRole or all-namespaces RBAC manifests.
 - CRDs.
@@ -351,4 +368,4 @@ Not implemented yet:
 
 ## Current Status
 
-Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, startup-only client-go initial list, namespace-scoped Service watch controller core, and runtime merge-boundary integration. The gateway runtime does not start the watch controller yet and does not automatically update routes after startup.
+Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, startup client-go initial list, namespace-scoped Service watch controller core, runtime merge-boundary integration, and runtime route snapshot updates after Service watch events.
