@@ -1380,6 +1380,217 @@ func TestReloadFilePreservesStartupDiscoveredRoutes(t *testing.T) {
 	}
 }
 
+func TestUpdateDiscoveredRoutesAddsUpdatesAndDeletesRoutes(t *testing.T) {
+	cfg := validProxyConfig()
+	snapshot, err := BuildRouteSnapshot(cfg, nil)
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	}); err != nil {
+		t.Fatalf("UpdateDiscoveredRoutes add: %v", err)
+	}
+	selection, err := server.currentState().router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("Select added discovered route: %v", err)
+	}
+	if selection.Backend != "smp.minecraft.svc.cluster.local:25565" {
+		t.Fatalf("added backend = %q", selection.Backend)
+	}
+
+	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp-new.minecraft.svc.cluster.local:25566"},
+	}); err != nil {
+		t.Fatalf("UpdateDiscoveredRoutes update: %v", err)
+	}
+	selection, err = server.currentState().router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("Select updated discovered route: %v", err)
+	}
+	if selection.Backend != "smp-new.minecraft.svc.cluster.local:25566" {
+		t.Fatalf("updated backend = %q", selection.Backend)
+	}
+
+	if err := server.UpdateDiscoveredRoutes(context.Background(), nil); err != nil {
+		t.Fatalf("UpdateDiscoveredRoutes delete: %v", err)
+	}
+	if _, err := server.currentState().router.Select("smp.example.com"); err == nil {
+		t.Fatal("deleted discovered route is still selectable")
+	}
+}
+
+func TestUpdateDiscoveredRoutesKeepsStaticPrecedenceAndDefaultRoute(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.UnknownHostPolicy = config.UnknownHostDefault
+	cfg.DefaultRoute = config.DefaultRoute{Backend: "default.example.com:25565", Mode: config.RouteModeAllow}
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: "static.example.com:25565"}}
+	snapshot, err := BuildRouteSnapshot(cfg, nil)
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+		{Host: "build.example.com", Backend: "build.minecraft.svc.cluster.local:25565"},
+	}); err != nil {
+		t.Fatalf("UpdateDiscoveredRoutes: %v", err)
+	}
+
+	state := server.currentState()
+	selection, err := state.router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("Select static route: %v", err)
+	}
+	if selection.Backend != "static.example.com:25565" {
+		t.Fatalf("static backend = %q", selection.Backend)
+	}
+	if len(state.cfg.Routes) != 2 {
+		t.Fatalf("explicit routes = %d, want static plus one discovered route", len(state.cfg.Routes))
+	}
+	selection, err = state.router.Select("unknown.example.com")
+	if err != nil {
+		t.Fatalf("Select default route: %v", err)
+	}
+	if selection.Backend != "default.example.com:25565" {
+		t.Fatalf("default backend = %q", selection.Backend)
+	}
+}
+
+func TestUpdateDiscoveredRoutesFailureKeepsExistingSnapshot(t *testing.T) {
+	cfg := validProxyConfig()
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	snapshot.StaticConfig.Routes = []config.Route{
+		{ServerAddress: "duplicate.example.com", Backend: "first.example.com:25565"},
+		{ServerAddress: "duplicate.example.com", Backend: "second.example.com:25565"},
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	err = server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+		{Host: "bad.example.com", Backend: "bad.minecraft.svc.cluster.local:25565"},
+	})
+	if err == nil {
+		t.Fatal("UpdateDiscoveredRoutes succeeded with invalid static config")
+	}
+	selection, err := server.currentState().router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("existing route was not preserved: %v", err)
+	}
+	if selection.Backend != "smp.minecraft.svc.cluster.local:25565" {
+		t.Fatalf("preserved backend = %q", selection.Backend)
+	}
+	if _, err := server.currentState().router.Select("bad.example.com"); err == nil {
+		t.Fatal("invalid discovered route was swapped into the active snapshot")
+	}
+}
+
+func TestUpdateDiscoveredRoutesCanceledContextKeepsExistingSnapshot(t *testing.T) {
+	cfg := validProxyConfig()
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := server.UpdateDiscoveredRoutes(ctx, []kubernetes.DiscoveredRoute{
+		{Host: "new.example.com", Backend: "new.minecraft.svc.cluster.local:25565"},
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("UpdateDiscoveredRoutes error = %v, want context.Canceled", err)
+	}
+	if _, err := server.currentState().router.Select("smp.example.com"); err != nil {
+		t.Fatalf("existing route was not preserved: %v", err)
+	}
+	if _, err := server.currentState().router.Select("new.example.com"); err == nil {
+		t.Fatal("canceled update changed the active snapshot")
+	}
+}
+
+func TestReloadAndWatchUpdatesShareLatestInputs(t *testing.T) {
+	staticBackend := listenLocalTCP(t)
+	defer staticBackend.Close()
+	reloadedBackend := listenLocalTCP(t)
+	defer reloadedBackend.Close()
+
+	configPath := writeRouteConfig(t, staticBackend.Addr().String())
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("config.LoadFile: %v", err)
+	}
+	snapshot, err := BuildRouteSnapshot(cfg, nil)
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+		{Host: "discovered.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	}); err != nil {
+		t.Fatalf("UpdateDiscoveredRoutes initial: %v", err)
+	}
+
+	writeRoutesConfigAt(t, configPath, []config.Route{
+		{ServerAddress: "smp.example.com", Backend: reloadedBackend.Addr().String()},
+	})
+	if err := server.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+	if _, err := server.currentState().router.Select("discovered.example.com"); err != nil {
+		t.Fatalf("reload dropped latest discovered route: %v", err)
+	}
+
+	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+		{Host: "new.example.com", Backend: "new.minecraft.svc.cluster.local:25565"},
+	}); err != nil {
+		t.Fatalf("UpdateDiscoveredRoutes after reload: %v", err)
+	}
+	selection, err := server.currentState().router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("watch update dropped latest static route: %v", err)
+	}
+	if selection.Backend != reloadedBackend.Addr().String() {
+		t.Fatalf("static backend after watch update = %q, want %q", selection.Backend, reloadedBackend.Addr().String())
+	}
+	if _, err := server.currentState().router.Select("discovered.example.com"); err == nil {
+		t.Fatal("old discovered route survived complete replacement update")
+	}
+}
+
+func TestSnapshotReturnsCopies(t *testing.T) {
+	cfg := validProxyConfig()
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	got := server.Snapshot()
+	got.StaticConfig.Routes = append(got.StaticConfig.Routes, config.Route{ServerAddress: "mutated.example.com", Backend: "mutated.example.com:25565"})
+	got.Config.Routes[0].Backend = "mutated.example.com:25565"
+	got.DiscoveredRoutes[0].Backend = "mutated.minecraft.svc.cluster.local:25565"
+
+	again := server.Snapshot()
+	if len(again.StaticConfig.Routes) != len(cfg.Routes) {
+		t.Fatalf("static routes were mutated through snapshot copy")
+	}
+	if again.DiscoveredRoutes[0].Backend != "smp.minecraft.svc.cluster.local:25565" {
+		t.Fatalf("discovered backend was mutated through snapshot copy: %q", again.DiscoveredRoutes[0].Backend)
+	}
+}
+
 func TestNewServerFromSnapshotCopiesMutableSnapshotData(t *testing.T) {
 	cfg := validProxyConfig()
 	cfg.Routes = []config.Route{

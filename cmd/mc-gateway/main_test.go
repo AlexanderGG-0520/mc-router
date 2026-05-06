@@ -7,16 +7,22 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
+	k8sclient "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 type fakeReloader struct {
@@ -400,6 +406,101 @@ func TestLoadRouteSnapshotExternalNameServiceIsSkipped(t *testing.T) {
 	}
 }
 
+func TestStartKubernetesRuntimeDiscoveryDisabledDoesNotCallDeps(t *testing.T) {
+	cfg := config.Defaults()
+	updater := newRecordingDiscoveredRouteUpdater()
+	deps := discoveryRuntimeDeps{
+		resolveNamespace: func(string, k8sdiscovery.NamespaceResolver) (string, error) {
+			t.Fatal("resolveNamespace called when discovery is disabled")
+			return "", nil
+		},
+		inClusterConfig: func() (*rest.Config, error) {
+			t.Fatal("inClusterConfig called when discovery is disabled")
+			return nil, nil
+		},
+	}
+
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(context.Background(), cfg, updater, discardLogger(), deps)
+	if err != nil {
+		t.Fatalf("startKubernetesRuntimeDiscovery: %v", err)
+	}
+	if runtimeDiscovery != nil {
+		t.Fatal("runtime discovery started when discovery is disabled")
+	}
+	if updater.updated() {
+		t.Fatal("updater was called when discovery is disabled")
+	}
+}
+
+func TestStartKubernetesRuntimeDiscoveryWatchFailureReturnsStartupError(t *testing.T) {
+	cfg := runtimeDiscoveryConfig()
+	client := fake.NewSimpleClientset()
+	client.Fake.PrependWatchReactor("services", func(k8stesting.Action) (bool, watch.Interface, error) {
+		return true, nil, errors.New("watch failed")
+	})
+	deps := fakeRuntimeDiscoveryDeps(t, "minecraft", client)
+
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(context.Background(), cfg, newRecordingDiscoveredRouteUpdater(), discardLogger(), deps)
+	if err == nil {
+		t.Fatal("startKubernetesRuntimeDiscovery error = nil, want watch error")
+	}
+	if runtimeDiscovery != nil {
+		t.Fatal("runtime discovery returned on watch startup failure")
+	}
+}
+
+func TestKubernetesRuntimeDiscoveryUpdatesCompleteRouteSet(t *testing.T) {
+	cfg := runtimeDiscoveryConfig()
+	client := fake.NewSimpleClientset()
+	updater := newRecordingDiscoveredRouteUpdater()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(ctx, cfg, updater, discardLogger(), fakeRuntimeDiscoveryDeps(t, "minecraft", client))
+	if err != nil {
+		t.Fatalf("startKubernetesRuntimeDiscovery: %v", err)
+	}
+	defer runtimeDiscovery.Stop()
+	waitForDiscoveredHosts(t, updater, nil)
+
+	if _, err := client.CoreV1().Services("minecraft").Create(context.Background(), runtimeAnnotatedService("smp", "minecraft", "smp.example.com", 25565), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create Service: %v", err)
+	}
+	waitForDiscoveredHosts(t, updater, []string{"smp.example.com"})
+
+	updated := runtimeAnnotatedService("smp", "minecraft", "new.example.com", 25565)
+	if _, err := client.CoreV1().Services("minecraft").Update(context.Background(), updated, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("Update Service: %v", err)
+	}
+	waitForDiscoveredHosts(t, updater, []string{"new.example.com"})
+
+	if err := client.CoreV1().Services("minecraft").Delete(context.Background(), "smp", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("Delete Service: %v", err)
+	}
+	waitForDiscoveredHosts(t, updater, nil)
+}
+
+func TestKubernetesRuntimeDiscoverySkipsInvalidAndDuplicateServices(t *testing.T) {
+	cfg := runtimeDiscoveryConfig()
+	client := fake.NewSimpleClientset(
+		runtimeAnnotatedService("valid", "minecraft", "valid.example.com", 25565),
+		runtimeAnnotatedService("duplicate-a", "minecraft", "dup.example.com", 25565),
+		runtimeAnnotatedService("duplicate-b", "minecraft", "DUP.Example.COM.", 25566),
+		runtimeAnnotatedService("bad", "minecraft", "bad host.example.com", 25565),
+	)
+	updater := newRecordingDiscoveredRouteUpdater()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(ctx, cfg, updater, discardLogger(), fakeRuntimeDiscoveryDeps(t, "minecraft", client))
+	if err != nil {
+		t.Fatalf("startKubernetesRuntimeDiscovery: %v", err)
+	}
+	defer runtimeDiscovery.Stop()
+
+	waitForDiscoveredHosts(t, updater, []string{"valid.example.com"})
+}
+
 type fakeStartupServiceLister struct {
 	namespace string
 	services  []k8sdiscovery.ServiceInput
@@ -445,6 +546,109 @@ func startupService(name string, namespace string, host string, port int) k8sdis
 			k8sdiscovery.DefaultAnnotationPrefix + "/" + k8sdiscovery.AnnotationPort:    strconv.Itoa(port),
 		},
 		Ports: []k8sdiscovery.ServicePort{{Name: "minecraft", Port: port}},
+	}
+}
+
+type recordingDiscoveredRouteUpdater struct {
+	mu      sync.RWMutex
+	routes  []k8sdiscovery.DiscoveredRoute
+	updates int
+	err     error
+}
+
+func newRecordingDiscoveredRouteUpdater() *recordingDiscoveredRouteUpdater {
+	return &recordingDiscoveredRouteUpdater{}
+}
+
+func (u *recordingDiscoveredRouteUpdater) UpdateDiscoveredRoutes(ctx context.Context, routes []k8sdiscovery.DiscoveredRoute) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.err != nil {
+		return u.err
+	}
+	u.routes = append([]k8sdiscovery.DiscoveredRoute(nil), routes...)
+	u.updates++
+	return nil
+}
+
+func (u *recordingDiscoveredRouteUpdater) snapshot() []k8sdiscovery.DiscoveredRoute {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return append([]k8sdiscovery.DiscoveredRoute(nil), u.routes...)
+}
+
+func (u *recordingDiscoveredRouteUpdater) updated() bool {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return u.updates > 0
+}
+
+func waitForDiscoveredHosts(t *testing.T, updater *recordingDiscoveredRouteUpdater, want []string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if updater.updated() && strings.Join(discoveredHosts(updater.snapshot()), ",") == strings.Join(sortedStrings(want), ",") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("discovered hosts = %v, want %v", discoveredHosts(updater.snapshot()), sortedStrings(want))
+}
+
+func discoveredHosts(routes []k8sdiscovery.DiscoveredRoute) []string {
+	hosts := make([]string, 0, len(routes))
+	for _, route := range routes {
+		hosts = append(hosts, route.Host)
+	}
+	return sortedStrings(hosts)
+}
+
+func sortedStrings(values []string) []string {
+	res := append([]string(nil), values...)
+	sort.Strings(res)
+	return res
+}
+
+func runtimeDiscoveryConfig() config.Config {
+	cfg := config.Defaults()
+	cfg.Listen = ":0"
+	cfg.Discovery.Kubernetes.Enabled = true
+	cfg.Discovery.Kubernetes.Namespace = "minecraft"
+	return cfg
+}
+
+func fakeRuntimeDiscoveryDeps(t *testing.T, wantNamespace string, client *fake.Clientset) discoveryRuntimeDeps {
+	t.Helper()
+	return discoveryRuntimeDeps{
+		resolveNamespace: func(configured string, resolver k8sdiscovery.NamespaceResolver) (string, error) {
+			if configured != wantNamespace {
+				t.Fatalf("configured namespace = %q, want %q", configured, wantNamespace)
+			}
+			return configured, nil
+		},
+		inClusterConfig: func() (*rest.Config, error) {
+			return &rest.Config{}, nil
+		},
+		newKubernetesClient: func(*rest.Config) (k8sclient.Interface, error) {
+			return client, nil
+		},
+	}
+}
+
+func runtimeAnnotatedService(name, namespace, host string, port int) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Annotations: map[string]string{
+				k8sdiscovery.DefaultAnnotationPrefix + "/" + k8sdiscovery.AnnotationEnabled: "true",
+				k8sdiscovery.DefaultAnnotationPrefix + "/" + k8sdiscovery.AnnotationHost:    host,
+				k8sdiscovery.DefaultAnnotationPrefix + "/" + k8sdiscovery.AnnotationPort:    strconv.Itoa(port),
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{Name: "minecraft", Port: int32(port)}},
+		},
 	}
 }
 

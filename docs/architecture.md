@@ -157,20 +157,23 @@ Lifecycle `reason` values used by logs and metrics are kept aligned:
 - `route_denied`
 - `context_cancelled`
 
-`mc_gateway_routes` counts explicit `routes` entries only. The `defaultRoute` is not included. `mc_gateway_config_generation` starts at `1` for the startup config and increments only after a successful reload.
+`mc_gateway_routes` counts explicit `routes` entries only. The `defaultRoute` is not included. `mc_gateway_config_generation` starts at `1` for the startup config and increments after a successful reload or runtime discovery snapshot update.
 
 ## Route Sources
 
-The runtime always supports static YAML routes. When Kubernetes discovery is enabled, startup also performs one namespace-scoped Kubernetes Service initial list and merges discovered routes into the initial route snapshot.
+The runtime always supports static YAML routes. When Kubernetes discovery is enabled, startup performs one namespace-scoped Kubernetes Service initial list, merges discovered routes into the initial route snapshot, then starts a namespace-scoped Service watch controller.
 
 Kubernetes Service annotation discovery includes:
 - Discovery configuration validation and annotation parsing.
 - In-memory controller core and `RouteProvider` interface.
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary.
-- Startup-only `client-go` Service initial list.
+- Startup `client-go` Service initial list.
+- Runtime Service watch updates.
 
 Static routes take precedence over discovered routes. `defaultRoute` remains outside the explicit route list and is evaluated after static and discovered routes. See [Kubernetes Discovery](kubernetes-discovery.md).
+
+Kubernetes watch updates provide a complete replacement set of discovered routes. The server rebuilds a route snapshot from the latest valid static config plus that discovered route set, then swaps the active snapshot only if the rebuild succeeds. Watch controller failures and rebuild failures keep the previous active snapshot.
 
 ## Config Reload
 
@@ -180,7 +183,7 @@ Reload behavior:
 
 1. The gateway reads the configuration file from its startup path.
 2. Static configuration is parsed and validated.
-3. Valid static configuration is merged with the discovered routes captured at startup.
+3. Valid static configuration is merged with the latest discovered routes.
 4. A new router is built from the merged routes and `defaultRoute`.
 5. The active snapshot is replaced atomically only after all previous steps succeed.
 6. New connections use the new snapshot; existing connections are not affected.
@@ -193,9 +196,11 @@ Metrics server settings are also startup settings. SIGHUP reload updates route s
 
 Fallback settings are part of the route config snapshot and are applied to new connections after a successful reload.
 
-Kubernetes discovery does not re-list Services during reload. Startup-discovered routes are preserved and re-merged with the new static config until watch-based discovery is added.
+Kubernetes discovery does not re-list Services or restart its watch during reload. The latest discovered routes from the running watch controller are preserved and re-merged with the new static config.
 
-The implementation uses an immutable snapshot stored in `atomic.Value`. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
+The implementation uses an immutable snapshot stored behind an atomic pointer. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
+
+Reload and Kubernetes watch updates are serialized only while building and swapping snapshots. Active connections keep using the snapshot they loaded at connection start. New connections use the latest successfully swapped snapshot.
 
 Future route sources should feed the same router model rather than rewriting the proxy path:
 
