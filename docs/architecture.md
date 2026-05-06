@@ -128,13 +128,20 @@ Current metrics are intentionally low-cardinality:
 - `mc_gateway_fallback_responses_total{state,reason}`
 - `mc_gateway_reload_total{result}`
 - `mc_gateway_route_decisions_total{result}`
+- `mc_gateway_kubernetes_watch_restarts_total{reason}`
+- `mc_gateway_kubernetes_discovery_errors_total{reason}`
 - `mc_gateway_active_connections`
 - `mc_gateway_config_generation`
 - `mc_gateway_routes`
+- `mc_gateway_kubernetes_watch_running`
+- `mc_gateway_kubernetes_last_successful_sync_timestamp_seconds`
+- `mc_gateway_kubernetes_discovered_routes`
 - `mc_gateway_connection_duration_seconds`
 - `mc_gateway_backend_dial_duration_seconds`
 
 Do not add remote address, username, requested server address, backend host, MOTD, protocol version, or raw message labels. Host-level or backend-level metrics should be considered later with an explicit cardinality budget.
+
+Kubernetes discovery metrics follow the same rule. They use bounded `reason` values only and do not include namespace, Service name, host, backend, annotation value, resource version, or raw error text. Metrics are disabled by default; when disabled, discovery instrumentation is a no-op.
 
 Fallback response metric labels are deliberately bounded:
 
@@ -175,6 +182,8 @@ Kubernetes Service annotation discovery includes:
 Static routes take precedence over discovered routes. `defaultRoute` remains outside the explicit route list and is evaluated after static and discovered routes. See [Kubernetes Discovery](kubernetes-discovery.md).
 
 Kubernetes watch updates provide a complete replacement set of discovered routes. The server rebuilds a route snapshot from the latest valid static config plus that discovered route set, then swaps the active snapshot only if the rebuild succeeds. Watch controller failures and rebuild failures keep the previous active snapshot. After the first successful sync, watch failures are retried with backoff by relisting Services and opening a new watch.
+
+Kubernetes discovery metrics are updated only after successful runtime syncs and bounded failure points. Rebuild failures increment a discovery error counter and keep the previous discovered route gauge value.
 
 ## Config Reload
 

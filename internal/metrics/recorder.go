@@ -34,22 +34,42 @@ const (
 
 	ReloadResultFailed  = "failed"
 	ReloadResultSuccess = "success"
+
+	KubernetesWatchRestartReasonListFailed       = "list_failed"
+	KubernetesWatchRestartReasonWatchClosed      = "watch_closed"
+	KubernetesWatchRestartReasonWatchError       = "watch_error"
+	KubernetesWatchRestartReasonWatchSetupFailed = "watch_setup_failed"
+	KubernetesWatchRestartReasonUnknown          = "unknown"
+
+	KubernetesDiscoveryErrorReasonInClusterConfigFailed     = "incluster_config_failed"
+	KubernetesDiscoveryErrorReasonInitialListFailed         = "initial_list_failed"
+	KubernetesDiscoveryErrorReasonNamespaceResolutionFailed = "namespace_resolution_failed"
+	KubernetesDiscoveryErrorReasonRebuildFailed             = "rebuild_failed"
+	KubernetesDiscoveryErrorReasonWatchClosed               = "watch_closed"
+	KubernetesDiscoveryErrorReasonWatchError                = "watch_error"
+	KubernetesDiscoveryErrorReasonWatchSetupFailed          = "watch_setup_failed"
+	KubernetesDiscoveryErrorReasonUnknown                   = "unknown"
 )
 
 type Recorder struct {
 	enabled  bool
 	registry *prometheus.Registry
 
-	connectionsTotal    *prometheus.CounterVec
-	backendDialsTotal   *prometheus.CounterVec
-	fallbackResponses   *prometheus.CounterVec
-	reloadTotal         *prometheus.CounterVec
-	routeDecisionsTotal *prometheus.CounterVec
-	activeConnections   prometheus.Gauge
-	configGeneration    prometheus.Gauge
-	routes              prometheus.Gauge
-	connectionDuration  prometheus.Histogram
-	backendDialDuration prometheus.Histogram
+	connectionsTotal                 *prometheus.CounterVec
+	backendDialsTotal                *prometheus.CounterVec
+	fallbackResponses                *prometheus.CounterVec
+	reloadTotal                      *prometheus.CounterVec
+	routeDecisionsTotal              *prometheus.CounterVec
+	kubernetesWatchRestartsTotal     *prometheus.CounterVec
+	kubernetesDiscoveryErrorsTotal   *prometheus.CounterVec
+	activeConnections                prometheus.Gauge
+	configGeneration                 prometheus.Gauge
+	routes                           prometheus.Gauge
+	kubernetesWatchRunning           prometheus.Gauge
+	kubernetesLastSuccessfulSyncTime prometheus.Gauge
+	kubernetesDiscoveredRoutes       prometheus.Gauge
+	connectionDuration               prometheus.Histogram
+	backendDialDuration              prometheus.Histogram
 }
 
 func NewRecorder(enabled bool) *Recorder {
@@ -79,6 +99,14 @@ func NewRecorder(enabled bool) *Recorder {
 			Name: "mc_gateway_route_decisions_total",
 			Help: "Minecraft gateway route decisions by result.",
 		}, []string{"result"}),
+		kubernetesWatchRestartsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_kubernetes_watch_restarts_total",
+			Help: "Kubernetes discovery watch restarts by low-cardinality reason.",
+		}, []string{"reason"}),
+		kubernetesDiscoveryErrorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_kubernetes_discovery_errors_total",
+			Help: "Kubernetes discovery errors by low-cardinality reason.",
+		}, []string{"reason"}),
 		activeConnections: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "mc_gateway_active_connections",
 			Help: "Currently active accepted Minecraft gateway client connections.",
@@ -90,6 +118,18 @@ func NewRecorder(enabled bool) *Recorder {
 		routes: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "mc_gateway_routes",
 			Help: "Number of explicit routes in the current configuration. The default route is not included.",
+		}),
+		kubernetesWatchRunning: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "mc_gateway_kubernetes_watch_running",
+			Help: "Whether the Kubernetes discovery watch supervisor is running.",
+		}),
+		kubernetesLastSuccessfulSyncTime: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "mc_gateway_kubernetes_last_successful_sync_timestamp_seconds",
+			Help: "Unix timestamp of the last successful Kubernetes discovery sync applied to runtime routing.",
+		}),
+		kubernetesDiscoveredRoutes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "mc_gateway_kubernetes_discovered_routes",
+			Help: "Number of Kubernetes discovered routes in the latest successfully applied runtime snapshot.",
 		}),
 		connectionDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "mc_gateway_connection_duration_seconds",
@@ -108,9 +148,14 @@ func NewRecorder(enabled bool) *Recorder {
 		r.fallbackResponses,
 		r.reloadTotal,
 		r.routeDecisionsTotal,
+		r.kubernetesWatchRestartsTotal,
+		r.kubernetesDiscoveryErrorsTotal,
 		r.activeConnections,
 		r.configGeneration,
 		r.routes,
+		r.kubernetesWatchRunning,
+		r.kubernetesLastSuccessfulSyncTime,
+		r.kubernetesDiscoveredRoutes,
 		r.connectionDuration,
 		r.backendDialDuration,
 	)
@@ -173,4 +218,37 @@ func (r *Recorder) Reload(result string) {
 		return
 	}
 	r.reloadTotal.WithLabelValues(result).Inc()
+}
+
+func (r *Recorder) KubernetesWatchRunning(running bool) {
+	if !r.enabled {
+		return
+	}
+	if running {
+		r.kubernetesWatchRunning.Set(1)
+		return
+	}
+	r.kubernetesWatchRunning.Set(0)
+}
+
+func (r *Recorder) KubernetesWatchRestart(reason string) {
+	if !r.enabled {
+		return
+	}
+	r.kubernetesWatchRestartsTotal.WithLabelValues(reason).Inc()
+}
+
+func (r *Recorder) KubernetesDiscoverySync(discoveredRoutes int) {
+	if !r.enabled {
+		return
+	}
+	r.kubernetesDiscoveredRoutes.Set(float64(discoveredRoutes))
+	r.kubernetesLastSuccessfulSyncTime.Set(float64(time.Now().Unix()))
+}
+
+func (r *Recorder) KubernetesDiscoveryError(reason string) {
+	if !r.enabled {
+		return
+	}
+	r.kubernetesDiscoveryErrorsTotal.WithLabelValues(reason).Inc()
 }

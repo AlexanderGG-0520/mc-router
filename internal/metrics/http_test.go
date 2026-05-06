@@ -46,6 +46,11 @@ func TestDisabledRecorderIsNoop(t *testing.T) {
 	recorder.FallbackResponse(FallbackStateStatus, ReasonRouteDenied)
 	recorder.RouteDecision(RouteDecisionDenied)
 	recorder.Reload(ReloadResultFailed)
+	recorder.KubernetesWatchRunning(true)
+	recorder.KubernetesWatchRunning(false)
+	recorder.KubernetesWatchRestart(KubernetesWatchRestartReasonWatchError)
+	recorder.KubernetesDiscoverySync(2)
+	recorder.KubernetesDiscoveryError(KubernetesDiscoveryErrorReasonRebuildFailed)
 }
 
 func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
@@ -54,6 +59,10 @@ func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 	recorder.ConnectionAccepted()
 	recorder.ConnectionFinished(ConnectionResultDenied, ReasonRouteDenied, time.Millisecond)
 	recorder.FallbackResponse(FallbackStateStatus, ReasonRouteDenied)
+	recorder.KubernetesWatchRunning(true)
+	recorder.KubernetesWatchRestart(KubernetesWatchRestartReasonWatchError)
+	recorder.KubernetesDiscoverySync(2)
+	recorder.KubernetesDiscoveryError(KubernetesDiscoveryErrorReasonRebuildFailed)
 
 	server, err := StartHTTP(ctx, config.Metrics{
 		Enabled: true,
@@ -85,6 +94,20 @@ func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `mc_gateway_fallback_responses_total{reason="route_denied",state="status"} 1`) {
 		t.Fatalf("metrics body did not include fallback response counter:\n%s", string(body))
+	}
+	for _, name := range []string{
+		"mc_gateway_kubernetes_watch_restarts_total",
+		"mc_gateway_kubernetes_watch_running",
+		"mc_gateway_kubernetes_last_successful_sync_timestamp_seconds",
+		"mc_gateway_kubernetes_discovered_routes",
+		"mc_gateway_kubernetes_discovery_errors_total",
+	} {
+		if !strings.Contains(string(body), name) {
+			t.Fatalf("metrics body did not include %s:\n%s", name, string(body))
+		}
+	}
+	if strings.Contains(string(body), "namespace=") || strings.Contains(string(body), "service=") || strings.Contains(string(body), "host=") {
+		t.Fatalf("Kubernetes discovery metrics included high-cardinality labels:\n%s", string(body))
 	}
 
 	cancel()

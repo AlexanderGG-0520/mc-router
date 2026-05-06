@@ -142,6 +142,9 @@ func newServer(snapshot RouteSnapshot, logger *slog.Logger) *Server {
 		discoveredRoutes: snapshot.DiscoveredRoutes,
 	})
 	recorder.SetConfig(1, cfg)
+	if staticConfig.Discovery.Kubernetes.Enabled {
+		recorder.KubernetesDiscoverySync(len(snapshot.DiscoveredRoutes))
+	}
 	return s
 }
 
@@ -222,6 +225,7 @@ func (s *Server) UpdateDiscoveredRoutes(ctx context.Context, discoveredRoutes []
 	current := s.currentState()
 	snapshot, err := BuildRouteSnapshot(current.staticConfig, discoveredRoutes)
 	if err != nil {
+		s.metrics.KubernetesDiscoveryError(gatewaymetrics.KubernetesDiscoveryErrorReasonRebuildFailed)
 		return err
 	}
 
@@ -232,6 +236,7 @@ func (s *Server) UpdateDiscoveredRoutes(ctx context.Context, discoveredRoutes []
 	}
 
 	s.updateRouteSnapshotLocked(snapshot)
+	s.metrics.KubernetesDiscoverySync(len(discoveredRoutes))
 	return nil
 }
 

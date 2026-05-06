@@ -25,6 +25,13 @@ type ServiceWatchControllerOptions struct {
 	AnnotationPrefix string
 }
 
+var (
+	ErrServiceListFailed       = errors.New("kubernetes service list failed")
+	ErrServiceWatchClosed      = errors.New("kubernetes service watch closed")
+	ErrServiceWatchError       = errors.New("kubernetes service watch error")
+	ErrServiceWatchSetupFailed = errors.New("kubernetes service watch setup failed")
+)
+
 // ServiceWatchController watches namespace-scoped Services and rebuilds discovered routes.
 type ServiceWatchController struct {
 	client    k8sclient.Interface
@@ -75,7 +82,7 @@ func (c *ServiceWatchController) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		return fmt.Errorf("watch services in namespace %q: %w", c.namespace, err)
+		return fmt.Errorf("%w: watch services in namespace %q: %w", ErrServiceWatchSetupFailed, c.namespace, err)
 	}
 	defer watcher.Stop()
 
@@ -90,7 +97,7 @@ func (c *ServiceWatchController) Run(ctx context.Context) error {
 				if ctx.Err() != nil {
 					return nil
 				}
-				return fmt.Errorf("watch services in namespace %q closed", c.namespace)
+				return fmt.Errorf("%w: watch services in namespace %q closed", ErrServiceWatchClosed, c.namespace)
 			}
 			if err := c.applyWatchEvent(services, event); err != nil {
 				return err
@@ -103,7 +110,7 @@ func (c *ServiceWatchController) Run(ctx context.Context) error {
 func (c *ServiceWatchController) initialServices(ctx context.Context) (map[string]ServiceInput, string, error) {
 	list, err := c.client.CoreV1().Services(c.namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, "", fmt.Errorf("list services in namespace %q: %w", c.namespace, err)
+		return nil, "", fmt.Errorf("%w: list services in namespace %q: %w", ErrServiceListFailed, c.namespace, err)
 	}
 
 	services := make(map[string]ServiceInput, len(list.Items))
@@ -118,7 +125,7 @@ func (c *ServiceWatchController) initialServices(ctx context.Context) (map[strin
 
 func (c *ServiceWatchController) applyWatchEvent(services map[string]ServiceInput, event watch.Event) error {
 	if event.Type == watch.Error {
-		return fmt.Errorf("watch services in namespace %q returned error event", c.namespace)
+		return fmt.Errorf("%w: watch services in namespace %q returned error event", ErrServiceWatchError, c.namespace)
 	}
 
 	svc, ok := event.Object.(*corev1.Service)

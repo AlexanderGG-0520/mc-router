@@ -9,6 +9,7 @@ import (
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
+	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxy"
 	k8sclient "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -22,13 +23,17 @@ type serviceWatchController interface {
 	Run(context.Context) error
 }
 
+type discoveryMetricsProvider interface {
+	Metrics() *gatewaymetrics.Recorder
+}
+
 type discoveryRuntimeDeps struct {
 	namespaceResolver         k8sdiscovery.NamespaceResolver
 	resolveNamespace          func(string, k8sdiscovery.NamespaceResolver) (string, error)
 	inClusterConfig           func() (*rest.Config, error)
 	newKubernetesClient       func(*rest.Config) (k8sclient.Interface, error)
 	newServiceWatchController func(k8sclient.Interface, string, k8sdiscovery.RouteSink, k8sdiscovery.ServiceWatchControllerOptions) (serviceWatchController, error)
-	newWatchSupervisor        func(k8sdiscovery.WatchRunner, <-chan struct{}, <-chan struct{}, *slog.Logger) (serviceWatchController, error)
+	newWatchSupervisor        func(k8sdiscovery.WatchSupervisorOptions) (serviceWatchController, error)
 }
 
 type runtimeDiscovery struct {
@@ -46,13 +51,8 @@ func defaultDiscoveryRuntimeDeps() discoveryRuntimeDeps {
 		newServiceWatchController: func(client k8sclient.Interface, namespace string, sink k8sdiscovery.RouteSink, options k8sdiscovery.ServiceWatchControllerOptions) (serviceWatchController, error) {
 			return k8sdiscovery.NewServiceWatchController(client, namespace, sink, options)
 		},
-		newWatchSupervisor: func(runner k8sdiscovery.WatchRunner, ready <-chan struct{}, synced <-chan struct{}, logger *slog.Logger) (serviceWatchController, error) {
-			return k8sdiscovery.NewWatchSupervisor(k8sdiscovery.WatchSupervisorOptions{
-				Runner: runner,
-				Ready:  ready,
-				Synced: synced,
-				Logger: logger,
-			})
+		newWatchSupervisor: func(options k8sdiscovery.WatchSupervisorOptions) (serviceWatchController, error) {
+			return k8sdiscovery.NewWatchSupervisor(options)
 		},
 	}
 }
@@ -66,17 +66,21 @@ func startKubernetesRuntimeDiscovery(ctx context.Context, cfg config.Config, upd
 	}
 
 	deps = deps.withDefaults()
+	metrics := discoveryMetrics(updater)
 	kubernetesConfig := cfg.Discovery.Kubernetes
 	namespace, err := deps.resolveNamespace(kubernetesConfig.Namespace, deps.namespaceResolver)
 	if err != nil {
+		metrics.KubernetesDiscoveryError(gatewaymetrics.KubernetesDiscoveryErrorReasonNamespaceResolutionFailed)
 		return nil, fmt.Errorf("resolve Kubernetes discovery namespace: %w", err)
 	}
 	restConfig, err := deps.inClusterConfig()
 	if err != nil {
+		metrics.KubernetesDiscoveryError(gatewaymetrics.KubernetesDiscoveryErrorReasonInClusterConfigFailed)
 		return nil, fmt.Errorf("create in-cluster Kubernetes config: %w", err)
 	}
 	client, err := deps.newKubernetesClient(restConfig)
 	if err != nil {
+		metrics.KubernetesDiscoveryError(gatewaymetrics.KubernetesDiscoveryErrorReasonUnknown)
 		return nil, fmt.Errorf("create Kubernetes client: %w", err)
 	}
 
@@ -89,7 +93,16 @@ func startKubernetesRuntimeDiscovery(ctx context.Context, cfg config.Config, upd
 		cancel()
 		return nil, fmt.Errorf("create Kubernetes Service watch controller: %w", err)
 	}
-	runner, err := deps.newWatchSupervisor(controller, sink.ready(), sink.synced(), logger)
+	runner, err := deps.newWatchSupervisor(k8sdiscovery.WatchSupervisorOptions{
+		Runner: controller,
+		Ready:  sink.ready(),
+		Synced: sink.synced(),
+		Logger: logger,
+		OnRetry: func(err error) {
+			metrics.KubernetesWatchRestart(kubernetesWatchRestartReason(err))
+			metrics.KubernetesDiscoveryError(kubernetesDiscoveryErrorReason(err))
+		},
+	})
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("create Kubernetes Service watch supervisor: %w", err)
@@ -98,8 +111,11 @@ func startKubernetesRuntimeDiscovery(ctx context.Context, cfg config.Config, upd
 	done := make(chan error, 1)
 	go func() {
 		logKubernetesRuntimeDiscoveryStarted(logger)
+		metrics.KubernetesWatchRunning(true)
 		err := runner.Run(childCtx)
+		metrics.KubernetesWatchRunning(false)
 		if err != nil && childCtx.Err() == nil {
+			metrics.KubernetesDiscoveryError(kubernetesDiscoveryErrorReason(err))
 			logKubernetesRuntimeDiscoveryFailed(logger, err)
 		} else {
 			logKubernetesRuntimeDiscoveryStopped(logger)
@@ -148,6 +164,45 @@ func (d discoveryRuntimeDeps) withDefaults() discoveryRuntimeDeps {
 		d.newWatchSupervisor = defaults.newWatchSupervisor
 	}
 	return d
+}
+
+func discoveryMetrics(updater discoveredRouteUpdater) *gatewaymetrics.Recorder {
+	if provider, ok := updater.(discoveryMetricsProvider); ok {
+		if recorder := provider.Metrics(); recorder != nil {
+			return recorder
+		}
+	}
+	return gatewaymetrics.NewRecorder(false)
+}
+
+func kubernetesWatchRestartReason(err error) string {
+	switch {
+	case errors.Is(err, k8sdiscovery.ErrServiceListFailed):
+		return gatewaymetrics.KubernetesWatchRestartReasonListFailed
+	case errors.Is(err, k8sdiscovery.ErrServiceWatchClosed):
+		return gatewaymetrics.KubernetesWatchRestartReasonWatchClosed
+	case errors.Is(err, k8sdiscovery.ErrServiceWatchError):
+		return gatewaymetrics.KubernetesWatchRestartReasonWatchError
+	case errors.Is(err, k8sdiscovery.ErrServiceWatchSetupFailed):
+		return gatewaymetrics.KubernetesWatchRestartReasonWatchSetupFailed
+	default:
+		return gatewaymetrics.KubernetesWatchRestartReasonUnknown
+	}
+}
+
+func kubernetesDiscoveryErrorReason(err error) string {
+	switch {
+	case errors.Is(err, k8sdiscovery.ErrServiceListFailed):
+		return gatewaymetrics.KubernetesDiscoveryErrorReasonInitialListFailed
+	case errors.Is(err, k8sdiscovery.ErrServiceWatchClosed):
+		return gatewaymetrics.KubernetesDiscoveryErrorReasonWatchClosed
+	case errors.Is(err, k8sdiscovery.ErrServiceWatchError):
+		return gatewaymetrics.KubernetesDiscoveryErrorReasonWatchError
+	case errors.Is(err, k8sdiscovery.ErrServiceWatchSetupFailed):
+		return gatewaymetrics.KubernetesDiscoveryErrorReasonWatchSetupFailed
+	default:
+		return gatewaymetrics.KubernetesDiscoveryErrorReasonUnknown
+	}
 }
 
 type runtimeDiscoverySink struct {
