@@ -213,11 +213,24 @@ func (s *Server) UpdateDiscoveredRoutes(ctx context.Context, discoveredRoutes []
 	s.snapshotMu.Lock()
 	defer s.snapshotMu.Unlock()
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	current := s.currentState()
 	snapshot, err := BuildRouteSnapshot(current.staticConfig, discoveredRoutes)
 	if err != nil {
 		return err
 	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	s.updateRouteSnapshotLocked(snapshot)
 	return nil
 }
