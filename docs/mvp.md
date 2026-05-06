@@ -20,12 +20,12 @@
 - Dockerfile.
 - Minimal Kubernetes manifest and namespace-scoped discovery RBAC example.
 - GitHub Actions CI.
-- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, startup client-go initial list, namespace-scoped Service watch controller, namespace-scoped RBAC example, runtime merge-boundary integration, and runtime route snapshot updates.
+- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, startup client-go initial list, namespace-scoped Service watch controller, watch retry/backoff supervisor, namespace-scoped RBAC example, runtime merge-boundary integration, and runtime route snapshot updates.
 
 ## Not Included Yet
 
 - Kubernetes Service re-list during `SIGHUP` reload.
-- Retry/backoff manager for runtime Kubernetes watch failures.
+- Configurable retry/backoff settings for runtime Kubernetes watch failures.
 - ClusterRole or all-namespaces discovery RBAC.
 - Pod annotations, EndpointSlice discovery, or CRD route discovery.
 - Scale-to-zero wake-up.
@@ -78,7 +78,7 @@ Automated tests now cover:
 - Idle client handshake read timeout.
 - Server shutdown on context cancellation.
 - SIGHUP/static config reload keeps the previous routes after invalid reloads and applies valid reloads to new connections.
-- Kubernetes Service annotation discovery with fake clients, including current namespace resolution, initial list failure policy, Service watch updates, invalid annotation skips, duplicate discovered host handling, static route precedence, ExternalName skips, reload preservation of latest discovered routes, and watch update interaction with static reload.
+- Kubernetes Service annotation discovery with fake clients, including current namespace resolution, initial list failure policy, Service watch updates, invalid annotation skips, duplicate discovered host handling, static route precedence, ExternalName skips, watch retry/backoff recovery, last-known-good snapshot preservation during retry, reload preservation of latest discovered routes, and watch update interaction with static reload.
 - Metrics config defaults, Prometheus text endpoint behavior, active connection gauge, route-denied counter, backend dial failure counter, fallback response counter, reload counters, config generation gauge, and route count gauge.
 - Status fallback config defaults, denied status response JSON, backend dial failure and timeout status response JSON, status ping/pong echo, disabled fallback close behavior, default route precedence, malformed status request close behavior, fallback response metrics, and existing metric preservation.
 - Login fallback config defaults, denied login disconnect JSON, malformed login start close behavior, known route/default route precedence, backend dial failure close behavior, and login fallback response metrics.
@@ -98,7 +98,7 @@ The protocol smoke tests use fixed protocol framing helpers and fake TCP backend
 
 ## Next Implementation Priorities
 
-1. Add retry/backoff handling for runtime Kubernetes watch failures if operators need self-healing watch reconnection.
+1. Add configurable Kubernetes watch retry/backoff settings if operators need to tune reconnect behavior.
 2. Add wake-up controller behavior for scaled-to-zero servers.
 3. Add backend failure login fallback if operators need a login-state disconnect for unavailable known routes.
 4. Add CRD only after static and label based models are stable.

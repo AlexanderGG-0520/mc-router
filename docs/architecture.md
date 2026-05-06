@@ -161,7 +161,7 @@ Lifecycle `reason` values used by logs and metrics are kept aligned:
 
 ## Route Sources
 
-The runtime always supports static YAML routes. When Kubernetes discovery is enabled, startup performs one namespace-scoped Kubernetes Service initial list, merges discovered routes into the initial route snapshot, then starts a namespace-scoped Service watch controller.
+The runtime always supports static YAML routes. When Kubernetes discovery is enabled, startup performs one namespace-scoped Kubernetes Service initial list, merges discovered routes into the initial route snapshot, then starts a namespace-scoped Service watch controller under a retry/backoff supervisor.
 
 Kubernetes Service annotation discovery includes:
 - Discovery configuration validation and annotation parsing.
@@ -170,10 +170,11 @@ Kubernetes Service annotation discovery includes:
 - Runtime route snapshot boundary.
 - Startup `client-go` Service initial list.
 - Runtime Service watch updates.
+- Runtime watch retry/backoff supervision.
 
 Static routes take precedence over discovered routes. `defaultRoute` remains outside the explicit route list and is evaluated after static and discovered routes. See [Kubernetes Discovery](kubernetes-discovery.md).
 
-Kubernetes watch updates provide a complete replacement set of discovered routes. The server rebuilds a route snapshot from the latest valid static config plus that discovered route set, then swaps the active snapshot only if the rebuild succeeds. Watch controller failures and rebuild failures keep the previous active snapshot.
+Kubernetes watch updates provide a complete replacement set of discovered routes. The server rebuilds a route snapshot from the latest valid static config plus that discovered route set, then swaps the active snapshot only if the rebuild succeeds. Watch controller failures and rebuild failures keep the previous active snapshot. After the first successful sync, watch failures are retried with backoff by relisting Services and opening a new watch.
 
 ## Config Reload
 
@@ -196,7 +197,7 @@ Metrics server settings are also startup settings. SIGHUP reload updates route s
 
 Fallback settings are part of the route config snapshot and are applied to new connections after a successful reload.
 
-Kubernetes discovery does not re-list Services or restart its watch during reload. The latest discovered routes from the running watch controller are preserved and re-merged with the new static config.
+Kubernetes discovery does not reconfigure its namespace, client, or annotation prefix during reload. The latest discovered routes from the running watch controller are preserved and re-merged with the new static config. If the watch supervisor is retrying while reload happens, reload still uses the latest successful discovered route set.
 
 The implementation uses an immutable snapshot stored behind an atomic pointer. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
 

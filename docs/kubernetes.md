@@ -55,13 +55,15 @@ deploy/kubernetes/discovery-rbac.yaml
 
 The base manifest creates the `mc-router` ServiceAccount and the Deployment uses `serviceAccountName: mc-router`. The RBAC example binds that ServiceAccount to a Role in the `mc-gateway` namespace. If you deploy the gateway in another namespace, change the namespace fields consistently.
 
-If `discovery.kubernetes.enabled` is true, startup performs a Kubernetes Service initial list and starts a namespace-scoped Service watch controller. The gateway ServiceAccount requires the following permissions in the watched namespace:
+If `discovery.kubernetes.enabled` is true, startup performs a Kubernetes Service initial list and starts a namespace-scoped Service watch controller with retry/backoff supervision. The gateway ServiceAccount requires the following permissions in the watched namespace:
 
 - `get`, `list`, `watch` on `services`
 
 Kubernetes Service annotation discovery updates active route snapshots after successful Service watch events. See [Kubernetes Discovery](kubernetes-discovery.md) for the config, annotation format, duplicate host policy, startup failure policy, watch failure policy, and controller scope.
 
 ClusterRole and ClusterRoleBinding examples are not included because all-namespaces discovery is not implemented. EndpointSlice, Pod, Secret, and cluster-wide permissions are intentionally not granted by the discovery RBAC.
+
+The retry/backoff supervisor does not require additional RBAC. It relists `services` and opens a new namespace-scoped watch using the same `get`, `list`, and `watch` permissions.
 
 If `discovery.kubernetes.namespace` is empty, startup resolves the current namespace from the Pod's ServiceAccount namespace file at `/var/run/secrets/kubernetes.io/serviceaccount/namespace`. This file read is not Kubernetes API RBAC; it comes from the mounted ServiceAccount volume. The gateway does not read the ServiceAccount token for namespace resolution.
 
@@ -165,7 +167,7 @@ The gateway supports `SIGHUP` config reload on supported Unix platforms, includi
 
 Reload is atomic from the gateway's point of view. If the updated config is invalid, the running route snapshot stays active. Active connections are not disconnected by reload; new connections use the new route snapshot after a successful reload.
 
-Kubernetes discovery is not restarted during `SIGHUP` reload. If discovery was enabled at startup, the latest discovered routes remain active and are re-merged with the reloaded static config. Changes to Service annotations or Services are picked up by the running Service watch controller. Changes to discovery config values require a process restart.
+Kubernetes discovery is not reconfigured during `SIGHUP` reload. If discovery was enabled at startup, the latest discovered routes remain active and are re-merged with the reloaded static config. Changes to Service annotations or Services are picked up by the running Service watch controller. If the watch fails after startup, the supervisor relists Services and reopens the watch with backoff while keeping the existing active route snapshot. Changes to discovery config values require a process restart.
 
 Kubernetes ConfigMap projected volumes are updated asynchronously. Do not send `SIGHUP` until the mounted file has the expected content in the Pod. If you need deterministic rollout behavior across replicas, use a rolling restart instead of relying on manual signal timing.
 
@@ -200,4 +202,4 @@ With Cilium, use standard Kubernetes NetworkPolicy first. Move to CiliumNetworkP
 
 ## Future Discovery
 
-The first route discovery shape is Service annotation discovery. It is namespace-scoped and avoids requiring cluster-wide list/watch. Runtime startup uses an initial list and then a namespace-scoped Service watch controller. See [Kubernetes Discovery](kubernetes-discovery.md).
+The first route discovery shape is Service annotation discovery. It is namespace-scoped and avoids requiring cluster-wide list/watch. Runtime startup uses an initial list and then a namespace-scoped Service watch controller with retry/backoff supervision. See [Kubernetes Discovery](kubernetes-discovery.md).

@@ -501,6 +501,65 @@ func TestKubernetesRuntimeDiscoverySkipsInvalidAndDuplicateServices(t *testing.T
 	waitForDiscoveredHosts(t, updater, []string{"valid.example.com"})
 }
 
+func TestKubernetesRuntimeDiscoveryRetriesWatchFailureAndKeepsLastKnownGood(t *testing.T) {
+	cfg := runtimeDiscoveryConfig()
+	client := fake.NewSimpleClientset(runtimeAnnotatedService("old", "minecraft", "old.example.com", 25565))
+	watchers := make(chan *watch.FakeWatcher, 2)
+	client.Fake.PrependWatchReactor("services", func(k8stesting.Action) (bool, watch.Interface, error) {
+		watcher := watch.NewFake()
+		watchers <- watcher
+		return true, watcher, nil
+	})
+	sleeper := newBlockingRuntimeSleeper()
+	deps := fakeRuntimeDiscoveryDeps(t, "minecraft", client)
+	deps.newWatchSupervisor = func(runner k8sdiscovery.WatchRunner, ready <-chan struct{}, synced <-chan struct{}, logger *slog.Logger) (serviceWatchController, error) {
+		return k8sdiscovery.NewWatchSupervisor(k8sdiscovery.WatchSupervisorOptions{
+			Runner:  runner,
+			Ready:   ready,
+			Synced:  synced,
+			Sleeper: sleeper,
+			Backoff: k8sdiscovery.BackoffPolicy{
+				InitialDelay: time.Second,
+				MaxDelay:     time.Second,
+				Factor:       2,
+			},
+		})
+	}
+	updater := newRecordingDiscoveredRouteUpdater()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(ctx, cfg, updater, discardLogger(), deps)
+	if err != nil {
+		t.Fatalf("startKubernetesRuntimeDiscovery: %v", err)
+	}
+	defer runtimeDiscovery.Stop()
+
+	firstWatcher := waitForRuntimeWatcher(t, watchers)
+	waitForDiscoveredHosts(t, updater, []string{"old.example.com"})
+
+	firstWatcher.Error(&metav1.Status{
+		Status:  metav1.StatusFailure,
+		Message: "watch failed",
+		Reason:  metav1.StatusReasonInternalError,
+		Code:    500,
+	})
+	if delay := sleeper.waitDelay(t); delay != time.Second {
+		t.Fatalf("retry delay = %v, want 1s", delay)
+	}
+	waitForDiscoveredHosts(t, updater, []string{"old.example.com"})
+
+	if err := client.CoreV1().Services("minecraft").Delete(context.Background(), "old", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("Delete old Service: %v", err)
+	}
+	if _, err := client.CoreV1().Services("minecraft").Create(context.Background(), runtimeAnnotatedService("new", "minecraft", "new.example.com", 25565), metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create new Service: %v", err)
+	}
+	sleeper.release()
+	_ = waitForRuntimeWatcher(t, watchers)
+	waitForDiscoveredHosts(t, updater, []string{"new.example.com"})
+}
+
 type fakeStartupServiceLister struct {
 	namespace string
 	services  []k8sdiscovery.ServiceInput
@@ -633,6 +692,58 @@ func fakeRuntimeDiscoveryDeps(t *testing.T, wantNamespace string, client *fake.C
 			return client, nil
 		},
 	}
+}
+
+func waitForRuntimeWatcher(t *testing.T, watchers <-chan *watch.FakeWatcher) *watch.FakeWatcher {
+	t.Helper()
+	select {
+	case watcher := <-watchers:
+		return watcher
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Service watch")
+		return nil
+	}
+}
+
+type blockingRuntimeSleeper struct {
+	delays    chan time.Duration
+	releaseCh chan struct{}
+}
+
+func newBlockingRuntimeSleeper() *blockingRuntimeSleeper {
+	return &blockingRuntimeSleeper{
+		delays:    make(chan time.Duration, 1),
+		releaseCh: make(chan struct{}, 1),
+	}
+}
+
+func (s *blockingRuntimeSleeper) Sleep(ctx context.Context, delay time.Duration) error {
+	select {
+	case s.delays <- delay:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-s.releaseCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *blockingRuntimeSleeper) waitDelay(t *testing.T) time.Duration {
+	t.Helper()
+	select {
+	case delay := <-s.delays:
+		return delay
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for retry delay")
+		return 0
+	}
+}
+
+func (s *blockingRuntimeSleeper) release() {
+	s.releaseCh <- struct{}{}
 }
 
 func runtimeAnnotatedService(name, namespace, host string, port int) *corev1.Service {

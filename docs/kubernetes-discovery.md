@@ -4,7 +4,7 @@
 
 Kubernetes discovery is planned as a way to generate gateway routes from Kubernetes resources instead of maintaining every Minecraft backend route by hand in the static YAML file.
 
-The current implementation performs a Kubernetes Service initial list at startup when `discovery.kubernetes.enabled` is true, then starts a namespace-scoped Service watch controller. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, and runtime route snapshot updates.
+The current implementation performs a Kubernetes Service initial list at startup when `discovery.kubernetes.enabled` is true, then starts a namespace-scoped Service watch controller under a retry/backoff supervisor. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, runtime route snapshot updates, and watch failure recovery.
 
 Watch updates rebuild the route snapshot from the latest valid static config plus the latest complete discovered route set. The active route snapshot is swapped only after rebuild succeeds.
 
@@ -150,7 +150,7 @@ The ordering is intentional:
 
 Invalid static config fails before the merge builder runs. The merge builder does not try to repair or reinterpret invalid static routes. Merge ignored routes and stats are retained on the route snapshot boundary for future logging and metrics, but discovery metrics are not implemented yet.
 
-When Kubernetes discovery is enabled, a runtime goroutine starts the namespace-scoped Service watch controller after the startup snapshot is built. Successful watch updates feed this boundary and atomically replace the active route snapshot for new connections.
+When Kubernetes discovery is enabled, a runtime goroutine starts the namespace-scoped Service watch controller supervisor after the startup snapshot is built. Successful watch updates feed this boundary and atomically replace the active route snapshot for new connections.
 
 ## Startup Initial List
 
@@ -170,7 +170,7 @@ Invalid Service annotations are skipped and reported in the in-memory discovery 
 
 ## Runtime Watch Updates
 
-The Service watch controller performs its own initial list, starts a direct `client-go` watch from the returned resource version, and sends the complete valid discovered route set to the runtime after each add/update/delete event.
+The Service watch controller performs its own initial list, starts a direct `client-go` watch from the returned resource version, and sends the complete valid discovered route set to the runtime after each add/update/delete event. The low-level controller remains a one-shot watch core. A supervisor owns retry and backoff after runtime watch failures.
 
 On each successful sink update, the runtime:
 
@@ -179,6 +179,8 @@ On each successful sink update, the runtime:
 3. Calls `UpdateRouteSnapshot` only if the rebuild succeeds.
 
 If a Service is deleted or becomes invalid, the next complete replacement removes its route from the active snapshot after rebuild succeeds. Duplicate discovered hosts disable all discovered routes for that host.
+
+If the watch stream fails after the first successful runtime sync, the supervisor retries the one-shot controller. Each retry performs a fresh Service list and opens a new watch from the new list resource version. During retry backoff, the latest successful discovered route set and the active runtime snapshot remain in place. If the relist returns a legitimately empty namespace, that empty discovered route set is applied after the rebuild succeeds.
 
 ## Reload Interaction
 
@@ -231,9 +233,11 @@ When `discovery.kubernetes.enabled` is `true`, startup fails for:
 
 Failing startup is intentional because silently falling back to static-only routing can hide missing discovered routes.
 
-Watch setup is part of startup when Kubernetes discovery is enabled. If the watch controller cannot complete its initial list and open the watch, startup fails.
+Watch setup is part of startup when Kubernetes discovery is enabled. If the watch controller cannot complete its initial list, open the watch, and publish the first runtime sync, startup fails.
 
-After the watch controller has started, watch error events or unexpected watch channel close stop watch updates and log `kubernetes_discovery_watch_failed`. The existing active route snapshot remains in place. The current implementation does not run a retry or backoff manager; operators should restart the Pod to restore watch updates after a runtime watch failure.
+After the watch controller has started, watch error events or unexpected watch channel close are retryable. The supervisor logs `kubernetes_discovery_watch_retry_scheduled`, waits with exponential backoff, then relists Services and starts a new watch. The default backoff is fixed in code: initial delay `1s`, factor `2.0`, and max delay `30s`. It is not configurable in YAML yet. The existing active route snapshot remains in place while retrying.
+
+Context cancellation is a normal stop and is not retried. Invalid Service annotations and duplicate discovered hosts are route-level skips, not supervisor restart reasons.
 
 If a watch update reaches the runtime but `RouteSnapshot` rebuild fails, the gateway logs `kubernetes_discovery_runtime_snapshot_failed` and keeps the existing active snapshot. Invalid Service annotations and duplicate discovered hosts are handled by the discovery controller as skipped resources; valid discovered routes can still update the active snapshot.
 
@@ -263,6 +267,10 @@ Metrics are not implemented yet. Candidate metrics:
 mc_gateway_kubernetes_discovery_events_total{result,reason}
 mc_gateway_kubernetes_discovered_routes
 mc_gateway_kubernetes_resource_errors_total{reason}
+mc_gateway_kubernetes_watch_restarts_total{reason}
+mc_gateway_kubernetes_watch_running
+mc_gateway_kubernetes_last_successful_sync_timestamp_seconds
+mc_gateway_kubernetes_discovery_errors_total{reason}
 ```
 
 Discovery metrics should stay low-cardinality. Do not use namespace, Service name, or host as metric labels. Keep labels to bounded values such as `result` and `reason`.
@@ -319,6 +327,12 @@ The controller uses direct watch instead of an informer in this first runtime in
 
 The gateway runtime owns the active `RouteSnapshot` swap. The watch controller only publishes complete discovered route replacements to a sink.
 
+### Kubernetes Watch Supervisor
+
+The runtime wraps the one-shot Service watch controller in a supervisor. Before the first successful sync, controller errors are startup errors. After the first successful sync, controller errors are treated as retryable watch failures. The supervisor waits with exponential backoff and then starts a fresh one-shot controller run, which relists Services and opens a new watch.
+
+The supervisor does not clear the runtime sink or active snapshot during retry. It resumes runtime updates only after a retry run successfully publishes a new complete discovered route set. Context cancellation stops the supervisor without retry.
+
 ### Current Namespace Helper
 
 The project includes a helper for resolving the namespace that is passed to `ServiceLister.ListServices(ctx, namespace)`. It preserves the explicit namespace path and only reads the ServiceAccount namespace file when the configured namespace is empty.
@@ -353,12 +367,12 @@ The current implementation intentionally stops at:
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary that receives startup-discovered routes when Kubernetes discovery is enabled.
 - Runtime route snapshot updates from the namespace-scoped Service watch controller.
+- Retry/backoff supervisor for runtime Kubernetes watch failures.
 - Duplicate discovered host helper tests.
 - Documentation of the intended merge and operation policy.
 
 Not implemented yet:
 
-- Retry or backoff manager for runtime watch failures.
 - Periodic resync.
 - ClusterRole or all-namespaces RBAC manifests.
 - CRDs.
@@ -368,4 +382,4 @@ Not implemented yet:
 
 ## Current Status
 
-Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, startup client-go initial list, namespace-scoped Service watch controller core, runtime merge-boundary integration, and runtime route snapshot updates after Service watch events.
+Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, startup client-go initial list, namespace-scoped Service watch controller core, runtime merge-boundary integration, runtime route snapshot updates after Service watch events, and retry/backoff recovery for runtime watch failures.
