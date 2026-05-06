@@ -112,6 +112,10 @@ func (c *ServiceWatchController) initialServices(ctx context.Context) (map[strin
 }
 
 func (c *ServiceWatchController) applyWatchEvent(services map[string]ServiceInput, event watch.Event) error {
+	if event.Type == watch.Error {
+		return fmt.Errorf("watch services in namespace %q returned error event", c.namespace)
+	}
+
 	svc, ok := event.Object.(*corev1.Service)
 	if !ok {
 		return nil
@@ -129,8 +133,6 @@ func (c *ServiceWatchController) applyWatchEvent(services map[string]ServiceInpu
 		delete(services, key)
 	case watch.Bookmark:
 		return nil
-	case watch.Error:
-		return fmt.Errorf("watch services in namespace %q returned error event", c.namespace)
 	}
 	return nil
 }
