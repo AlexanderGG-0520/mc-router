@@ -28,6 +28,7 @@ type discoveryRuntimeDeps struct {
 	inClusterConfig           func() (*rest.Config, error)
 	newKubernetesClient       func(*rest.Config) (k8sclient.Interface, error)
 	newServiceWatchController func(k8sclient.Interface, string, k8sdiscovery.RouteSink, k8sdiscovery.ServiceWatchControllerOptions) (serviceWatchController, error)
+	newWatchSupervisor        func(k8sdiscovery.WatchRunner, <-chan struct{}, <-chan struct{}, *slog.Logger) (serviceWatchController, error)
 }
 
 type runtimeDiscovery struct {
@@ -44,6 +45,14 @@ func defaultDiscoveryRuntimeDeps() discoveryRuntimeDeps {
 		},
 		newServiceWatchController: func(client k8sclient.Interface, namespace string, sink k8sdiscovery.RouteSink, options k8sdiscovery.ServiceWatchControllerOptions) (serviceWatchController, error) {
 			return k8sdiscovery.NewServiceWatchController(client, namespace, sink, options)
+		},
+		newWatchSupervisor: func(runner k8sdiscovery.WatchRunner, ready <-chan struct{}, synced <-chan struct{}, logger *slog.Logger) (serviceWatchController, error) {
+			return k8sdiscovery.NewWatchSupervisor(k8sdiscovery.WatchSupervisorOptions{
+				Runner: runner,
+				Ready:  ready,
+				Synced: synced,
+				Logger: logger,
+			})
 		},
 	}
 }
@@ -80,11 +89,16 @@ func startKubernetesRuntimeDiscovery(ctx context.Context, cfg config.Config, upd
 		cancel()
 		return nil, fmt.Errorf("create Kubernetes Service watch controller: %w", err)
 	}
+	runner, err := deps.newWatchSupervisor(controller, sink.ready(), sink.synced(), logger)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("create Kubernetes Service watch supervisor: %w", err)
+	}
 
 	done := make(chan error, 1)
 	go func() {
 		logKubernetesRuntimeDiscoveryStarted(logger)
-		err := controller.Run(childCtx)
+		err := runner.Run(childCtx)
 		if err != nil && childCtx.Err() == nil {
 			logKubernetesRuntimeDiscoveryFailed(logger, err)
 		} else {
@@ -130,6 +144,9 @@ func (d discoveryRuntimeDeps) withDefaults() discoveryRuntimeDeps {
 	if d.newServiceWatchController == nil {
 		d.newServiceWatchController = defaults.newServiceWatchController
 	}
+	if d.newWatchSupervisor == nil {
+		d.newWatchSupervisor = defaults.newWatchSupervisor
+	}
 	return d
 }
 
@@ -140,14 +157,16 @@ type runtimeDiscoverySink struct {
 
 	readyOnce sync.Once
 	readyCh   chan struct{}
+	syncedCh  chan struct{}
 }
 
 func newRuntimeDiscoverySink(ctx context.Context, updater discoveredRouteUpdater, logger *slog.Logger) *runtimeDiscoverySink {
 	return &runtimeDiscoverySink{
-		ctx:     ctx,
-		updater: updater,
-		logger:  logger,
-		readyCh: make(chan struct{}),
+		ctx:      ctx,
+		updater:  updater,
+		logger:   logger,
+		readyCh:  make(chan struct{}),
+		syncedCh: make(chan struct{}, 1),
 	}
 }
 
@@ -163,12 +182,20 @@ func (s *runtimeDiscoverySink) ready() <-chan struct{} {
 	return s.readyCh
 }
 
+func (s *runtimeDiscoverySink) synced() <-chan struct{} {
+	return s.syncedCh
+}
+
 func (s *runtimeDiscoverySink) update(routes []k8sdiscovery.DiscoveredRoute, skipped, duplicateHosts int) {
 	routes = append([]k8sdiscovery.DiscoveredRoute(nil), routes...)
 	err := s.updater.UpdateDiscoveredRoutes(s.ctx, routes)
 	s.readyOnce.Do(func() {
 		close(s.readyCh)
 	})
+	select {
+	case s.syncedCh <- struct{}{}:
+	default:
+	}
 	if err != nil {
 		logKubernetesRuntimeSnapshotFailed(s.logger, err, len(routes), skipped, duplicateHosts)
 		return
