@@ -20,6 +20,8 @@ type MemoryProvider struct {
 	routes []kubernetes.DiscoveredRoute
 }
 
+var _ kubernetes.RouteSink = (*MemoryProvider)(nil)
+
 // NewMemoryProvider returns a new MemoryProvider initialized with the given routes.
 func NewMemoryProvider(routes []kubernetes.DiscoveredRoute) *MemoryProvider {
 	p := &MemoryProvider{}
