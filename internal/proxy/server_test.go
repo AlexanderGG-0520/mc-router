@@ -1492,6 +1492,82 @@ func TestUpdateDiscoveredRoutesFailureKeepsExistingSnapshot(t *testing.T) {
 	}
 }
 
+func TestKubernetesDiscoveryMetricsTrackStartupAndRuntimeSuccess(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.Metrics.Enabled = true
+	cfg.Discovery.Kubernetes.Enabled = true
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "startup.example.com", Backend: "startup.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	waitMetricValue(t, server, "mc_gateway_kubernetes_discovered_routes", nil, 1)
+	if got, ok := metricValue(t, server, "mc_gateway_kubernetes_last_successful_sync_timestamp_seconds", nil); !ok || got <= 0 {
+		t.Fatalf("last successful sync timestamp = %v (present %v), want > 0", got, ok)
+	}
+
+	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+		{Host: "build.example.com", Backend: "build.minecraft.svc.cluster.local:25565"},
+	}); err != nil {
+		t.Fatalf("UpdateDiscoveredRoutes: %v", err)
+	}
+	waitMetricValue(t, server, "mc_gateway_kubernetes_discovered_routes", nil, 2)
+}
+
+func TestKubernetesDiscoveryMetricsTrackRebuildFailureAndKeepRouteGauge(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.Metrics.Enabled = true
+	cfg.Discovery.Kubernetes.Enabled = true
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	snapshot.StaticConfig.Routes = []config.Route{
+		{ServerAddress: "duplicate.example.com", Backend: "first.example.com:25565"},
+		{ServerAddress: "duplicate.example.com", Backend: "second.example.com:25565"},
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	waitMetricValue(t, server, "mc_gateway_kubernetes_discovered_routes", nil, 1)
+	err = server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+		{Host: "bad.example.com", Backend: "bad.minecraft.svc.cluster.local:25565"},
+	})
+	if err == nil {
+		t.Fatal("UpdateDiscoveredRoutes succeeded with invalid static config")
+	}
+	waitMetricValue(t, server, "mc_gateway_kubernetes_discovery_errors_total", map[string]string{"reason": "rebuild_failed"}, 1)
+	waitMetricValue(t, server, "mc_gateway_kubernetes_discovered_routes", nil, 1)
+}
+
+func TestKubernetesDiscoveryMetricsCanceledRuntimeUpdateIsNotError(t *testing.T) {
+	cfg := validProxyConfig()
+	cfg.Metrics.Enabled = true
+	cfg.Discovery.Kubernetes.Enabled = true
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := server.UpdateDiscoveredRoutes(ctx, []kubernetes.DiscoveredRoute{
+		{Host: "new.example.com", Backend: "new.minecraft.svc.cluster.local:25565"},
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("UpdateDiscoveredRoutes error = %v, want context.Canceled", err)
+	}
+	assertMetricAbsentOrZero(t, server, "mc_gateway_kubernetes_discovery_errors_total", map[string]string{"reason": "rebuild_failed"})
+	waitMetricValue(t, server, "mc_gateway_kubernetes_discovered_routes", nil, 1)
+}
+
 func TestUpdateDiscoveredRoutesCanceledContextKeepsExistingSnapshot(t *testing.T) {
 	cfg := validProxyConfig()
 	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{

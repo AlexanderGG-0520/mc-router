@@ -132,6 +132,18 @@ sum by (state, reason) (rate(mc_gateway_fallback_responses_total[5m]))
 
 Expected `state` values are `status` and `login`. Expected `reason` values are `route_denied`, `backend_dial_failed`, and `backend_dial_timeout`. These labels are intentionally low-cardinality and do not include client IPs, requested hostnames, backend Services, namespaces, MOTD text, disconnect messages, or usernames. Use the fallback metric together with `mc_gateway_route_decisions_total` and `mc_gateway_backend_dials_total`; route-denied fallback still records a denied route decision, while backend failure status fallback keeps the route decision as matched or default and records the backend dial failure separately.
 
+For Kubernetes discovery behavior, watch:
+
+```promql
+mc_gateway_kubernetes_watch_running
+mc_gateway_kubernetes_last_successful_sync_timestamp_seconds
+mc_gateway_kubernetes_discovered_routes
+sum by (reason) (rate(mc_gateway_kubernetes_watch_restarts_total[5m]))
+sum by (reason) (rate(mc_gateway_kubernetes_discovery_errors_total[5m]))
+```
+
+Kubernetes discovery metric labels are intentionally low-cardinality. They do not include namespace, Service name, host, backend, annotation value, resource version, or raw error text. See [Kubernetes Discovery](kubernetes-discovery.md) for metric definitions and reason values.
+
 Example Service shape:
 
 ```yaml

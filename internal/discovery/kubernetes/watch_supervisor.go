@@ -36,6 +36,7 @@ type WatchSupervisorOptions struct {
 	Ready   <-chan struct{}
 	Synced  <-chan struct{}
 	Logger  *slog.Logger
+	OnRetry func(error)
 }
 
 // WatchSupervisor restarts a one-shot watch runner after runtime watch failures.
@@ -46,6 +47,7 @@ type WatchSupervisor struct {
 	ready   <-chan struct{}
 	synced  <-chan struct{}
 	logger  *slog.Logger
+	onRetry func(error)
 }
 
 const (
@@ -67,6 +69,7 @@ func NewWatchSupervisor(options WatchSupervisorOptions) (*WatchSupervisor, error
 		ready:   options.Ready,
 		synced:  options.Synced,
 		logger:  options.Logger,
+		onRetry: options.OnRetry,
 	}, nil
 }
 
@@ -107,6 +110,9 @@ func (s *WatchSupervisor) Run(ctx context.Context) error {
 
 		attempt++
 		delay := s.backoff.Delay(attempt)
+		if s.onRetry != nil {
+			s.onRetry(err)
+		}
 		logWatchSupervisorRetry(s.logger, err, attempt, delay)
 		if sleepErr := s.sleeper.Sleep(ctx, delay); sleepErr != nil {
 			if isWatchNormalStop(ctx, sleepErr) {

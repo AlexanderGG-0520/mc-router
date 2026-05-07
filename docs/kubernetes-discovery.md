@@ -148,7 +148,7 @@ The ordering is intentional:
 3. Static routes and discovered routes are merged.
 4. The router is built from the merged explicit route list and the existing `defaultRoute`.
 
-Invalid static config fails before the merge builder runs. The merge builder does not try to repair or reinterpret invalid static routes. Merge ignored routes and stats are retained on the route snapshot boundary for future logging and metrics, but discovery metrics are not implemented yet.
+Invalid static config fails before the merge builder runs. The merge builder does not try to repair or reinterpret invalid static routes. Merge ignored routes and stats are retained on the route snapshot boundary for logging and future resource-level metrics.
 
 When Kubernetes discovery is enabled, a runtime goroutine starts the namespace-scoped Service watch controller supervisor after the startup snapshot is built. Successful watch updates feed this boundary and atomically replace the active route snapshot for new connections.
 
@@ -204,7 +204,7 @@ The current controller core is a pure in-memory builder:
 
 It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information.
 
-This controller core is used by both startup discovery and runtime watch updates. Metrics remain separate and are not implemented for discovery yet.
+This controller core is used by both startup discovery and runtime watch updates. Runtime discovery metrics track sync, watch retry, and rebuild health. Resource-level skip metrics for invalid annotations and duplicate hosts are not implemented yet.
 
 Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
 
@@ -259,21 +259,50 @@ All-namespaces discovery is not implemented. Supporting it later would require a
 
 Reading the ServiceAccount namespace file is not a Kubernetes API call and is not controlled by Kubernetes RBAC. It depends on the Pod's projected ServiceAccount volume. The gateway does not need permissions for Secrets and must not read the ServiceAccount token for namespace resolution.
 
-## Metrics Plan
+## Metrics
 
-Metrics are not implemented yet. Candidate metrics:
+When `metrics.enabled` is true, Kubernetes discovery exposes these Prometheus metrics:
 
 ```text
-mc_gateway_kubernetes_discovery_events_total{result,reason}
 mc_gateway_kubernetes_discovered_routes
-mc_gateway_kubernetes_resource_errors_total{reason}
 mc_gateway_kubernetes_watch_restarts_total{reason}
 mc_gateway_kubernetes_watch_running
 mc_gateway_kubernetes_last_successful_sync_timestamp_seconds
 mc_gateway_kubernetes_discovery_errors_total{reason}
 ```
 
-Discovery metrics should stay low-cardinality. Do not use namespace, Service name, or host as metric labels. Keep labels to bounded values such as `result` and `reason`.
+Metric meanings:
+
+- `mc_gateway_kubernetes_discovered_routes`: number of discovered routes in the latest successfully applied runtime snapshot.
+- `mc_gateway_kubernetes_watch_restarts_total{reason}`: watch supervisor retry/restart count after runtime watch failures.
+- `mc_gateway_kubernetes_watch_running`: `1` while the runtime watch supervisor is running, otherwise `0`.
+- `mc_gateway_kubernetes_last_successful_sync_timestamp_seconds`: Unix timestamp of the last successful discovery sync applied to runtime routing.
+- `mc_gateway_kubernetes_discovery_errors_total{reason}`: discovery/runtime errors by bounded reason.
+
+`mc_gateway_kubernetes_watch_restarts_total{reason}` uses only these reason values:
+
+- `list_failed`
+- `watch_closed`
+- `watch_error`
+- `watch_setup_failed`
+- `unknown`
+
+`mc_gateway_kubernetes_discovery_errors_total{reason}` uses only these reason values:
+
+- `namespace_resolution_failed`
+- `incluster_config_failed`
+- `initial_list_failed`
+- `watch_error`
+- `watch_closed`
+- `watch_setup_failed`
+- `rebuild_failed`
+- `unknown`
+
+Metrics are disabled by default with the rest of the metrics endpoint. When metrics are disabled, discovery instrumentation is a no-op and is safe to call.
+
+Discovery metrics stay low-cardinality. Do not use namespace, Service name, host, backend, annotation value, Kubernetes resource version, or raw error message as metric labels. Keep labels to bounded values such as `reason`.
+
+Invalid Service annotations and duplicate discovered hosts are not counted in `mc_gateway_kubernetes_discovery_errors_total`; they are route-level skips. A future `mc_gateway_kubernetes_resource_errors_total{reason}` or skipped-resource metric can be added separately if operators need that signal.
 
 ## Security Notes
 
@@ -368,6 +397,7 @@ The current implementation intentionally stops at:
 - Runtime route snapshot boundary that receives startup-discovered routes when Kubernetes discovery is enabled.
 - Runtime route snapshot updates from the namespace-scoped Service watch controller.
 - Retry/backoff supervisor for runtime Kubernetes watch failures.
+- Low-cardinality Kubernetes discovery metrics.
 - Duplicate discovered host helper tests.
 - Documentation of the intended merge and operation policy.
 
@@ -378,7 +408,7 @@ Not implemented yet:
 - CRDs.
 - Wake-up or scale-to-zero controller behavior.
 - REST API or Web UI.
-- Discovery metrics.
+- Resource-level discovery metrics for invalid annotations and duplicate hosts.
 
 ## Current Status
 

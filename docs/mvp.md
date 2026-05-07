@@ -14,18 +14,20 @@
 - Optional status ping fallback response for denied routes and backend dial failures.
 - Optional login disconnect fallback response for denied login starts.
 - Fallback response metrics for status and login fallback responses.
+- Low-cardinality Kubernetes discovery metrics.
 - Graceful shutdown.
 - SIGHUP config reload for static route updates on supported platforms.
 - Unit tests for parser, config, and router behavior.
 - Dockerfile.
 - Minimal Kubernetes manifest and namespace-scoped discovery RBAC example.
 - GitHub Actions CI.
-- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, startup client-go initial list, namespace-scoped Service watch controller, watch retry/backoff supervisor, namespace-scoped RBAC example, runtime merge-boundary integration, and runtime route snapshot updates.
+- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, startup client-go initial list, namespace-scoped Service watch controller, watch retry/backoff supervisor, namespace-scoped RBAC example, runtime merge-boundary integration, runtime route snapshot updates, and discovery metrics.
 
 ## Not Included Yet
 
 - Kubernetes Service re-list during `SIGHUP` reload.
 - Configurable retry/backoff settings for runtime Kubernetes watch failures.
+- Resource-level Kubernetes discovery metrics for invalid annotations and duplicate hosts.
 - ClusterRole or all-namespaces discovery RBAC.
 - Pod annotations, EndpointSlice discovery, or CRD route discovery.
 - Scale-to-zero wake-up.
@@ -79,7 +81,7 @@ Automated tests now cover:
 - Server shutdown on context cancellation.
 - SIGHUP/static config reload keeps the previous routes after invalid reloads and applies valid reloads to new connections.
 - Kubernetes Service annotation discovery with fake clients, including current namespace resolution, initial list failure policy, Service watch updates, invalid annotation skips, duplicate discovered host handling, static route precedence, ExternalName skips, watch retry/backoff recovery, last-known-good snapshot preservation during retry, reload preservation of latest discovered routes, and watch update interaction with static reload.
-- Metrics config defaults, Prometheus text endpoint behavior, active connection gauge, route-denied counter, backend dial failure counter, fallback response counter, reload counters, config generation gauge, and route count gauge.
+- Metrics config defaults, Prometheus text endpoint behavior, active connection gauge, route-denied counter, backend dial failure counter, fallback response counter, reload counters, config generation gauge, route count gauge, and Kubernetes discovery metric output.
 - Status fallback config defaults, denied status response JSON, backend dial failure and timeout status response JSON, status ping/pong echo, disabled fallback close behavior, default route precedence, malformed status request close behavior, fallback response metrics, and existing metric preservation.
 - Login fallback config defaults, denied login disconnect JSON, malformed login start close behavior, known route/default route precedence, backend dial failure close behavior, and login fallback response metrics.
 - Race detector coverage through `go test -race ./...`.

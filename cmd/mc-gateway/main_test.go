@@ -16,8 +16,11 @@ import (
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
+	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
+	dto "github.com/prometheus/client_model/go"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
 	k8sclient "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
@@ -449,6 +452,117 @@ func TestStartKubernetesRuntimeDiscoveryWatchFailureReturnsStartupError(t *testi
 	}
 }
 
+func TestStartKubernetesRuntimeDiscoveryNamespaceFailureRecordsMetric(t *testing.T) {
+	cfg := runtimeDiscoveryConfig()
+	updater := newRecordingDiscoveredRouteUpdater()
+	updater.metrics = gatewaymetrics.NewRecorder(true)
+	deps := fakeRuntimeDiscoveryDeps(t, "minecraft", fake.NewSimpleClientset())
+	deps.resolveNamespace = func(string, k8sdiscovery.NamespaceResolver) (string, error) {
+		return "", errors.New("namespace unavailable")
+	}
+
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(context.Background(), cfg, updater, discardLogger(), deps)
+	if err == nil {
+		t.Fatal("startKubernetesRuntimeDiscovery error = nil, want namespace error")
+	}
+	if runtimeDiscovery != nil {
+		t.Fatal("runtime discovery returned on namespace failure")
+	}
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_discovery_errors_total", map[string]string{"reason": "namespace_resolution_failed"}, 1)
+}
+
+func TestStartKubernetesRuntimeDiscoveryWatchSetupFailureRecordsMetric(t *testing.T) {
+	cfg := runtimeDiscoveryConfig()
+	client := fake.NewSimpleClientset()
+	client.Fake.PrependWatchReactor("services", func(k8stesting.Action) (bool, watch.Interface, error) {
+		return true, nil, errors.New("watch failed")
+	})
+	deps := fakeRuntimeDiscoveryDeps(t, "minecraft", client)
+	updater := newRecordingDiscoveredRouteUpdater()
+	updater.metrics = gatewaymetrics.NewRecorder(true)
+
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(context.Background(), cfg, updater, discardLogger(), deps)
+	if err == nil {
+		t.Fatal("startKubernetesRuntimeDiscovery error = nil, want watch setup error")
+	}
+	if runtimeDiscovery != nil {
+		t.Fatal("runtime discovery returned on watch setup failure")
+	}
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_discovery_errors_total", map[string]string{"reason": "watch_setup_failed"}, 1)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_watch_running", nil, 0)
+}
+
+func TestStartKubernetesRuntimeDiscoveryInitialListFailureRecordsMetric(t *testing.T) {
+	cfg := runtimeDiscoveryConfig()
+	client := fake.NewSimpleClientset()
+	client.Fake.PrependReactor("list", "services", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("list failed")
+	})
+	deps := fakeRuntimeDiscoveryDeps(t, "minecraft", client)
+	updater := newRecordingDiscoveredRouteUpdater()
+	updater.metrics = gatewaymetrics.NewRecorder(true)
+
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(context.Background(), cfg, updater, discardLogger(), deps)
+	if err == nil {
+		t.Fatal("startKubernetesRuntimeDiscovery error = nil, want list error")
+	}
+	if runtimeDiscovery != nil {
+		t.Fatal("runtime discovery returned on list failure")
+	}
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_discovery_errors_total", map[string]string{"reason": "initial_list_failed"}, 1)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_watch_running", nil, 0)
+}
+
+func TestKubernetesDiscoveryReasonClassification(t *testing.T) {
+	cases := []struct {
+		name          string
+		err           error
+		restartReason string
+		errorReason   string
+	}{
+		{
+			name:          "watch error",
+			err:           k8sdiscovery.ErrServiceWatchError,
+			restartReason: "watch_error",
+			errorReason:   "watch_error",
+		},
+		{
+			name:          "watch closed",
+			err:           k8sdiscovery.ErrServiceWatchClosed,
+			restartReason: "watch_closed",
+			errorReason:   "watch_closed",
+		},
+		{
+			name:          "list failed",
+			err:           k8sdiscovery.ErrServiceListFailed,
+			restartReason: "list_failed",
+			errorReason:   "initial_list_failed",
+		},
+		{
+			name:          "watch setup failed",
+			err:           k8sdiscovery.ErrServiceWatchSetupFailed,
+			restartReason: "watch_setup_failed",
+			errorReason:   "watch_setup_failed",
+		},
+		{
+			name:          "unknown",
+			err:           errors.New("other"),
+			restartReason: "unknown",
+			errorReason:   "unknown",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := kubernetesWatchRestartReason(tc.err); got != tc.restartReason {
+				t.Fatalf("restart reason = %q, want %q", got, tc.restartReason)
+			}
+			if got := kubernetesDiscoveryErrorReason(tc.err); got != tc.errorReason {
+				t.Fatalf("error reason = %q, want %q", got, tc.errorReason)
+			}
+		})
+	}
+}
+
 func TestKubernetesRuntimeDiscoveryUpdatesCompleteRouteSet(t *testing.T) {
 	cfg := runtimeDiscoveryConfig()
 	client := fake.NewSimpleClientset()
@@ -512,17 +626,21 @@ func TestKubernetesRuntimeDiscoveryRetriesWatchFailureAndKeepsLastKnownGood(t *t
 	})
 	sleeper := newBlockingRuntimeSleeper()
 	deps := fakeRuntimeDiscoveryDeps(t, "minecraft", client)
-	deps.newWatchSupervisor = func(runner k8sdiscovery.WatchRunner, ready <-chan struct{}, synced <-chan struct{}, logger *slog.Logger) (serviceWatchController, error) {
+	deps.newWatchSupervisor = func(options k8sdiscovery.WatchSupervisorOptions) (serviceWatchController, error) {
+		options.Sleeper = sleeper
+		options.Backoff = k8sdiscovery.BackoffPolicy{
+			InitialDelay: time.Second,
+			MaxDelay:     time.Second,
+			Factor:       2,
+		}
 		return k8sdiscovery.NewWatchSupervisor(k8sdiscovery.WatchSupervisorOptions{
-			Runner:  runner,
-			Ready:   ready,
-			Synced:  synced,
-			Sleeper: sleeper,
-			Backoff: k8sdiscovery.BackoffPolicy{
-				InitialDelay: time.Second,
-				MaxDelay:     time.Second,
-				Factor:       2,
-			},
+			Runner:  options.Runner,
+			Ready:   options.Ready,
+			Synced:  options.Synced,
+			Logger:  options.Logger,
+			OnRetry: options.OnRetry,
+			Sleeper: options.Sleeper,
+			Backoff: options.Backoff,
 		})
 	}
 	updater := newRecordingDiscoveredRouteUpdater()
@@ -558,6 +676,51 @@ func TestKubernetesRuntimeDiscoveryRetriesWatchFailureAndKeepsLastKnownGood(t *t
 	sleeper.release()
 	_ = waitForRuntimeWatcher(t, watchers)
 	waitForDiscoveredHosts(t, updater, []string{"new.example.com"})
+}
+
+func TestKubernetesRuntimeDiscoveryMetricsRecordWatchRetryAndRunningState(t *testing.T) {
+	cfg := runtimeDiscoveryConfig()
+	cfg.Metrics.Enabled = true
+	client := fake.NewSimpleClientset(runtimeAnnotatedService("old", "minecraft", "old.example.com", 25565))
+	watchers := make(chan *watch.FakeWatcher, 2)
+	client.Fake.PrependWatchReactor("services", func(k8stesting.Action) (bool, watch.Interface, error) {
+		watcher := watch.NewFake()
+		watchers <- watcher
+		return true, watcher, nil
+	})
+	sleeper := newBlockingRuntimeSleeper()
+	deps := fakeRuntimeDiscoveryDeps(t, "minecraft", client)
+	deps.newWatchSupervisor = func(options k8sdiscovery.WatchSupervisorOptions) (serviceWatchController, error) {
+		options.Sleeper = sleeper
+		options.Backoff = k8sdiscovery.BackoffPolicy{InitialDelay: time.Second}
+		return k8sdiscovery.NewWatchSupervisor(options)
+	}
+	updater := newRecordingDiscoveredRouteUpdater()
+	updater.metrics = gatewaymetrics.NewRecorder(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(ctx, cfg, updater, discardLogger(), deps)
+	if err != nil {
+		t.Fatalf("startKubernetesRuntimeDiscovery: %v", err)
+	}
+
+	firstWatcher := waitForRuntimeWatcher(t, watchers)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_watch_running", nil, 1)
+
+	firstWatcher.Error(&metav1.Status{
+		Status:  metav1.StatusFailure,
+		Message: "watch failed",
+		Reason:  metav1.StatusReasonInternalError,
+		Code:    500,
+	})
+	_ = sleeper.waitDelay(t)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_watch_restarts_total", map[string]string{"reason": "watch_error"}, 1)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_discovery_errors_total", map[string]string{"reason": "watch_error"}, 1)
+
+	cancel()
+	runtimeDiscovery.Stop()
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_watch_running", nil, 0)
 }
 
 type fakeStartupServiceLister struct {
@@ -613,6 +776,7 @@ type recordingDiscoveredRouteUpdater struct {
 	routes  []k8sdiscovery.DiscoveredRoute
 	updates int
 	err     error
+	metrics *gatewaymetrics.Recorder
 }
 
 func newRecordingDiscoveredRouteUpdater() *recordingDiscoveredRouteUpdater {
@@ -640,6 +804,10 @@ func (u *recordingDiscoveredRouteUpdater) updated() bool {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return u.updates > 0
+}
+
+func (u *recordingDiscoveredRouteUpdater) Metrics() *gatewaymetrics.Recorder {
+	return u.metrics
 }
 
 func waitForDiscoveredHosts(t *testing.T, updater *recordingDiscoveredRouteUpdater, want []string) {
@@ -744,6 +912,60 @@ func (s *blockingRuntimeSleeper) waitDelay(t *testing.T) time.Duration {
 
 func (s *blockingRuntimeSleeper) release() {
 	s.releaseCh <- struct{}{}
+}
+
+func waitMainMetricValue(t *testing.T, recorder *gatewaymetrics.Recorder, name string, labels map[string]string, want float64) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, ok := mainMetricValue(t, recorder, name, labels)
+		if ok && got == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got, ok := mainMetricValue(t, recorder, name, labels)
+	t.Fatalf("metric %s%v = %v (present %v), want %v", name, labels, got, ok, want)
+}
+
+func mainMetricValue(t *testing.T, recorder *gatewaymetrics.Recorder, name string, labels map[string]string) (float64, bool) {
+	t.Helper()
+	if recorder == nil || recorder.Registry() == nil {
+		return 0, false
+	}
+	families, err := recorder.Registry().Gather()
+	if err != nil {
+		t.Fatalf("Gather metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() != name {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			if !mainMetricLabelsMatch(metric, labels) {
+				continue
+			}
+			if metric.Gauge != nil {
+				return metric.Gauge.GetValue(), true
+			}
+			if metric.Counter != nil {
+				return metric.Counter.GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+func mainMetricLabelsMatch(metric *dto.Metric, labels map[string]string) bool {
+	if len(metric.GetLabel()) != len(labels) {
+		return false
+	}
+	for _, label := range metric.GetLabel() {
+		if labels[label.GetName()] != label.GetValue() {
+			return false
+		}
+	}
+	return true
 }
 
 func runtimeAnnotatedService(name, namespace, host string, port int) *corev1.Service {
