@@ -1,5 +1,13 @@
 # mc-router
 
+![Docker Build](https://img.shields.io/github/actions/workflow/status/AlexanderGG-0520/mc-router/docker-publish.yml?branch=main)
+[![Docker Pulls](https://img.shields.io/docker/pulls/alecjp02/mc-router.svg?logo=docker)](https://hub.docker.com/r/alecjp02/mc-router/)
+[![Docker Stars](https://img.shields.io/docker/stars/alecjp02/mc-router.svg?logo=docker)](https://hub.docker.com/r/alecjp02/mc-router/)
+[![GitHub Issues](https://img.shields.io/github/issues-raw/alexandergg-0520/mc-router.svg)](https://github.com/alexandergg-0520/mc-router/issues)
+![GHCR](https://img.shields.io/badge/GHCR-ghcr.io%2Falexandergg--0520%2Fmc--router-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Kubernetes](https://img.shields.io/badge/kubernetes-ready-blue)
+
 `mc-router` is a Go-based Minecraft Java Edition gateway for routing a single public TCP entry point, usually `:25565`, to multiple backend Minecraft servers based on the hostname that the client requested in the Minecraft handshake.
 
 The first binary is named `mc-gateway` so the project can be renamed later without changing the initial command layout.
