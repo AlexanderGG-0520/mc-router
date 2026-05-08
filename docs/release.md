@@ -21,7 +21,10 @@ The Docker publish workflow builds the repository `Dockerfile` and publishes onl
 Publish targets:
 
 - GHCR: `ghcr.io/alexandergg-0520/mc-router`
-- Docker Hub: set the repository variable `DOCKERHUB_IMAGE` or the manual workflow input `dockerhub_image` to the final Docker Hub image name, for example `namespace/mc-router`
+- Docker Hub official image: `alecjp02/mc-router`
+- Repository variable: `DOCKERHUB_IMAGE=alecjp02/mc-router`
+- Manual workflow input: `dockerhub_image` is for temporary override only; normal operation uses `DOCKERHUB_IMAGE`
+- README Docker Pulls / Docker Stars badges intentionally point to `alecjp02/mc-router`; that repository is the official Docker Hub image
 
 Tag policy:
 
@@ -46,7 +49,7 @@ Workflow policy:
 - Docker Hub publishing requires all of:
   - `DOCKERHUB_USERNAME` secret
   - `DOCKERHUB_TOKEN` secret
-  - `DOCKERHUB_IMAGE` repository variable, or `dockerhub_image` manual workflow input
+  - `DOCKERHUB_IMAGE` repository variable, with `dockerhub_image` as an optional manual override
 - If Docker Hub configuration is incomplete, the workflow still publishes GHCR and skips Docker Hub.
 
 Security and supply chain notes:
