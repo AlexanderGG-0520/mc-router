@@ -8,40 +8,46 @@ This repository follows the same PR-first rule for release-related work.
 - Review release notes, workflow changes, and version bumps in a PR.
 - Avoid mixing release changes with unrelated protocol or platform work.
 - If a release task needs a direct fix on `main`, follow up with a PR that documents and corrects it.
-- Tagging, release automation, and image publishing are not yet standardized in this repository. Treat those as future work until a dedicated release process is added.
+- Tagging and GitHub Release creation remain manual for now. Container image publishing is handled by `.github/workflows/docker-publish.yml`.
 
 ## Manual E2E
 
 The optional real Minecraft server E2E workflow remains manual through `workflow_dispatch`. Keep it out of the required release gate until it is stable and does not need explicit EULA acceptance in the normal release path.
 
-## Future Container Image Publishing
+## Container Image Publishing
 
-Image publishing is not implemented yet. A future release workflow should build an OCI image in GitHub Actions and publish only from trusted repository events.
+The Docker publish workflow builds the repository `Dockerfile` and publishes only from trusted repository events. It does not run on pull requests.
 
-Candidate registries:
+Publish targets:
 
-- GHCR: `ghcr.io/AlexanderGG-0520/mc-router`
-- Docker Hub: repository name is not decided yet
+- GHCR: `ghcr.io/alexandergg-0520/mc-router`
+- Docker Hub: set the repository variable or workflow input `DOCKERHUB_IMAGE` to the final Docker Hub image name, for example `namespace/mc-router`
 
-Candidate tag policy:
+Tag policy:
 
-- `latest`: only for the stable `main` image after release criteria pass
-- `vX.Y.Z`: Git tag release image
-- `sha-<shortsha>`: traceable verification image
-- `pr-<number>`: optional preview image if the project later needs it
+- branch pushes publish the branch tag, such as `main`
+- Git tag pushes publish the tag ref, such as `v0.1.0-alpha`
+- Semver tags also publish `{{version}}`; stable tags without a prerelease suffix also publish `{{major}}.{{minor}}`
+- `sha-<shortsha>` is included as a traceable image tag
+- `latest` is intentionally not published for `v0.1.0-alpha`
 
-Candidate architecture policy:
+Architecture policy:
 
-- `linux/amd64` first
-- `linux/arm64` only after confirming operator demand and build/runtime coverage
+- The publish workflow builds `linux/amd64` and `linux/arm64`.
+- The Dockerfile uses a static Go binary and a distroless runtime image, which are suitable for multi-arch buildx publishing.
 
 Workflow policy:
 
 - `pull_request`: build smoke only, no publish
-- `main` merge: build and test, no public release tag by default
-- Git tag push or release creation: publish versioned image
+- `main` merge: publish the `main` and `sha-<shortsha>` image tags
+- Git tag push: publish versioned image tags
+- `workflow_dispatch`: publish manually from the selected ref
 - GHCR publishing should use `GITHUB_TOKEN` where repository permissions allow it
-- Docker Hub publishing requires `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets
+- Docker Hub publishing requires all of:
+  - `DOCKERHUB_USERNAME` secret
+  - `DOCKERHUB_TOKEN` secret
+  - `DOCKERHUB_IMAGE` repository variable or workflow input
+- If Docker Hub configuration is incomplete, the workflow still publishes GHCR and skips Docker Hub.
 
 Security and supply chain notes:
 
