@@ -244,7 +244,7 @@ func (s *runtimeDiscoverySink) synced() <-chan struct{} {
 
 func (s *runtimeDiscoverySink) update(routes []k8sdiscovery.DiscoveredRoute, skipped, duplicateHosts int) {
 	routes = append([]k8sdiscovery.DiscoveredRoute(nil), routes...)
-	err := s.updater.UpdateDiscoveredRoutes(s.ctx, discovery.NewMemoryProvider(routes))
+	err := s.updater.UpdateDiscoveredRoutes(s.ctx, k8sdiscovery.NewSnapshotProvider(routes))
 	s.readyOnce.Do(func() {
 		close(s.readyCh)
 	})
