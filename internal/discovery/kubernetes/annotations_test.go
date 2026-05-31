@@ -31,6 +31,73 @@ func TestParseServiceAnnotationsEnabledFalseSkips(t *testing.T) {
 	assertSkipped(t, result, ReasonDisabled)
 }
 
+func TestParseServiceAnnotationsContractSkips(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(ServiceInput)
+		reason string
+	}{
+		{
+			name: "enabled must be literal true",
+			mutate: func(service ServiceInput) {
+				service.Annotations[DefaultAnnotationPrefix+"/"+AnnotationEnabled] = "True"
+			},
+			reason: ReasonDisabled,
+		},
+		{
+			name: "blank host is missing host",
+			mutate: func(service ServiceInput) {
+				service.Annotations[DefaultAnnotationPrefix+"/"+AnnotationHost] = " \t "
+			},
+			reason: ReasonMissingHost,
+		},
+		{
+			name: "blank port is missing port",
+			mutate: func(service ServiceInput) {
+				service.Annotations[DefaultAnnotationPrefix+"/"+AnnotationPort] = " \t "
+			},
+			reason: ReasonMissingPort,
+		},
+		{
+			name: "zero port is invalid port",
+			mutate: func(service ServiceInput) {
+				service.Annotations[DefaultAnnotationPrefix+"/"+AnnotationPort] = "0"
+			},
+			reason: ReasonInvalidPort,
+		},
+		{
+			name: "negative port is invalid port",
+			mutate: func(service ServiceInput) {
+				service.Annotations[DefaultAnnotationPrefix+"/"+AnnotationPort] = "-1"
+			},
+			reason: ReasonInvalidPort,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := validServiceInput()
+			tc.mutate(service)
+
+			result := ParseServiceAnnotations(DefaultAnnotationPrefix, service)
+			assertSkipped(t, result, tc.reason)
+		})
+	}
+}
+
+func TestParseServiceAnnotationsTrimsPortAnnotation(t *testing.T) {
+	service := validServiceInput()
+	service.Annotations[DefaultAnnotationPrefix+"/"+AnnotationPort] = " 25565 "
+
+	result := ParseServiceAnnotations(DefaultAnnotationPrefix, service)
+	if result.Skipped {
+		t.Fatalf("ParseServiceAnnotations skipped route: reason=%s err=%v", result.Reason, result.Err)
+	}
+	if result.Route.Backend != "smp.minecraft.svc.cluster.local:25565" {
+		t.Fatalf("backend = %q, want smp.minecraft.svc.cluster.local:25565", result.Route.Backend)
+	}
+}
+
 func TestParseServiceAnnotationsHostMissingSkips(t *testing.T) {
 	service := validServiceInput()
 	delete(service.Annotations, DefaultAnnotationPrefix+"/"+AnnotationHost)

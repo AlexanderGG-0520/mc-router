@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Kubernetes discovery is planned as a way to generate gateway routes from Kubernetes resources instead of maintaining every Minecraft backend route by hand in the static YAML file.
+Kubernetes discovery generates gateway routes from Kubernetes Services instead of requiring every Minecraft backend route to be maintained by hand in the static YAML file.
 
 The current implementation performs a Kubernetes Service initial list at startup when `discovery.kubernetes.enabled` is true, then starts a namespace-scoped Service watch controller under a retry/backoff supervisor. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, runtime route snapshot updates, and watch failure recovery.
 
@@ -10,7 +10,7 @@ Watch updates rebuild the route snapshot from the latest valid static config plu
 
 ## Why Service Annotation Discovery First
 
-The first discovery mode is planned around Service annotations because Services are already the stable routing boundary for Minecraft backends. A Service has a stable DNS name, a namespace, and declared ports, which lets the gateway derive a backend without trusting arbitrary backend strings from annotations.
+The first discovery mode uses Service annotations because Services are already the stable routing boundary for Minecraft backends. A Service has a stable DNS name, a namespace, and declared ports, which lets the gateway derive a backend without trusting arbitrary backend strings from annotations.
 
 This also keeps the initial model namespace-scoped and easy to review:
 
@@ -29,7 +29,7 @@ CRDs are deferred because the static config and Service annotation model should 
 
 ## Config
 
-The planned discovery config shape is:
+The discovery config shape is:
 
 ```yaml
 discovery:
@@ -47,7 +47,7 @@ Defaults:
 - `mode` currently only accepts `service-annotations`.
 - `annotationPrefix` defaults to `mc-router.alexandergg.com`.
 
-`annotationPrefix` must not be empty and must not include a slash. All-namespaces discovery is not implemented.
+`annotationPrefix` must be a canonical lowercase DNS subdomain. It must not be empty, include leading or trailing whitespace, or include a slash. All-namespaces discovery is not implemented.
 
 Kubernetes discovery settings are startup settings in the current implementation. `SIGHUP` reload does not re-resolve the discovery namespace or restart the watch controller.
 
@@ -86,6 +86,22 @@ spec:
 
 Only `enabled: "true"` enables a route. Missing `enabled`, `enabled: "false"`, or any other value does not produce a route.
 
+## Annotation Contract
+
+With the default `annotationPrefix`, Service annotation discovery reads exactly these annotations:
+
+| Annotation | Required value |
+| --- | --- |
+| `mc-router.alexandergg.com/enabled` | Must be the literal string `"true"` to opt in. Missing values, `"false"`, different casing, or any other value disable discovery for that Service. |
+| `mc-router.alexandergg.com/host` | Required after opt-in. Must be a non-empty valid Minecraft route host. The value is normalized before it becomes the discovered route host. |
+| `mc-router.alexandergg.com/port` | Required after opt-in. Whitespace is trimmed, then the value must parse as an integer from `1` to `65535` and match a declared `spec.ports[].port` on the Service. |
+
+If `discovery.kubernetes.annotationPrefix` is changed, the same suffixes are read under that prefix: `/enabled`, `/host`, and `/port`.
+
+Discovery does not read an annotation for the backend hostname. The backend is generated as `service.namespace.svc.cluster.local:port` after the Service name, namespace, and annotated port pass validation. `ExternalName` Services are skipped before annotation parsing because they do not fit this generated Service-DNS backend contract.
+
+Missing or invalid annotations skip only that Service. They do not fail startup and do not stop runtime watch processing as long as the Kubernetes API list or watch itself succeeds.
+
 ## Generated Backend DNS
 
 For the Service above, the discovered route concept is:
@@ -105,7 +121,7 @@ Runtime snapshot integration merges route sources with this order:
 2. Valid discovered routes are used next.
 3. `defaultRoute` is evaluated last according to `unknownHostPolicy`.
 
-The merge builder applies this policy before a discovered route provider exists. If a discovered route normalizes to the same host as a static route, the static route is kept and the discovered route is ignored with `static_route_precedence`.
+The merge builder applies this policy when static and discovered routes are combined. If a discovered route normalizes to the same host as a static route, the static route is kept and the discovered route is ignored with `static_route_precedence`.
 
 `defaultRoute` is not inserted into the explicit route list. The existing router should continue to evaluate it after explicit static and discovered routes according to `unknownHostPolicy`.
 
@@ -190,7 +206,7 @@ Reload and watch updates are serialized by the server's route snapshot update lo
 
 ## Duplicate Host Policy
 
-Duplicate discovered hosts are unsafe because a controller cannot reliably infer the operator's intended backend. If the same host is discovered more than once, every discovered route for that host should be disabled and reported with a duplicate reason. The project should avoid first-wins behavior for discovered routes.
+Duplicate discovered hosts are unsafe because a controller cannot reliably infer the operator's intended backend. If the same host is discovered more than once, every discovered route for that host is disabled and reported with a duplicate reason. The project avoids first-wins behavior for discovered routes.
 
 The controller core applies this policy to the discovered route set before returning a snapshot. Duplicate hosts are returned in deterministic order, and the affected resources are reported with `duplicate_host`.
 
