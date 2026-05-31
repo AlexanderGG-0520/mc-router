@@ -202,7 +202,7 @@ func (s *Server) UpdateRouteSnapshot(snapshot RouteSnapshot) {
 	s.updateRouteSnapshotLocked(snapshot)
 }
 
-func (s *Server) UpdateDiscoveredRoutes(ctx context.Context, discoveredRoutes []kubernetes.DiscoveredRoute) error {
+func (s *Server) UpdateDiscoveredRoutes(ctx context.Context, provider discovery.RouteProvider) error {
 	if ctx == nil {
 		return errors.New("context is nil")
 	}
@@ -211,7 +211,11 @@ func (s *Server) UpdateDiscoveredRoutes(ctx context.Context, discoveredRoutes []
 		return ctx.Err()
 	default:
 	}
-	discoveredRoutes = append([]kubernetes.DiscoveredRoute(nil), discoveredRoutes...)
+	discoveredRoutes, err := discoveredRoutesFromProvider(ctx, provider)
+	if err != nil {
+		s.metrics.KubernetesDiscoveryError(gatewaymetrics.KubernetesDiscoveryErrorReasonUnknown)
+		return err
+	}
 
 	s.snapshotMu.Lock()
 	defer s.snapshotMu.Unlock()
@@ -238,6 +242,17 @@ func (s *Server) UpdateDiscoveredRoutes(ctx context.Context, discoveredRoutes []
 	s.updateRouteSnapshotLocked(snapshot)
 	s.metrics.KubernetesDiscoverySync(len(discoveredRoutes))
 	return nil
+}
+
+func discoveredRoutesFromProvider(ctx context.Context, provider discovery.RouteProvider) ([]kubernetes.DiscoveredRoute, error) {
+	if provider == nil {
+		return nil, nil
+	}
+	discoveredRoutes, err := provider.Routes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append([]kubernetes.DiscoveredRoute(nil), discoveredRoutes...), nil
 }
 
 func (s *Server) Snapshot() RouteSnapshot {

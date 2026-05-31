@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
+	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
 	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	dto "github.com/prometheus/client_model/go"
@@ -783,7 +784,16 @@ func newRecordingDiscoveredRouteUpdater() *recordingDiscoveredRouteUpdater {
 	return &recordingDiscoveredRouteUpdater{}
 }
 
-func (u *recordingDiscoveredRouteUpdater) UpdateDiscoveredRoutes(ctx context.Context, routes []k8sdiscovery.DiscoveredRoute) error {
+func (u *recordingDiscoveredRouteUpdater) UpdateDiscoveredRoutes(ctx context.Context, provider discovery.RouteProvider) error {
+	var routes []k8sdiscovery.DiscoveredRoute
+	if provider != nil {
+		var err error
+		routes, err = provider.Routes(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.err != nil {

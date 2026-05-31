@@ -1388,9 +1388,9 @@ func TestUpdateDiscoveredRoutesAddsUpdatesAndDeletesRoutes(t *testing.T) {
 	}
 	server := NewServerFromSnapshot(snapshot, testLogger())
 
-	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+	if err := server.UpdateDiscoveredRoutes(context.Background(), discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("UpdateDiscoveredRoutes add: %v", err)
 	}
 	selection, err := server.currentState().router.Select("smp.example.com")
@@ -1401,9 +1401,9 @@ func TestUpdateDiscoveredRoutesAddsUpdatesAndDeletesRoutes(t *testing.T) {
 		t.Fatalf("added backend = %q", selection.Backend)
 	}
 
-	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+	if err := server.UpdateDiscoveredRoutes(context.Background(), discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "smp.example.com", Backend: "smp-new.minecraft.svc.cluster.local:25566"},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("UpdateDiscoveredRoutes update: %v", err)
 	}
 	selection, err = server.currentState().router.Select("smp.example.com")
@@ -1433,10 +1433,10 @@ func TestUpdateDiscoveredRoutesKeepsStaticPrecedenceAndDefaultRoute(t *testing.T
 	}
 	server := NewServerFromSnapshot(snapshot, testLogger())
 
-	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+	if err := server.UpdateDiscoveredRoutes(context.Background(), discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
 		{Host: "build.example.com", Backend: "build.minecraft.svc.cluster.local:25565"},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("UpdateDiscoveredRoutes: %v", err)
 	}
 
@@ -1474,9 +1474,9 @@ func TestUpdateDiscoveredRoutesFailureKeepsExistingSnapshot(t *testing.T) {
 	}
 	server := NewServerFromSnapshot(snapshot, testLogger())
 
-	err = server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+	err = server.UpdateDiscoveredRoutes(context.Background(), discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "bad.example.com", Backend: "bad.minecraft.svc.cluster.local:25565"},
-	})
+	}))
 	if err == nil {
 		t.Fatal("UpdateDiscoveredRoutes succeeded with invalid static config")
 	}
@@ -1489,6 +1489,30 @@ func TestUpdateDiscoveredRoutesFailureKeepsExistingSnapshot(t *testing.T) {
 	}
 	if _, err := server.currentState().router.Select("bad.example.com"); err == nil {
 		t.Fatal("invalid discovered route was swapped into the active snapshot")
+	}
+}
+
+func TestUpdateDiscoveredRoutesProviderErrorKeepsExistingSnapshot(t *testing.T) {
+	cfg := validProxyConfig()
+	snapshot, err := BuildRouteSnapshot(cfg, []kubernetes.DiscoveredRoute{
+		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := NewServerFromSnapshot(snapshot, testLogger())
+	providerErr := errors.New("provider failed")
+
+	err = server.UpdateDiscoveredRoutes(context.Background(), &errorProvider{err: providerErr})
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("UpdateDiscoveredRoutes error = %v, want %v", err, providerErr)
+	}
+	selection, err := server.currentState().router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("existing route was not preserved: %v", err)
+	}
+	if selection.Backend != "smp.minecraft.svc.cluster.local:25565" {
+		t.Fatalf("preserved backend = %q", selection.Backend)
 	}
 }
 
@@ -1509,10 +1533,10 @@ func TestKubernetesDiscoveryMetricsTrackStartupAndRuntimeSuccess(t *testing.T) {
 		t.Fatalf("last successful sync timestamp = %v (present %v), want > 0", got, ok)
 	}
 
-	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+	if err := server.UpdateDiscoveredRoutes(context.Background(), discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "smp.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
 		{Host: "build.example.com", Backend: "build.minecraft.svc.cluster.local:25565"},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("UpdateDiscoveredRoutes: %v", err)
 	}
 	waitMetricValue(t, server, "mc_gateway_kubernetes_discovered_routes", nil, 2)
@@ -1535,9 +1559,9 @@ func TestKubernetesDiscoveryMetricsTrackRebuildFailureAndKeepRouteGauge(t *testi
 	server := NewServerFromSnapshot(snapshot, testLogger())
 
 	waitMetricValue(t, server, "mc_gateway_kubernetes_discovered_routes", nil, 1)
-	err = server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+	err = server.UpdateDiscoveredRoutes(context.Background(), discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "bad.example.com", Backend: "bad.minecraft.svc.cluster.local:25565"},
-	})
+	}))
 	if err == nil {
 		t.Fatal("UpdateDiscoveredRoutes succeeded with invalid static config")
 	}
@@ -1559,9 +1583,9 @@ func TestKubernetesDiscoveryMetricsCanceledRuntimeUpdateIsNotError(t *testing.T)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := server.UpdateDiscoveredRoutes(ctx, []kubernetes.DiscoveredRoute{
+	if err := server.UpdateDiscoveredRoutes(ctx, discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "new.example.com", Backend: "new.minecraft.svc.cluster.local:25565"},
-	}); !errors.Is(err, context.Canceled) {
+	})); !errors.Is(err, context.Canceled) {
 		t.Fatalf("UpdateDiscoveredRoutes error = %v, want context.Canceled", err)
 	}
 	assertMetricAbsentOrZero(t, server, "mc_gateway_kubernetes_discovery_errors_total", map[string]string{"reason": "rebuild_failed"})
@@ -1580,9 +1604,9 @@ func TestUpdateDiscoveredRoutesCanceledContextKeepsExistingSnapshot(t *testing.T
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := server.UpdateDiscoveredRoutes(ctx, []kubernetes.DiscoveredRoute{
+	if err := server.UpdateDiscoveredRoutes(ctx, discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "new.example.com", Backend: "new.minecraft.svc.cluster.local:25565"},
-	}); !errors.Is(err, context.Canceled) {
+	})); !errors.Is(err, context.Canceled) {
 		t.Fatalf("UpdateDiscoveredRoutes error = %v, want context.Canceled", err)
 	}
 	if _, err := server.currentState().router.Select("smp.example.com"); err != nil {
@@ -1610,9 +1634,9 @@ func TestReloadAndWatchUpdatesShareLatestInputs(t *testing.T) {
 	}
 	server := NewServerFromSnapshot(snapshot, testLogger())
 
-	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+	if err := server.UpdateDiscoveredRoutes(context.Background(), discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "discovered.example.com", Backend: "smp.minecraft.svc.cluster.local:25565"},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("UpdateDiscoveredRoutes initial: %v", err)
 	}
 
@@ -1626,9 +1650,9 @@ func TestReloadAndWatchUpdatesShareLatestInputs(t *testing.T) {
 		t.Fatalf("reload dropped latest discovered route: %v", err)
 	}
 
-	if err := server.UpdateDiscoveredRoutes(context.Background(), []kubernetes.DiscoveredRoute{
+	if err := server.UpdateDiscoveredRoutes(context.Background(), discovery.NewMemoryProvider([]kubernetes.DiscoveredRoute{
 		{Host: "new.example.com", Backend: "new.minecraft.svc.cluster.local:25565"},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("UpdateDiscoveredRoutes after reload: %v", err)
 	}
 	selection, err := server.currentState().router.Select("smp.example.com")

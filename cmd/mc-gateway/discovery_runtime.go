@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
+	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
 	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxy"
@@ -16,7 +17,7 @@ import (
 )
 
 type discoveredRouteUpdater interface {
-	UpdateDiscoveredRoutes(context.Context, []k8sdiscovery.DiscoveredRoute) error
+	UpdateDiscoveredRoutes(context.Context, discovery.RouteProvider) error
 }
 
 type serviceWatchController interface {
@@ -243,7 +244,7 @@ func (s *runtimeDiscoverySink) synced() <-chan struct{} {
 
 func (s *runtimeDiscoverySink) update(routes []k8sdiscovery.DiscoveredRoute, skipped, duplicateHosts int) {
 	routes = append([]k8sdiscovery.DiscoveredRoute(nil), routes...)
-	err := s.updater.UpdateDiscoveredRoutes(s.ctx, routes)
+	err := s.updater.UpdateDiscoveredRoutes(s.ctx, discovery.NewMemoryProvider(routes))
 	s.readyOnce.Do(func() {
 		close(s.readyCh)
 	})
