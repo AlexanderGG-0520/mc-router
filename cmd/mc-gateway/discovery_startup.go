@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
-	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
 	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxy"
 	k8sclient "k8s.io/client-go/kubernetes"
@@ -23,7 +22,6 @@ type discoveryStartupDeps struct {
 type startupDiscoveredRoutes struct {
 	Services []k8sdiscovery.ServiceInput
 	Result   k8sdiscovery.Result
-	Routes   []k8sdiscovery.DiscoveredRoute
 }
 
 func defaultDiscoveryStartupDeps() discoveryStartupDeps {
@@ -59,7 +57,7 @@ func loadRouteSnapshotWithDiscovery(ctx context.Context, configPath string, logg
 	if err != nil {
 		return proxy.RouteSnapshot{}, err
 	}
-	provider := discovery.NewMemoryProvider(discovered.Routes)
+	provider := k8sdiscovery.NewSnapshotProviderFromResult(discovered.Result)
 	snapshot, err := proxy.RebuildRouteSnapshot(ctx, cfg, provider)
 	if err != nil {
 		return proxy.RouteSnapshot{}, err
@@ -106,7 +104,6 @@ func listStartupDiscoveredRoutes(ctx context.Context, cfg config.Config, deps di
 	return startupDiscoveredRoutes{
 		Services: services,
 		Result:   result,
-		Routes:   result.Routes,
 	}, nil
 }
 
