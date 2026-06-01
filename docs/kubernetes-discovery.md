@@ -192,9 +192,7 @@ The Service watch controller performs its own initial list, starts a direct `cli
 On each successful sink update, the runtime:
 
 1. Converts the complete `Result` to a route-only `SnapshotProvider`.
-2. Calls `UpdateDiscoveredRoutes` with that `RouteProvider`.
-3. Rebuilds a `RouteSnapshot` using the latest valid static config.
-4. Calls `UpdateRouteSnapshot` only if the rebuild succeeds.
+2. Calls `UpdateDiscoveredRoutes` with that `RouteProvider`, which rebuilds a `RouteSnapshot` using the latest valid static config and atomically swaps it only if the rebuild succeeds.
 
 If a Service is deleted or becomes invalid, the next complete replacement removes its route from the active snapshot after rebuild succeeds. Duplicate discovered hosts disable all discovered routes for that host.
 
