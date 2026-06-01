@@ -25,9 +25,6 @@
 
 ## Not Included Yet
 
-- Configurable retry/backoff settings for runtime Kubernetes watch failures.
-- ClusterRole or all-namespaces discovery RBAC.
-- Pod annotations, EndpointSlice discovery, or CRD route discovery.
 - Scale-to-zero wake-up.
 - Backend failure login fallback and maintenance fallback responses.
 - UDP or extra TCP routing for mods such as Simple Voice Chat.
@@ -35,6 +32,19 @@
 - Web UI.
 - Filesystem watch or admin-triggered dynamic reload.
 - Per-route rate limits or allow/deny lists.
+
+## Post-MVP Kubernetes Discovery Backlog
+
+Namespace-scoped Kubernetes Service annotation discovery is implemented for the MVP. It includes startup initial list, `SIGHUP` reload re-list, runtime watch updates, retry/backoff recovery, route-only provider boundaries, low-cardinality discovery metrics, and failure preservation.
+
+Optional future Kubernetes discovery enhancements include:
+
+- Configurable Kubernetes watch retry/backoff settings if operators need tuning.
+- ClusterRole or all-namespaces discovery RBAC for deployments that intentionally route across namespace boundaries.
+- Pod annotations if Service-level routing is not expressive enough.
+- EndpointSlice discovery if endpoint-level readiness or load balancing becomes necessary.
+- CRD route discovery after the static and Service annotation models are stable.
+- Informer-based implementation if the direct watch approach becomes hard to operate or test at larger scale.
 
 ## MVP Acceptance Checks
 
@@ -98,8 +108,8 @@ The protocol smoke tests use fixed protocol framing helpers and fake TCP backend
 
 ## Next Implementation Priorities
 
-1. Add configurable Kubernetes watch retry/backoff settings if operators need to tune reconnect behavior.
-2. Add wake-up controller behavior for scaled-to-zero servers.
-3. Add backend failure login fallback if operators need a login-state disconnect for unavailable known routes.
-4. Add CRD only after static and label based models are stable.
+1. Add wake-up controller behavior for scaled-to-zero servers.
+2. Add backend failure login fallback if operators need a login-state disconnect for unavailable known routes.
+3. Consider configurable Kubernetes watch retry/backoff settings if operators need to tune reconnect behavior.
+4. Consider CRD route discovery only after static and Service annotation models are stable.
 5. Consider filesystem watch or admin-triggered reload if SIGHUP is not enough operationally.

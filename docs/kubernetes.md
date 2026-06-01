@@ -219,4 +219,6 @@ With Cilium, use standard Kubernetes NetworkPolicy first. Move to CiliumNetworkP
 
 ## Future Discovery
 
-The first route discovery shape is Service annotation discovery. It is namespace-scoped and avoids requiring cluster-wide list/watch. Runtime startup uses an initial list and then a namespace-scoped Service watch controller with retry/backoff supervision. See [Kubernetes Discovery](kubernetes-discovery.md).
+The MVP route discovery shape is namespace-scoped Service annotation discovery. It avoids requiring cluster-wide list/watch and now includes startup initial list, `SIGHUP` reload re-list, runtime watch updates, retry/backoff recovery, route-only provider boundaries, and low-cardinality discovery metrics. See [Kubernetes Discovery](kubernetes-discovery.md).
+
+Post-MVP Kubernetes discovery ideas are optional operator-driven enhancements, not current commitments. Examples include configurable watch retry/backoff settings, ClusterRole or all-namespaces RBAC, Pod annotations, EndpointSlice discovery, CRD route discovery, and an informer-based implementation if direct watches become limiting.
