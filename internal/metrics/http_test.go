@@ -158,8 +158,8 @@ func TestKubernetesSkippedServicesByReasonMetricLabelsAndValues(t *testing.T) {
 	if values[k8sdiscovery.ReasonDuplicateHost] != 1 {
 		t.Fatalf("duplicate_host count = %v, want 1", values[k8sdiscovery.ReasonDuplicateHost])
 	}
-	if values[k8sdiscovery.ReasonDisabled] != 0 {
-		t.Fatalf("disabled count = %v, want 0", values[k8sdiscovery.ReasonDisabled])
+	if got := metricGaugeValue(t, recorder, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonDisabled}); got != 0 {
+		t.Fatalf("disabled count = %v, want 0", got)
 	}
 }
 
