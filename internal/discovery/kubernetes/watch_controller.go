@@ -155,6 +155,8 @@ func (c *ServiceWatchController) updateSink(services map[string]ServiceInput) {
 		inputs = append(inputs, service)
 	}
 
+	// The watch controller owns Kubernetes object tracking. Snapshot construction
+	// remains in BuildDiscoveredRoutes so startup and watch paths share semantics.
 	result := BuildDiscoveredRoutes(inputs, c.options)
 	if sink, ok := c.sink.(RouteResultSink); ok {
 		sink.UpdateResult(result)

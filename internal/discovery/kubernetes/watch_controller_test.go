@@ -98,6 +98,47 @@ func TestServiceWatchControllerDuplicateHostDisablesHost(t *testing.T) {
 	waitForRouteHosts(t, sink, nil)
 }
 
+func TestServiceWatchControllerPublishesCompleteSnapshotResult(t *testing.T) {
+	client := fake.NewSimpleClientset(
+		annotatedService("lobby", "minecraft", "lobby.example.com"),
+		annotatedService("dup-a", "minecraft", "dup.example.com"),
+		annotatedService("dup-b", "minecraft", "DUP.Example.COM."),
+		invalidAnnotatedService("bad", "minecraft"),
+	)
+	sink := newRecordingResultSink()
+	cancel, done := startServiceWatchControllerWithSink(t, client, "minecraft", sink)
+	defer stopServiceWatchController(t, cancel, done)
+
+	waitForResult(t, sink, func(result Result) bool {
+		return len(result.Routes) == 1 &&
+			routeHosts(result.Routes)[0] == "lobby.example.com" &&
+			reflect.DeepEqual(result.DuplicateHosts, []string{"dup.example.com"}) &&
+			result.SkippedByReason[ReasonDuplicateHost] == 2 &&
+			result.SkippedByReason[ReasonPortNotFound] == 1 &&
+			len(result.Skipped) == 3 &&
+			result.Skipped[0].Reason == ReasonDuplicateHost &&
+			result.Skipped[0].ServiceName == "dup-a" &&
+			result.Skipped[1].Reason == ReasonDuplicateHost &&
+			result.Skipped[1].ServiceName == "dup-b" &&
+			result.Skipped[2].Reason == ReasonPortNotFound &&
+			result.Skipped[2].ServiceName == "bad"
+	})
+
+	if err := client.CoreV1().Services("minecraft").Delete(context.Background(), "dup-b", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("Delete Service error: %v", err)
+	}
+
+	waitForResult(t, sink, func(result Result) bool {
+		return reflect.DeepEqual(routeHosts(result.Routes), []string{"dup.example.com", "lobby.example.com"}) &&
+			len(result.DuplicateHosts) == 0 &&
+			result.SkippedByReason[ReasonDuplicateHost] == 0 &&
+			result.SkippedByReason[ReasonPortNotFound] == 1 &&
+			len(result.Skipped) == 1 &&
+			result.Skipped[0].Reason == ReasonPortNotFound &&
+			result.Skipped[0].ServiceName == "bad"
+	})
+}
+
 func TestServiceWatchControllerSkipsExternalNameService(t *testing.T) {
 	client := fake.NewSimpleClientset(&corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -285,6 +326,11 @@ func TestServiceWatchControllerRejectsNilSink(t *testing.T) {
 
 func startServiceWatchController(t *testing.T, client *fake.Clientset, namespace string, sink *recordingRouteSink) (context.CancelFunc, <-chan error) {
 	t.Helper()
+	return startServiceWatchControllerWithSink(t, client, namespace, sink)
+}
+
+func startServiceWatchControllerWithSink(t *testing.T, client *fake.Clientset, namespace string, sink RouteSink) (context.CancelFunc, <-chan error) {
+	t.Helper()
 
 	controller, err := NewServiceWatchController(client, namespace, sink, ServiceWatchControllerOptions{})
 	if err != nil {
@@ -326,6 +372,20 @@ func waitForRouteHosts(t *testing.T, sink *recordingRouteSink, want []string) {
 	t.Fatalf("route hosts = %v, want %v", routeHosts(sink.snapshot()), sortedStrings(want))
 }
 
+func waitForResult(t *testing.T, sink *recordingResultSink, match func(Result) bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if result, ok := sink.snapshot(); ok && match(result) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	result, _ := sink.snapshot()
+	t.Fatalf("result = %#v did not match expectation", result)
+}
+
 type recordingRouteSink struct {
 	mu      sync.RWMutex
 	routes  []DiscoveredRoute
@@ -353,6 +413,33 @@ func (s *recordingRouteSink) updated() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.updates > 0
+}
+
+type recordingResultSink struct {
+	mu      sync.RWMutex
+	result  Result
+	updates int
+}
+
+func newRecordingResultSink() *recordingResultSink {
+	return &recordingResultSink{}
+}
+
+func (s *recordingResultSink) Update(routes []DiscoveredRoute) {
+	s.UpdateResult(Result{Routes: append([]DiscoveredRoute(nil), routes...)})
+}
+
+func (s *recordingResultSink) UpdateResult(result Result) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.result = cloneResult(result)
+	s.updates++
+}
+
+func (s *recordingResultSink) snapshot() (Result, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneResult(s.result), s.updates > 0
 }
 
 func annotatedService(name, namespace, host string) *corev1.Service {
@@ -407,4 +494,23 @@ func sortedStrings(values []string) []string {
 	copy(res, values)
 	sort.Strings(res)
 	return res
+}
+
+func cloneResult(result Result) Result {
+	result.Routes = append([]DiscoveredRoute(nil), result.Routes...)
+	result.Skipped = append([]SkippedResource(nil), result.Skipped...)
+	result.DuplicateHosts = append([]string(nil), result.DuplicateHosts...)
+	result.SkippedByReason = cloneStringIntMap(result.SkippedByReason)
+	return result
+}
+
+func cloneStringIntMap(values map[string]int) map[string]int {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]int, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
