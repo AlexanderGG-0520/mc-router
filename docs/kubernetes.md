@@ -184,6 +184,8 @@ Reload is atomic from the gateway's point of view. If the updated config is inva
 
 Kubernetes discovery is not reconfigured during `SIGHUP` reload. If discovery was enabled at startup, the latest discovered routes remain active and are re-merged with the reloaded static config. Changes to Service annotations or Services are picked up by the running Service watch controller. If the watch fails after startup, the supervisor relists Services and reopens the watch with backoff while keeping the existing active route snapshot. Changes to discovery config values require a process restart.
 
+`SIGHUP` reload does not currently perform a fresh Kubernetes Service list specifically for reload. Future reload re-list support should use the same complete discovery `Result` construction and route-only provider application boundaries as startup and runtime watch updates, and should update skipped Service metrics only after the reload result is successfully applied.
+
 Kubernetes ConfigMap projected volumes are updated asynchronously. Do not send `SIGHUP` until the mounted file has the expected content in the Pod. If you need deterministic rollout behavior across replicas, use a rolling restart instead of relying on manual signal timing.
 
 Example command shape:

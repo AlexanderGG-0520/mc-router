@@ -25,7 +25,7 @@
 
 ## Not Included Yet
 
-- Kubernetes Service re-list during `SIGHUP` reload.
+- Kubernetes Service re-list during `SIGHUP` reload; the intended boundary is documented, but implementation is deferred.
 - Configurable retry/backoff settings for runtime Kubernetes watch failures.
 - ClusterRole or all-namespaces discovery RBAC.
 - Pod annotations, EndpointSlice discovery, or CRD route discovery.

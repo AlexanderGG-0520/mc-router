@@ -212,6 +212,8 @@ Fallback settings are part of the route config snapshot and are applied to new c
 
 Kubernetes discovery does not reconfigure its namespace, client, or annotation prefix during reload. The latest discovered routes from the running watch controller are preserved and re-merged with the new static config. If the watch supervisor is retrying while reload happens, reload still uses the latest successful discovered route set.
 
+Future Kubernetes Service re-list during `SIGHUP` reload should be designed as an explicit discovery-result boundary, not as a shortcut around the controller core. A reload re-list should build a complete Kubernetes discovery `Result` with `BuildDiscoveredRoutes`, apply routes through the route-only `SnapshotProvider` and `RouteProvider` path, and update skipped Service metrics only after the reload result is successfully applied. Failed re-list or rebuild attempts should keep the previous active route snapshot and previous skipped Service gauge values.
+
 The implementation uses an immutable snapshot stored behind an atomic pointer. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
 
 Reload and Kubernetes watch updates are serialized only while building and swapping snapshots. Active connections keep using the snapshot they loaded at connection start. New connections use the latest successfully swapped snapshot.
