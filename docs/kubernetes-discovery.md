@@ -4,7 +4,7 @@
 
 Kubernetes discovery generates gateway routes from Kubernetes Services instead of requiring every Minecraft backend route to be maintained by hand in the static YAML file.
 
-The current implementation performs a Kubernetes Service initial list at startup when `discovery.kubernetes.enabled` is true, then starts a namespace-scoped Service watch controller under a retry/backoff supervisor. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, an in-memory controller core that builds a discovered route snapshot from `ServiceInput` values, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, runtime route snapshot updates, and watch failure recovery.
+The current implementation performs a Kubernetes Service initial list at startup when `discovery.kubernetes.enabled` is true, then starts a namespace-scoped Service watch controller under a retry/backoff supervisor. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, a pure controller core that builds a discovery `Result` from `ServiceInput` values, a Kubernetes `SnapshotProvider` that exposes route-only snapshots through `RouteProvider`, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, runtime route snapshot updates, and watch failure recovery.
 
 Watch updates rebuild the route snapshot from the latest valid static config plus the latest complete discovered route set. The active route snapshot is swapped only after rebuild succeeds.
 
@@ -125,7 +125,7 @@ The merge builder applies this policy when static and discovered routes are comb
 
 `defaultRoute` is not inserted into the explicit route list. The existing router should continue to evaluate it after explicit static and discovered routes according to `unknownHostPolicy`.
 
-## Merge Builder Groundwork
+## Merge Builder
 
 The current merge builder is a pure in-memory builder:
 
@@ -147,7 +147,7 @@ Merge ignored reasons are intentionally low-cardinality:
 
 Unexpected merge-builder failures are not currently recovered into an ignored reason; they surface to the caller instead.
 
-## Runtime Boundary Groundwork
+## Runtime Boundary
 
 Runtime route snapshot construction now has an internal boundary:
 
@@ -155,7 +155,7 @@ Runtime route snapshot construction now has an internal boundary:
 validated config + discovered routes -> merged route snapshot + router
 ```
 
-Startup and config reload both pass through this boundary. At startup, `discovery.kubernetes.enabled: true` feeds discovered routes from one Kubernetes Service initial list into this boundary. When discovery is disabled, the provider is empty and the runtime remains static-config-only.
+Startup and config reload both pass through this boundary. At startup, `discovery.kubernetes.enabled: true` builds one Kubernetes discovery `Result`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into this boundary. When discovery is disabled, the provider is empty and the runtime remains static-config-only.
 
 The ordering is intentional:
 
@@ -179,20 +179,22 @@ When `discovery.kubernetes.enabled` is `true`, startup performs this sequence:
 3. Create an in-cluster Kubernetes client config with `rest.InClusterConfig`.
 4. List Services once in the resolved namespace.
 5. Convert Services to `ServiceInput`, skipping `ExternalName` Services.
-6. Build discovered routes from Service annotations.
-7. Merge static and discovered routes into the startup route snapshot.
+6. Build a Kubernetes discovery `Result` from Service annotations.
+7. Convert `Result.Routes` through `NewSnapshotProviderFromResult`.
+8. Merge static and discovered routes into the startup route snapshot.
 
-Invalid Service annotations are skipped and reported in the in-memory discovery result. Duplicate discovered hosts are also skipped. Neither condition fails startup as long as the Kubernetes API list itself succeeded.
+Invalid Service annotations are skipped and reported in the discovery `Result`. Duplicate discovered hosts are also skipped. Neither condition fails startup as long as the Kubernetes API list itself succeeded. Skipped Services, duplicate host metadata, and skipped reason counts stay on the `Result` for logging and future resource-level metrics; they are not exposed through `RouteProvider`.
 
 ## Runtime Watch Updates
 
-The Service watch controller performs its own initial list, starts a direct `client-go` watch from the returned resource version, and sends the complete valid discovered route set to the runtime after each add/update/delete event. The low-level controller remains a one-shot watch core. A supervisor owns retry and backoff after runtime watch failures.
+The Service watch controller performs its own initial list, starts a direct `client-go` watch from the returned resource version, and sends a complete discovery `Result` to the runtime after each add/update/delete event. The low-level controller remains a one-shot watch core. A supervisor owns retry and backoff after runtime watch failures.
 
 On each successful sink update, the runtime:
 
-1. Copies the discovered routes.
-2. Rebuilds a `RouteSnapshot` using the latest valid static config.
-3. Calls `UpdateRouteSnapshot` only if the rebuild succeeds.
+1. Converts the complete `Result` to a route-only `SnapshotProvider`.
+2. Calls `UpdateDiscoveredRoutes` with that `RouteProvider`.
+3. Rebuilds a `RouteSnapshot` using the latest valid static config.
+4. Calls `UpdateRouteSnapshot` only if the rebuild succeeds.
 
 If a Service is deleted or becomes invalid, the next complete replacement removes its route from the active snapshot after rebuild succeeds. Duplicate discovered hosts disable all discovered routes for that host.
 
@@ -210,17 +212,17 @@ Duplicate discovered hosts are unsafe because a controller cannot reliably infer
 
 The controller core applies this policy to the discovered route set before returning a snapshot. Duplicate hosts are returned in deterministic order, and the affected resources are reported with `duplicate_host`.
 
-## Controller Core Groundwork
+## Controller Core
 
-The current controller core is a pure in-memory builder:
+`BuildDiscoveredRoutes` is the pure ServiceInput-to-Result boundary:
 
 ```text
-[]ServiceInput -> discovered route snapshot
+[]ServiceInput -> Result
 ```
 
-It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information.
+It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information in one complete `Result`.
 
-This controller core is used by both startup discovery and runtime watch updates. Runtime discovery metrics track sync, watch retry, and rebuild health. Resource-level skip metrics for invalid annotations and duplicate hosts are not implemented yet.
+This controller core is used by both startup discovery and runtime watch updates. Startup uses the `Result` for initial-list logging and converts `Result.Routes` to a `SnapshotProvider` before rebuilding the initial route snapshot. Runtime watch updates pass the complete `Result` to the runtime sink, which converts `Result.Routes` to a `SnapshotProvider` before calling `UpdateDiscoveredRoutes`. Runtime discovery metrics track sync, watch retry, and rebuild health. Resource-level skip metrics for invalid annotations and duplicate hosts are not implemented yet.
 
 Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
 
@@ -348,29 +350,33 @@ type RouteProvider interface {
 }
 ```
 
-This interface allows the gateway runtime to fetch a snapshot of discovered routes without knowing the details of the underlying discovery source (e.g., Kubernetes API, memory).
+This interface allows the gateway runtime to fetch a snapshot of discovered routes without knowing the details of the underlying discovery source. It is intentionally route-only: skipped Services, duplicate host metadata, and skipped reason counts remain discovery `Result`, logging, or metrics concerns.
 
 ### Memory Provider
 
-A `MemoryProvider` is implemented for testing and early development. It stores a list of discovered routes in memory and returns a safe copy when requested.
+A `MemoryProvider` is implemented for tests. It stores a list of discovered routes in memory and returns a safe copy when requested.
 
-### Kubernetes Service Initial List Groundwork
+### Kubernetes Snapshot Provider
 
-The project now includes `client-go` dependency and initial list groundwork for Kubernetes Services.
+Kubernetes discovery uses `SnapshotProvider` to expose `Result.Routes` through `RouteProvider`. `NewSnapshotProviderFromResult(result)` copies only the route slice into the provider. It does not expose `Result.Skipped`, `Result.DuplicateHosts`, or `Result.SkippedByReason` through the runtime merge path.
+
+### Kubernetes Service Initial List
+
+The project includes `client-go` dependency and the startup initial-list implementation for Kubernetes Services.
 
 - `ServiceLister` interface: abstracts listing Services and converting them to `ServiceInput`.
 - `ClientServiceLister`: implementation using `client-go`.
 - `ToServiceInput`: pure conversion from `corev1.Service` to `ServiceInput`.
 
-This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for the controller core and feeds discovered routes into the startup route snapshot. The gateway then starts the Service watch controller for runtime updates.
+This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for `BuildDiscoveredRoutes`, logs the resulting discovery `Result`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into the startup route snapshot rebuild. The gateway then starts the Service watch controller for runtime updates.
 
 ### Kubernetes Service Watch Controller Core
 
-The project includes a namespace-scoped Service watch controller core. It performs an initial Service list, starts a direct `client-go` watch from the returned resource version, rebuilds discovered routes after Service add/update/delete events, and publishes the complete valid route set to a route sink.
+The project includes a namespace-scoped Service watch controller core. It performs an initial Service list, starts a direct `client-go` watch from the returned resource version, tracks the current Service object set, rebuilds a complete discovery `Result` after Service add/update/delete events, and publishes that complete replacement to a route sink.
 
 The controller uses direct watch instead of an informer in this first runtime integration because it keeps the API small and makes fake-client tests explicit: list, watch events, and sink updates are all visible at the controller boundary. Initial list failure, watch setup failure, watch error events, and unexpected watch channel close return errors to the controller caller.
 
-The gateway runtime owns the active `RouteSnapshot` swap. The watch controller only publishes complete discovered route replacements to a sink.
+The gateway runtime owns the active `RouteSnapshot` swap. The watch controller only publishes complete discovered route replacements to a sink. When the sink accepts full results, runtime converts `Result.Routes` through `SnapshotProvider` before calling `UpdateDiscoveredRoutes`.
 
 ### Kubernetes Watch Supervisor
 
@@ -402,20 +408,20 @@ The current implementation intentionally stops at:
 
 - Discovery config types and validation.
 - Kubernetes Service annotation parser tests.
-- In-memory controller core that builds discovered route snapshots from `ServiceInput` values.
+- Pure controller core that builds discovery `Result` snapshots from `ServiceInput` values.
 - In-memory merge builder that combines static and discovered explicit routes.
-- Internal `RouteProvider` interface and `MemoryProvider` implementation.
+- Internal `RouteProvider` interface, test `MemoryProvider`, and Kubernetes `SnapshotProvider`.
 - `client-go` dependency added.
 - Startup `ServiceLister` Kubernetes API initial list.
 - `ToServiceInput` conversion from Kubernetes `corev1.Service`.
 - Current namespace resolution helper for `discovery.kubernetes.namespace == ""`.
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
-- Runtime route snapshot boundary that receives startup-discovered routes when Kubernetes discovery is enabled.
+- Runtime route snapshot boundary that receives startup-discovered routes through `SnapshotProvider` when Kubernetes discovery is enabled.
 - Runtime route snapshot updates from the namespace-scoped Service watch controller.
 - Retry/backoff supervisor for runtime Kubernetes watch failures.
 - Low-cardinality Kubernetes discovery metrics.
 - Duplicate discovered host helper tests.
-- Documentation of the intended merge and operation policy.
+- Documentation of the current merge and operation policy.
 
 Not implemented yet:
 
@@ -428,4 +434,4 @@ Not implemented yet:
 
 ## Current Status
 
-Current implementation is config, parser, in-memory controller core, merge-builder, provider interface, current namespace helper, startup client-go initial list, namespace-scoped Service watch controller core, runtime merge-boundary integration, runtime route snapshot updates after Service watch events, and retry/backoff recovery for runtime watch failures.
+Current implementation is config, parser, pure controller core, merge-builder, route-only provider interface, Kubernetes snapshot provider, current namespace helper, startup client-go initial list, namespace-scoped Service watch controller core, runtime merge-boundary integration, runtime route snapshot updates after Service watch events, and retry/backoff recovery for runtime watch failures.
