@@ -20,12 +20,17 @@ type discoveryStartupDeps struct {
 }
 
 // startupDiscoveryReport carries startup discovery metadata for logging and
-// future startup metrics. Result.Routes is converted through SnapshotProvider
+// startup metrics. Result.Routes is converted through SnapshotProvider
 // for route merging; skipped metadata must not flow through RouteProvider or
 // RouteSnapshot.
 type startupDiscoveryReport struct {
 	Services []k8sdiscovery.ServiceInput
 	Result   k8sdiscovery.Result
+}
+
+type startupLoadResult struct {
+	Snapshot        proxy.RouteSnapshot
+	DiscoveryReport *startupDiscoveryReport
 }
 
 func defaultDiscoveryStartupDeps() discoveryStartupDeps {
@@ -43,31 +48,50 @@ func defaultDiscoveryStartupDeps() discoveryStartupDeps {
 }
 
 func loadRouteSnapshot(ctx context.Context, configPath string, logger *slog.Logger) (proxy.RouteSnapshot, error) {
-	return loadRouteSnapshotWithDiscovery(ctx, configPath, logger, defaultDiscoveryStartupDeps())
-}
-
-func loadRouteSnapshotWithDiscovery(ctx context.Context, configPath string, logger *slog.Logger, deps discoveryStartupDeps) (proxy.RouteSnapshot, error) {
-	cfg, err := config.LoadFile(configPath)
+	result, err := loadStartupWithDiscovery(ctx, configPath, logger, defaultDiscoveryStartupDeps())
 	if err != nil {
 		return proxy.RouteSnapshot{}, err
 	}
+	return result.Snapshot, nil
+}
+
+func loadRouteSnapshotWithDiscovery(ctx context.Context, configPath string, logger *slog.Logger, deps discoveryStartupDeps) (proxy.RouteSnapshot, error) {
+	result, err := loadStartupWithDiscovery(ctx, configPath, logger, deps)
+	if err != nil {
+		return proxy.RouteSnapshot{}, err
+	}
+	return result.Snapshot, nil
+}
+
+func loadStartupWithDiscovery(ctx context.Context, configPath string, logger *slog.Logger, deps discoveryStartupDeps) (startupLoadResult, error) {
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		return startupLoadResult{}, err
+	}
 
 	if !cfg.Discovery.Kubernetes.Enabled {
-		return proxy.RebuildRouteSnapshot(ctx, cfg, nil)
+		snapshot, err := proxy.RebuildRouteSnapshot(ctx, cfg, nil)
+		if err != nil {
+			return startupLoadResult{}, err
+		}
+		return startupLoadResult{Snapshot: snapshot}, nil
 	}
 
 	deps = deps.withDefaults()
 	report, err := buildStartupDiscoveryReport(ctx, cfg, deps)
 	if err != nil {
-		return proxy.RouteSnapshot{}, err
+		return startupLoadResult{}, err
 	}
 	provider := k8sdiscovery.NewSnapshotProviderFromResult(report.Result)
 	snapshot, err := proxy.RebuildRouteSnapshot(ctx, cfg, provider)
 	if err != nil {
-		return proxy.RouteSnapshot{}, err
+		return startupLoadResult{}, err
 	}
 	logInitialList(logger, len(report.Services), report.Result)
-	return snapshot, nil
+	return startupLoadResult{
+		Snapshot:        snapshot,
+		DiscoveryReport: &report,
+	}, nil
 }
 
 func (d discoveryStartupDeps) withDefaults() discoveryStartupDeps {

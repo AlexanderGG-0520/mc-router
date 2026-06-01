@@ -18,6 +18,7 @@ import (
 	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
 	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
+	"github.com/AlexanderGG-0520/mc-router/internal/proxy"
 	dto "github.com/prometheus/client_model/go"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -407,6 +408,64 @@ func TestLoadRouteSnapshotExternalNameServiceIsSkipped(t *testing.T) {
 	}
 	if _, err := snapshot.Router.Select("external.example.com"); err == nil {
 		t.Fatal("ExternalName Service produced a route")
+	}
+}
+
+func TestStartupDiscoveryRecordsSkippedServiceMetrics(t *testing.T) {
+	configPath := writeMainConfig(t, `
+listen: ":0"
+metrics:
+  enabled: true
+discovery:
+  kubernetes:
+    enabled: true
+    namespace: "minecraft"
+unknownHostPolicy: deny
+`)
+	lister := &fakeStartupServiceLister{
+		services: []k8sdiscovery.ServiceInput{
+			startupService("valid", "minecraft", "valid.example.com", 25565),
+			startupService("duplicate-a", "minecraft", "dup.example.com", 25565),
+			startupService("duplicate-b", "minecraft", "DUP.Example.COM.", 25566),
+			startupService("bad", "minecraft", "bad host.example.com", 25565),
+		},
+	}
+	startup, err := loadStartupWithDiscovery(context.Background(), configPath, discardLogger(), fakeDiscoveryDeps(t, "minecraft", lister))
+	if err != nil {
+		t.Fatalf("loadStartupWithDiscovery: %v", err)
+	}
+	server := proxy.NewServerFromSnapshot(startup.Snapshot, discardLogger())
+
+	recordStartupDiscoveryMetrics(server.Metrics(), startup.DiscoveryReport)
+
+	waitMainMetricValue(t, server.Metrics(), "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonInvalidHost}, 1)
+	waitMainMetricValue(t, server.Metrics(), "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonDuplicateHost}, 2)
+	waitMainMetricValue(t, server.Metrics(), "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonPortNotFound}, 0)
+}
+
+func TestStartupDiscoverySkippedMetricsDisabledDiscoveryDoesNotRecord(t *testing.T) {
+	configPath := writeMainConfig(t, `
+listen: ":0"
+metrics:
+  enabled: true
+unknownHostPolicy: deny
+`)
+	deps := discoveryStartupDeps{
+		resolveNamespace: func(string, k8sdiscovery.NamespaceResolver) (string, error) {
+			t.Fatal("resolveNamespace called when discovery is disabled")
+			return "", nil
+		},
+	}
+	startup, err := loadStartupWithDiscovery(context.Background(), configPath, discardLogger(), deps)
+	if err != nil {
+		t.Fatalf("loadStartupWithDiscovery: %v", err)
+	}
+	server := proxy.NewServerFromSnapshot(startup.Snapshot, discardLogger())
+
+	recordStartupDiscoveryMetrics(server.Metrics(), startup.DiscoveryReport)
+
+	if _, ok := mainMetricValue(t, server.Metrics(), "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonInvalidHost}); ok {
+		t.Fatal("startup skipped Service metric was recorded when discovery is disabled")
 	}
 }
 
