@@ -147,6 +147,149 @@ func TestReloadDiscoveryReportRouteProviderDefensivelyCopiesRoutes(t *testing.T)
 	}
 }
 
+func TestBuildReloadDiscoveryReportFromServiceList(t *testing.T) {
+	cfg := reloadDiscoveryConfig("minecraft", k8sdiscovery.DefaultAnnotationPrefix)
+	lister := &fakeStartupServiceLister{
+		services: []k8sdiscovery.ServiceInput{
+			startupService("smp", "minecraft", "smp.example.com", 25565),
+		},
+	}
+	deps := fakeDiscoveryDeps(t, "minecraft", lister)
+
+	report, err := buildReloadDiscoveryReport(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("buildReloadDiscoveryReport: %v", err)
+	}
+	if lister.namespace != "minecraft" {
+		t.Fatalf("listed namespace = %q, want minecraft", lister.namespace)
+	}
+	routes, err := report.routeProvider().Routes(context.Background())
+	if err != nil {
+		t.Fatalf("Routes: %v", err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("routes length = %d, want 1", len(routes))
+	}
+	if routes[0].Host != "smp.example.com" {
+		t.Fatalf("route host = %q, want smp.example.com", routes[0].Host)
+	}
+	if routes[0].Backend != "smp.minecraft.svc.cluster.local:25565" {
+		t.Fatalf("route backend = %q, want smp.minecraft.svc.cluster.local:25565", routes[0].Backend)
+	}
+}
+
+func TestBuildReloadDiscoveryReportRespectsAnnotationPrefix(t *testing.T) {
+	const prefix = "custom.example.com"
+	cfg := reloadDiscoveryConfig("minecraft", prefix)
+	lister := &fakeStartupServiceLister{
+		services: []k8sdiscovery.ServiceInput{
+			reloadServiceWithPrefix("custom", "minecraft", "custom.example.com", 25565, prefix),
+			startupService("default-prefix", "minecraft", "default.example.com", 25566),
+		},
+	}
+	deps := fakeDiscoveryDeps(t, "minecraft", lister)
+
+	report, err := buildReloadDiscoveryReport(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("buildReloadDiscoveryReport: %v", err)
+	}
+	routes, err := report.routeProvider().Routes(context.Background())
+	if err != nil {
+		t.Fatalf("Routes: %v", err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("routes length = %d, want 1", len(routes))
+	}
+	if routes[0].Host != "custom.example.com" {
+		t.Fatalf("route host = %q, want custom.example.com", routes[0].Host)
+	}
+	if got := report.Result.SkippedByReason[k8sdiscovery.ReasonDisabled]; got != 1 {
+		t.Fatalf("disabled skip count = %d, want 1", got)
+	}
+}
+
+func TestBuildReloadDiscoveryReportSkippedReasons(t *testing.T) {
+	cfg := reloadDiscoveryConfig("minecraft", k8sdiscovery.DefaultAnnotationPrefix)
+	lister := &fakeStartupServiceLister{
+		services: []k8sdiscovery.ServiceInput{
+			startupService("bad-host", "minecraft", "bad host.example.com", 25565),
+			startupService("duplicate-a", "minecraft", "duplicate.example.com", 25566),
+			startupService("duplicate-b", "minecraft", "Duplicate.Example.COM.", 25567),
+		},
+	}
+	deps := fakeDiscoveryDeps(t, "minecraft", lister)
+
+	report, err := buildReloadDiscoveryReport(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("buildReloadDiscoveryReport: %v", err)
+	}
+	if got := len(report.Result.Routes); got != 0 {
+		t.Fatalf("routes length = %d, want 0", got)
+	}
+	if got := report.Result.SkippedByReason[k8sdiscovery.ReasonInvalidHost]; got != 1 {
+		t.Fatalf("invalid host skip count = %d, want 1", got)
+	}
+	if got := report.Result.SkippedByReason[k8sdiscovery.ReasonDuplicateHost]; got != 2 {
+		t.Fatalf("duplicate host skip count = %d, want 2", got)
+	}
+}
+
+func TestBuildReloadDiscoveryReportReturnsListerErrors(t *testing.T) {
+	cfg := reloadDiscoveryConfig("minecraft", k8sdiscovery.DefaultAnnotationPrefix)
+	deps := fakeDiscoveryDeps(t, "minecraft", nil)
+	deps.newServiceLister = func(*rest.Config) (k8sdiscovery.ServiceLister, error) {
+		return nil, errors.New("create lister failed")
+	}
+
+	if _, err := buildReloadDiscoveryReport(context.Background(), cfg, deps); err == nil {
+		t.Fatal("buildReloadDiscoveryReport succeeded with lister creation error")
+	}
+}
+
+func TestBuildReloadDiscoveryReportReturnsListErrors(t *testing.T) {
+	cfg := reloadDiscoveryConfig("minecraft", k8sdiscovery.DefaultAnnotationPrefix)
+	lister := &fakeStartupServiceLister{err: errors.New("list failed")}
+	deps := fakeDiscoveryDeps(t, "minecraft", lister)
+
+	if _, err := buildReloadDiscoveryReport(context.Background(), cfg, deps); err == nil {
+		t.Fatal("buildReloadDiscoveryReport succeeded with list error")
+	}
+}
+
+func TestBuildReloadDiscoveryReportOwnsResultData(t *testing.T) {
+	cfg := reloadDiscoveryConfig("minecraft", k8sdiscovery.DefaultAnnotationPrefix)
+	lister := &fakeStartupServiceLister{
+		services: []k8sdiscovery.ServiceInput{
+			startupService("smp", "minecraft", "smp.example.com", 25565),
+		},
+	}
+	deps := fakeDiscoveryDeps(t, "minecraft", lister)
+
+	report, err := buildReloadDiscoveryReport(context.Background(), cfg, deps)
+	if err != nil {
+		t.Fatalf("buildReloadDiscoveryReport: %v", err)
+	}
+	if len(report.Result.Routes) != 1 {
+		t.Fatalf("routes length = %d, want 1", len(report.Result.Routes))
+	}
+	report.Result.Routes[0].Host = "mutated.example.com"
+	routes, err := report.routeProvider().Routes(context.Background())
+	if err != nil {
+		t.Fatalf("Routes: %v", err)
+	}
+	if routes[0].Host != "mutated.example.com" {
+		t.Fatalf("route provider host = %q, want mutated.example.com", routes[0].Host)
+	}
+	routes[0].Host = "provider-mutation.example.com"
+	second, err := report.routeProvider().Routes(context.Background())
+	if err != nil {
+		t.Fatalf("second Routes: %v", err)
+	}
+	if second[0].Host != "mutated.example.com" {
+		t.Fatalf("route provider leaked returned slice mutation, got host %q", second[0].Host)
+	}
+}
+
 func TestLoadRouteSnapshotDiscoveryDisabledDoesNotCallKubernetesDeps(t *testing.T) {
 	configPath := writeMainConfig(t, `
 listen: ":0"
@@ -927,14 +1070,31 @@ func fakeDiscoveryDeps(t *testing.T, wantNamespace string, lister k8sdiscovery.S
 	}
 }
 
+func reloadDiscoveryConfig(namespace string, annotationPrefix string) config.Config {
+	return config.Config{
+		Discovery: config.Discovery{
+			Kubernetes: config.KubernetesDiscovery{
+				Enabled:          true,
+				Namespace:        namespace,
+				Mode:             config.KubernetesDiscoveryModeAnnotations,
+				AnnotationPrefix: annotationPrefix,
+			},
+		},
+	}
+}
+
 func startupService(name string, namespace string, host string, port int) k8sdiscovery.ServiceInput {
+	return reloadServiceWithPrefix(name, namespace, host, port, k8sdiscovery.DefaultAnnotationPrefix)
+}
+
+func reloadServiceWithPrefix(name string, namespace string, host string, port int, annotationPrefix string) k8sdiscovery.ServiceInput {
 	return k8sdiscovery.ServiceInput{
 		Name:      name,
 		Namespace: namespace,
 		Annotations: map[string]string{
-			k8sdiscovery.DefaultAnnotationPrefix + "/" + k8sdiscovery.AnnotationEnabled: "true",
-			k8sdiscovery.DefaultAnnotationPrefix + "/" + k8sdiscovery.AnnotationHost:    host,
-			k8sdiscovery.DefaultAnnotationPrefix + "/" + k8sdiscovery.AnnotationPort:    strconv.Itoa(port),
+			annotationPrefix + "/" + k8sdiscovery.AnnotationEnabled: "true",
+			annotationPrefix + "/" + k8sdiscovery.AnnotationHost:    host,
+			annotationPrefix + "/" + k8sdiscovery.AnnotationPort:    strconv.Itoa(port),
 		},
 		Ports: []k8sdiscovery.ServicePort{{Name: "minecraft", Port: port}},
 	}
