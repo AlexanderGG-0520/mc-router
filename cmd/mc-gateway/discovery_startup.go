@@ -19,7 +19,11 @@ type discoveryStartupDeps struct {
 	newServiceLister  func(*rest.Config) (k8sdiscovery.ServiceLister, error)
 }
 
-type startupDiscoveredRoutes struct {
+// startupDiscoveryReport carries startup discovery metadata for logging and
+// future startup metrics. Result.Routes is converted through SnapshotProvider
+// for route merging; skipped metadata must not flow through RouteProvider or
+// RouteSnapshot.
+type startupDiscoveryReport struct {
 	Services []k8sdiscovery.ServiceInput
 	Result   k8sdiscovery.Result
 }
@@ -53,16 +57,16 @@ func loadRouteSnapshotWithDiscovery(ctx context.Context, configPath string, logg
 	}
 
 	deps = deps.withDefaults()
-	discovered, err := listStartupDiscoveredRoutes(ctx, cfg, deps)
+	report, err := buildStartupDiscoveryReport(ctx, cfg, deps)
 	if err != nil {
 		return proxy.RouteSnapshot{}, err
 	}
-	provider := k8sdiscovery.NewSnapshotProviderFromResult(discovered.Result)
+	provider := k8sdiscovery.NewSnapshotProviderFromResult(report.Result)
 	snapshot, err := proxy.RebuildRouteSnapshot(ctx, cfg, provider)
 	if err != nil {
 		return proxy.RouteSnapshot{}, err
 	}
-	logInitialList(logger, len(discovered.Services), discovered.Result)
+	logInitialList(logger, len(report.Services), report.Result)
 	return snapshot, nil
 }
 
@@ -80,28 +84,28 @@ func (d discoveryStartupDeps) withDefaults() discoveryStartupDeps {
 	return d
 }
 
-func listStartupDiscoveredRoutes(ctx context.Context, cfg config.Config, deps discoveryStartupDeps) (startupDiscoveredRoutes, error) {
+func buildStartupDiscoveryReport(ctx context.Context, cfg config.Config, deps discoveryStartupDeps) (startupDiscoveryReport, error) {
 	kubernetesConfig := cfg.Discovery.Kubernetes
 	namespace, err := deps.resolveNamespace(kubernetesConfig.Namespace, deps.namespaceResolver)
 	if err != nil {
-		return startupDiscoveredRoutes{}, fmt.Errorf("resolve Kubernetes discovery namespace: %w", err)
+		return startupDiscoveryReport{}, fmt.Errorf("resolve Kubernetes discovery namespace: %w", err)
 	}
 	restConfig, err := deps.inClusterConfig()
 	if err != nil {
-		return startupDiscoveredRoutes{}, fmt.Errorf("create in-cluster Kubernetes config: %w", err)
+		return startupDiscoveryReport{}, fmt.Errorf("create in-cluster Kubernetes config: %w", err)
 	}
 	lister, err := deps.newServiceLister(restConfig)
 	if err != nil {
-		return startupDiscoveredRoutes{}, fmt.Errorf("create Kubernetes Service lister: %w", err)
+		return startupDiscoveryReport{}, fmt.Errorf("create Kubernetes Service lister: %w", err)
 	}
 	services, err := lister.ListServices(ctx, namespace)
 	if err != nil {
-		return startupDiscoveredRoutes{}, fmt.Errorf("list Kubernetes Services in resolved namespace: %w", err)
+		return startupDiscoveryReport{}, fmt.Errorf("list Kubernetes Services in resolved namespace: %w", err)
 	}
 	result := k8sdiscovery.BuildDiscoveredRoutes(services, k8sdiscovery.Options{
 		AnnotationPrefix: kubernetesConfig.AnnotationPrefix,
 	})
-	return startupDiscoveredRoutes{
+	return startupDiscoveryReport{
 		Services: services,
 		Result:   result,
 	}, nil
