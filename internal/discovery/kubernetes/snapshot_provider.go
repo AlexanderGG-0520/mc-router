@@ -18,7 +18,6 @@ func NewSnapshotProvider(routes []DiscoveredRoute) *SnapshotProvider {
 func NewSnapshotProviderFromResult(result Result) *SnapshotProvider {
 	return NewSnapshotProvider(result.Routes)
 }
-}
 
 // Routes returns a copy of the stored discovered routes.
 func (p *SnapshotProvider) Routes(ctx context.Context) ([]DiscoveredRoute, error) {
