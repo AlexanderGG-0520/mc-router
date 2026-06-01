@@ -86,7 +86,7 @@ func startKubernetesRuntimeDiscovery(ctx context.Context, cfg config.Config, upd
 	}
 
 	childCtx, cancel := context.WithCancel(ctx)
-	sink := newRuntimeDiscoverySink(childCtx, updater, logger)
+	sink := newRuntimeDiscoverySink(childCtx, updater, logger, metrics)
 	controller, err := deps.newServiceWatchController(client, namespace, sink, k8sdiscovery.ServiceWatchControllerOptions{
 		AnnotationPrefix: kubernetesConfig.AnnotationPrefix,
 	})
@@ -210,28 +210,30 @@ type runtimeDiscoverySink struct {
 	ctx     context.Context
 	updater discoveredRouteUpdater
 	logger  *slog.Logger
+	metrics *gatewaymetrics.Recorder
 
 	readyOnce sync.Once
 	readyCh   chan struct{}
 	syncedCh  chan struct{}
 }
 
-func newRuntimeDiscoverySink(ctx context.Context, updater discoveredRouteUpdater, logger *slog.Logger) *runtimeDiscoverySink {
+func newRuntimeDiscoverySink(ctx context.Context, updater discoveredRouteUpdater, logger *slog.Logger, metrics *gatewaymetrics.Recorder) *runtimeDiscoverySink {
 	return &runtimeDiscoverySink{
 		ctx:      ctx,
 		updater:  updater,
 		logger:   logger,
+		metrics:  metrics,
 		readyCh:  make(chan struct{}),
 		syncedCh: make(chan struct{}, 1),
 	}
 }
 
 func (s *runtimeDiscoverySink) Update(routes []k8sdiscovery.DiscoveredRoute) {
-	s.update(k8sdiscovery.NewSnapshotProvider(routes), len(routes), 0, 0)
+	s.update(k8sdiscovery.NewSnapshotProvider(routes), len(routes), 0, 0, nil, false)
 }
 
 func (s *runtimeDiscoverySink) UpdateResult(result k8sdiscovery.Result) {
-	s.update(k8sdiscovery.NewSnapshotProviderFromResult(result), len(result.Routes), len(result.Skipped), len(result.DuplicateHosts))
+	s.update(k8sdiscovery.NewSnapshotProviderFromResult(result), len(result.Routes), len(result.Skipped), len(result.DuplicateHosts), result.SkippedByReason, true)
 }
 
 func (s *runtimeDiscoverySink) ready() <-chan struct{} {
@@ -242,7 +244,7 @@ func (s *runtimeDiscoverySink) synced() <-chan struct{} {
 	return s.syncedCh
 }
 
-func (s *runtimeDiscoverySink) update(provider discovery.RouteProvider, routes, skipped, duplicateHosts int) {
+func (s *runtimeDiscoverySink) update(provider discovery.RouteProvider, routes, skipped, duplicateHosts int, skippedByReason map[string]int, recordSkippedServices bool) {
 	err := s.updater.UpdateDiscoveredRoutes(s.ctx, provider)
 	s.readyOnce.Do(func() {
 		close(s.readyCh)
@@ -254,6 +256,9 @@ func (s *runtimeDiscoverySink) update(provider discovery.RouteProvider, routes, 
 	if err != nil {
 		logKubernetesRuntimeSnapshotFailed(s.logger, err, routes, skipped, duplicateHosts)
 		return
+	}
+	if recordSkippedServices {
+		s.metrics.KubernetesSkippedServicesByReason(skippedByReason)
 	}
 	logKubernetesRuntimeSnapshotUpdated(s.logger, routes, skipped, duplicateHosts)
 }

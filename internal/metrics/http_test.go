@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
+	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
+	dto "github.com/prometheus/client_model/go"
 )
 
 func TestStartHTTPDisabledDoesNothing(t *testing.T) {
@@ -50,6 +52,7 @@ func TestDisabledRecorderIsNoop(t *testing.T) {
 	recorder.KubernetesWatchRunning(false)
 	recorder.KubernetesWatchRestart(KubernetesWatchRestartReasonWatchError)
 	recorder.KubernetesDiscoverySync(2)
+	recorder.KubernetesSkippedServicesByReason(map[string]int{k8sdiscovery.ReasonInvalidHost: 1})
 	recorder.KubernetesDiscoveryError(KubernetesDiscoveryErrorReasonRebuildFailed)
 }
 
@@ -62,6 +65,7 @@ func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 	recorder.KubernetesWatchRunning(true)
 	recorder.KubernetesWatchRestart(KubernetesWatchRestartReasonWatchError)
 	recorder.KubernetesDiscoverySync(2)
+	recorder.KubernetesSkippedServicesByReason(map[string]int{k8sdiscovery.ReasonInvalidHost: 1})
 	recorder.KubernetesDiscoveryError(KubernetesDiscoveryErrorReasonRebuildFailed)
 
 	server, err := StartHTTP(ctx, config.Metrics{
@@ -100,13 +104,14 @@ func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 		"mc_gateway_kubernetes_watch_running",
 		"mc_gateway_kubernetes_last_successful_sync_timestamp_seconds",
 		"mc_gateway_kubernetes_discovered_routes",
+		"mc_gateway_kubernetes_skipped_services",
 		"mc_gateway_kubernetes_discovery_errors_total",
 	} {
 		if !strings.Contains(string(body), name) {
 			t.Fatalf("metrics body did not include %s:\n%s", name, string(body))
 		}
 	}
-	if strings.Contains(string(body), "namespace=") || strings.Contains(string(body), "service=") || strings.Contains(string(body), "host=") {
+	if strings.Contains(string(body), "namespace=") || strings.Contains(string(body), "service=") || strings.Contains(string(body), "host=") || strings.Contains(string(body), "backend=") {
 		t.Fatalf("Kubernetes discovery metrics included high-cardinality labels:\n%s", string(body))
 	}
 
@@ -121,6 +126,104 @@ func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 	}
 }
 
+func TestKubernetesSkippedServicesByReasonMetricLabelsAndValues(t *testing.T) {
+	recorder := NewRecorder(true)
+	recorder.KubernetesSkippedServicesByReason(map[string]int{
+		k8sdiscovery.ReasonInvalidHost:   2,
+		k8sdiscovery.ReasonDuplicateHost: 1,
+	})
+
+	family := metricFamily(t, recorder, "mc_gateway_kubernetes_skipped_services")
+	if family == nil {
+		t.Fatal("mc_gateway_kubernetes_skipped_services metric was not exported")
+	}
+	values := make(map[string]float64)
+	for _, metric := range family.GetMetric() {
+		labels := metric.GetLabel()
+		if len(labels) != 1 || labels[0].GetName() != "reason" {
+			t.Fatalf("metric labels = %v, want only reason", labels)
+		}
+		for _, label := range labels {
+			switch label.GetName() {
+			case "namespace", "service", "host", "backend":
+				t.Fatalf("metric included high-cardinality label %q", label.GetName())
+			}
+		}
+		values[labels[0].GetValue()] = metric.GetGauge().GetValue()
+	}
+
+	if values[k8sdiscovery.ReasonInvalidHost] != 2 {
+		t.Fatalf("invalid_host count = %v, want 2", values[k8sdiscovery.ReasonInvalidHost])
+	}
+	if values[k8sdiscovery.ReasonDuplicateHost] != 1 {
+		t.Fatalf("duplicate_host count = %v, want 1", values[k8sdiscovery.ReasonDuplicateHost])
+	}
+	if got := metricGaugeValue(t, recorder, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonDisabled}); got != 0 {
+		t.Fatalf("disabled count = %v, want 0", got)
+	}
+}
+
+func TestKubernetesSkippedServicesByReasonResetsMissingReasons(t *testing.T) {
+	recorder := NewRecorder(true)
+	recorder.KubernetesSkippedServicesByReason(map[string]int{
+		k8sdiscovery.ReasonPortNotFound: 3,
+	})
+	if got := metricGaugeValue(t, recorder, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonPortNotFound}); got != 3 {
+		t.Fatalf("port_not_found count = %v, want 3", got)
+	}
+
+	recorder.KubernetesSkippedServicesByReason(map[string]int{
+		k8sdiscovery.ReasonDuplicateHost: 1,
+	})
+	if got := metricGaugeValue(t, recorder, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonPortNotFound}); got != 0 {
+		t.Fatalf("stale port_not_found count = %v, want 0", got)
+	}
+	if got := metricGaugeValue(t, recorder, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonDuplicateHost}); got != 1 {
+		t.Fatalf("duplicate_host count = %v, want 1", got)
+	}
+}
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func metricFamily(t *testing.T, recorder *Recorder, name string) *dto.MetricFamily {
+	t.Helper()
+	families, err := recorder.Registry().Gather()
+	if err != nil {
+		t.Fatalf("Gather metrics: %v", err)
+	}
+	for _, family := range families {
+		if family.GetName() == name {
+			return family
+		}
+	}
+	return nil
+}
+
+func metricGaugeValue(t *testing.T, recorder *Recorder, name string, labels map[string]string) float64 {
+	t.Helper()
+	family := metricFamily(t, recorder, name)
+	if family == nil {
+		t.Fatalf("metric %s was not exported", name)
+	}
+	for _, metric := range family.GetMetric() {
+		if metricLabelsMatch(metric, labels) {
+			return metric.GetGauge().GetValue()
+		}
+	}
+	t.Fatalf("metric %s%v was not exported", name, labels)
+	return 0
+}
+
+func metricLabelsMatch(metric *dto.Metric, labels map[string]string) bool {
+	if len(metric.GetLabel()) != len(labels) {
+		return false
+	}
+	for _, label := range metric.GetLabel() {
+		if labels[label.GetName()] != label.GetValue() {
+			return false
+		}
+	}
+	return true
 }

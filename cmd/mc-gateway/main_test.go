@@ -616,6 +616,32 @@ func TestKubernetesRuntimeDiscoverySkipsInvalidAndDuplicateServices(t *testing.T
 	waitForDiscoveredHosts(t, updater, []string{"valid.example.com"})
 }
 
+func TestKubernetesRuntimeDiscoveryMetricsRecordSkippedServices(t *testing.T) {
+	cfg := runtimeDiscoveryConfig()
+	cfg.Metrics.Enabled = true
+	client := fake.NewSimpleClientset(
+		runtimeAnnotatedService("valid", "minecraft", "valid.example.com", 25565),
+		runtimeAnnotatedService("duplicate-a", "minecraft", "dup.example.com", 25565),
+		runtimeAnnotatedService("duplicate-b", "minecraft", "DUP.Example.COM.", 25566),
+		runtimeAnnotatedService("bad", "minecraft", "bad host.example.com", 25565),
+	)
+	updater := newRecordingDiscoveredRouteUpdater()
+	updater.metrics = gatewaymetrics.NewRecorder(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(ctx, cfg, updater, discardLogger(), fakeRuntimeDiscoveryDeps(t, "minecraft", client))
+	if err != nil {
+		t.Fatalf("startKubernetesRuntimeDiscovery: %v", err)
+	}
+	defer runtimeDiscovery.Stop()
+
+	waitForDiscoveredHosts(t, updater, []string{"valid.example.com"})
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonInvalidHost}, 1)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonDuplicateHost}, 2)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonPortNotFound}, 0)
+}
+
 func TestKubernetesRuntimeDiscoveryRetriesWatchFailureAndKeepsLastKnownGood(t *testing.T) {
 	cfg := runtimeDiscoveryConfig()
 	client := fake.NewSimpleClientset(runtimeAnnotatedService("old", "minecraft", "old.example.com", 25565))

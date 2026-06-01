@@ -183,7 +183,7 @@ When `discovery.kubernetes.enabled` is `true`, startup performs this sequence:
 7. Convert `Result.Routes` through `NewSnapshotProviderFromResult`.
 8. Merge static and discovered routes into the startup route snapshot.
 
-Invalid Service annotations are skipped and reported in the discovery `Result`. Duplicate discovered hosts are also skipped. Neither condition fails startup as long as the Kubernetes API list itself succeeded. Skipped Services, duplicate host metadata, and skipped reason counts stay on the `Result` for logging and future resource-level metrics; they are not exposed through `RouteProvider`.
+Invalid Service annotations are skipped and reported in the discovery `Result`. Duplicate discovered hosts are also skipped. Neither condition fails startup as long as the Kubernetes API list itself succeeded. Skipped Services, duplicate host metadata, and skipped reason counts stay on the `Result` for logging and runtime metrics; they are not exposed through `RouteProvider`.
 
 ## Runtime Watch Updates
 
@@ -220,7 +220,7 @@ The controller core applies this policy to the discovered route set before retur
 
 It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information in one complete `Result`.
 
-This controller core is used by both startup discovery and runtime watch updates. Startup uses the `Result` for initial-list logging and converts `Result.Routes` to a `SnapshotProvider` before rebuilding the initial route snapshot. Runtime watch updates pass the complete `Result` to the runtime sink, which converts `Result.Routes` to a `SnapshotProvider` before calling `UpdateDiscoveredRoutes`. Runtime discovery metrics track sync, watch retry, and rebuild health. Resource-level skip metrics for invalid annotations and duplicate hosts are not implemented yet.
+This controller core is used by both startup discovery and runtime watch updates. Startup uses the `Result` for initial-list logging and converts `Result.Routes` to a `SnapshotProvider` before rebuilding the initial route snapshot. Runtime watch updates pass the complete `Result` to the runtime sink, which converts `Result.Routes` to a `SnapshotProvider` before calling `UpdateDiscoveredRoutes`. Runtime discovery metrics track sync, watch retry, rebuild health, and skipped Service counts from the latest successfully applied runtime `Result`.
 
 Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
 
@@ -284,6 +284,7 @@ mc_gateway_kubernetes_discovered_routes
 mc_gateway_kubernetes_watch_restarts_total{reason}
 mc_gateway_kubernetes_watch_running
 mc_gateway_kubernetes_last_successful_sync_timestamp_seconds
+mc_gateway_kubernetes_skipped_services{reason}
 mc_gateway_kubernetes_discovery_errors_total{reason}
 ```
 
@@ -293,7 +294,22 @@ Metric meanings:
 - `mc_gateway_kubernetes_watch_restarts_total{reason}`: watch supervisor retry/restart count after runtime watch failures.
 - `mc_gateway_kubernetes_watch_running`: `1` while the runtime watch supervisor is running, otherwise `0`.
 - `mc_gateway_kubernetes_last_successful_sync_timestamp_seconds`: Unix timestamp of the last successful discovery sync applied to runtime routing.
+- `mc_gateway_kubernetes_skipped_services{reason}`: number of Kubernetes Services skipped in the latest successfully applied runtime discovery snapshot by bounded skip reason.
 - `mc_gateway_kubernetes_discovery_errors_total{reason}`: discovery/runtime errors by bounded reason.
+
+`mc_gateway_kubernetes_skipped_services{reason}` uses only these reason values:
+
+- `disabled`
+- `invalid_annotation_prefix`
+- `invalid_service_name`
+- `invalid_namespace`
+- `missing_host`
+- `invalid_host`
+- `missing_port`
+- `invalid_port`
+- `port_not_found`
+- `duplicate_host`
+- `unknown`
 
 `mc_gateway_kubernetes_watch_restarts_total{reason}` uses only these reason values:
 
@@ -318,7 +334,7 @@ Metrics are disabled by default with the rest of the metrics endpoint. When metr
 
 Discovery metrics stay low-cardinality. Do not use namespace, Service name, host, backend, annotation value, Kubernetes resource version, or raw error message as metric labels. Keep labels to bounded values such as `reason`.
 
-Invalid Service annotations and duplicate discovered hosts are not counted in `mc_gateway_kubernetes_discovery_errors_total`; they are route-level skips. A future `mc_gateway_kubernetes_resource_errors_total{reason}` or skipped-resource metric can be added separately if operators need that signal.
+Invalid Service annotations and duplicate discovered hosts are not counted in `mc_gateway_kubernetes_discovery_errors_total`; they are route-level skips reported through `mc_gateway_kubernetes_skipped_services{reason}` after a runtime discovery snapshot is successfully applied.
 
 ## Security Notes
 
@@ -417,7 +433,7 @@ The current implementation intentionally stops at:
 - Runtime route snapshot boundary that receives startup-discovered routes through `SnapshotProvider` when Kubernetes discovery is enabled.
 - Runtime route snapshot updates from the namespace-scoped Service watch controller.
 - Retry/backoff supervisor for runtime Kubernetes watch failures.
-- Low-cardinality Kubernetes discovery metrics.
+- Low-cardinality Kubernetes discovery metrics, including skipped Service counts by bounded reason.
 - Duplicate discovered host helper tests.
 - Documentation of the current merge and operation policy.
 
@@ -428,7 +444,7 @@ Not implemented yet:
 - CRDs.
 - Wake-up or scale-to-zero controller behavior.
 - REST API or Web UI.
-- Resource-level discovery metrics for invalid annotations and duplicate hosts.
+- Startup skipped Service metrics.
 
 ## Current Status
 
