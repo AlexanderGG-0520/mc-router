@@ -60,7 +60,8 @@ func run(configPath string, logger *slog.Logger) error {
 	if signals := reloadSignals(); len(signals) > 0 {
 		signal.Notify(reloadCh, signals...)
 		defer signal.Stop(reloadCh)
-		go serveReloadSignals(ctx, reloadCh, configPath, server)
+		reloader := newKubernetesReloadReloader(ctx, server, logger, defaultDiscoveryStartupDeps(), snapshot.StaticConfig.Discovery.Kubernetes)
+		go serveReloadSignals(ctx, reloadCh, configPath, reloader)
 	} else {
 		logger.Info("config reload signal unavailable", "platform", runtime.GOOS)
 	}

@@ -25,7 +25,6 @@
 
 ## Not Included Yet
 
-- Kubernetes Service re-list during `SIGHUP` reload; the intended boundary is documented, but implementation is deferred.
 - Configurable retry/backoff settings for runtime Kubernetes watch failures.
 - ClusterRole or all-namespaces discovery RBAC.
 - Pod annotations, EndpointSlice discovery, or CRD route discovery.
@@ -79,7 +78,7 @@ Automated tests now cover:
 - Idle client handshake read timeout.
 - Server shutdown on context cancellation.
 - SIGHUP/static config reload keeps the previous routes after invalid reloads and applies valid reloads to new connections.
-- Kubernetes Service annotation discovery with fake clients, including current namespace resolution, initial list failure policy, Service watch updates, invalid annotation skips, duplicate discovered host handling, static route precedence, ExternalName skips, watch retry/backoff recovery, last-known-good snapshot preservation during retry, reload preservation of latest discovered routes, and watch update interaction with static reload.
+- Kubernetes Service annotation discovery with fake clients, including current namespace resolution, initial list failure policy, Service watch updates, invalid annotation skips, duplicate discovered host handling, static route precedence, ExternalName skips, watch retry/backoff recovery, last-known-good snapshot preservation during retry, Service re-list during reload, and watch update interaction with static reload.
 - Metrics config defaults, Prometheus text endpoint behavior, active connection gauge, route-denied counter, backend dial failure counter, fallback response counter, reload counters, config generation gauge, route count gauge, and Kubernetes discovery metric output.
 - Status fallback config defaults, denied status response JSON, backend dial failure and timeout status response JSON, status ping/pong echo, disabled fallback close behavior, default route precedence, malformed status request close behavior, fallback response metrics, and existing metric preservation.
 - Login fallback config defaults, denied login disconnect JSON, malformed login start close behavior, known route/default route precedence, backend dial failure close behavior, and login fallback response metrics.

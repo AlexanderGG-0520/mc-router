@@ -155,7 +155,7 @@ Runtime route snapshot construction now has an internal boundary:
 validated config + discovered routes -> merged route snapshot + router
 ```
 
-Startup and config reload both pass through this boundary. At startup, `discovery.kubernetes.enabled: true` builds one Kubernetes discovery `Result`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into this boundary. When discovery is disabled, the provider is empty and the runtime remains static-config-only.
+Startup and config reload both pass through this boundary. At startup, `discovery.kubernetes.enabled: true` builds one Kubernetes discovery `Result`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into this boundary. When discovery is enabled at startup, `SIGHUP` reload builds a fresh Kubernetes discovery `Result` from a Service list and applies it through the same route-only provider path. When discovery is disabled, the provider is empty and the runtime remains static-config-only.
 
 The ordering is intentional:
 
@@ -202,21 +202,20 @@ If the watch stream fails after the first successful runtime sync, the superviso
 
 ## Reload Interaction
 
-`SIGHUP` reload does not re-run the Kubernetes API initial list and does not restart the watch controller. Reload reads the static config file, validates it, and re-merges it with the latest discovered routes already held by the runtime. A watch update re-merges the latest discovered routes with the latest valid static config.
+When Kubernetes discovery is disabled, `SIGHUP` reload keeps the static-only reload behavior: it reads the static config file, validates it, and rebuilds the route snapshot without calling the Kubernetes API.
 
-Reload and watch updates are serialized by the server's route snapshot update lock. Active connections keep the snapshot they loaded at connection start. New connections use the latest successfully swapped snapshot.
+When Kubernetes discovery is enabled at startup, `SIGHUP` reload reads the static config file, performs a fresh Kubernetes Service list, builds a complete Kubernetes discovery `Result`, converts `Result.Routes` through the route-only `SnapshotProvider` and `RouteProvider` path, and applies the rebuilt route snapshot only after all steps succeed. Reload does not restart the watch controller or mutate its internal Service state.
 
-Future Kubernetes Service re-list support for `SIGHUP` reload should preserve the same discovery boundaries:
+Reload and watch updates are serialized by the server's route snapshot update lock. Active connections keep the snapshot they loaded at connection start. New connections use the latest successfully swapped snapshot. The next runtime watch complete `Result` may overwrite the reload-applied discovered route set normally.
 
-- A reload-triggered re-list should not bypass the Service watch/controller result construction path.
-- The re-list should produce a complete Kubernetes discovery `Result` through the same `BuildDiscoveredRoutes` ServiceInput-to-Result boundary.
-- Route application should still convert `Result.Routes` through the route-only `SnapshotProvider` and `RouteProvider` path before rebuilding the route snapshot.
-- Skipped Service metrics should be updated only after the reload-discovery `Result` is successfully applied to the active route snapshot.
-- If the Kubernetes re-list, discovery result construction, or route snapshot rebuild fails, the previous active route snapshot and previous skipped Service gauge values should remain in place.
+Reload-triggered re-list uses the same discovery boundaries:
 
-The command layer should own reload discovery `Result` metadata. `internal/proxy` should continue to accept route-only providers or route-only data, without Kubernetes skipped metadata or duplicate host details.
+- The re-list produces a complete Kubernetes discovery `Result` through the same `BuildDiscoveredRoutes` ServiceInput-to-Result boundary.
+- Route application converts `Result.Routes` through the route-only `SnapshotProvider` and `RouteProvider` path before rebuilding the route snapshot.
+- Skipped Service metrics update only after the reload-discovery `Result` is successfully applied to the active route snapshot.
+- If the config reload, Kubernetes re-list, discovery result construction, or route snapshot rebuild fails, the previous active route snapshot and previous skipped Service gauge values remain in place.
 
-The reload re-list design is intentionally open. Before implementation, decide whether `SIGHUP` should force a Kubernetes Service re-list even when the runtime watch is healthy, whether reload should reuse the runtime discovery sink or use a dedicated reload path, how a reload-applied result interacts with the watch controller's next complete replacement event, and whether reload results should update the existing skipped Service gauge as another successfully applied discovery snapshot or need separate reload-specific metric semantics.
+The command layer owns reload discovery `Result` metadata. `internal/proxy` continues to accept route-only providers or route-only data, without Kubernetes skipped metadata or duplicate host details.
 
 ## Duplicate Host Policy
 
@@ -234,9 +233,9 @@ The controller core applies this policy to the discovered route set before retur
 
 It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information in one complete `Result`.
 
-This controller core is used by both startup discovery and runtime watch updates. Startup uses the `Result` for initial-list logging and skipped Service metrics, and converts `Result.Routes` to a `SnapshotProvider` before rebuilding the initial route snapshot. Runtime watch updates pass the complete `Result` to the runtime sink, which converts `Result.Routes` to a `SnapshotProvider` before calling `UpdateDiscoveredRoutes`. Runtime discovery metrics track sync, watch retry, rebuild health, and skipped Service counts from the latest successfully applied runtime `Result`.
+This controller core is used by startup discovery, reload discovery, and runtime watch updates. Startup uses the `Result` for initial-list logging and skipped Service metrics, and converts `Result.Routes` to a `SnapshotProvider` before rebuilding the initial route snapshot. Reload uses the `Result` for skipped Service metrics only after the reload route snapshot is applied. Runtime watch updates pass the complete `Result` to the runtime sink, which converts `Result.Routes` to a `SnapshotProvider` before calling `UpdateDiscoveredRoutes`. Runtime discovery metrics track sync, watch retry, rebuild health, and skipped Service counts from the latest successfully applied runtime `Result`.
 
-The startup and runtime metric boundaries are intentionally separate. Startup skipped Service metrics are recorded from startup `Result.SkippedByReason` after the startup route snapshot rebuild succeeds. Runtime skipped Service metrics are recorded from runtime watch `Result.SkippedByReason` after `UpdateDiscoveredRoutes` succeeds. Keeping these boundaries explicit preserves the route-only contract for `RouteProvider` and `SnapshotProvider`, and keeps skipped Service metadata out of route merge state.
+The startup, reload, and runtime metric boundaries are intentionally explicit. Startup skipped Service metrics are recorded from startup `Result.SkippedByReason` after the startup route snapshot rebuild succeeds. Reload skipped Service metrics are recorded from reload `Result.SkippedByReason` after the reload route snapshot apply succeeds. Runtime skipped Service metrics are recorded from runtime watch `Result.SkippedByReason` after `UpdateDiscoveredRoutes` succeeds. Keeping these boundaries explicit preserves the route-only contract for `RouteProvider` and `SnapshotProvider`, and keeps skipped Service metadata out of route merge state.
 
 Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
 
@@ -310,7 +309,7 @@ Metric meanings:
 - `mc_gateway_kubernetes_watch_restarts_total{reason}`: watch supervisor retry/restart count after runtime watch failures.
 - `mc_gateway_kubernetes_watch_running`: `1` while the runtime watch supervisor is running, otherwise `0`.
 - `mc_gateway_kubernetes_last_successful_sync_timestamp_seconds`: Unix timestamp of the last successful discovery sync applied to runtime routing.
-- `mc_gateway_kubernetes_skipped_services{reason}`: number of Kubernetes Services skipped in the latest successfully applied discovery snapshot by bounded skip reason. Startup records from the initial-list `Result` after the startup route snapshot rebuild succeeds. Runtime records from successfully applied watch `Result` updates.
+- `mc_gateway_kubernetes_skipped_services{reason}`: number of Kubernetes Services skipped in the latest successfully applied discovery snapshot by bounded skip reason. Startup records from the initial-list `Result` after the startup route snapshot rebuild succeeds. Reload records from the reload Service list `Result` after the reload route snapshot apply succeeds. Runtime records from successfully applied watch `Result` updates.
 - `mc_gateway_kubernetes_discovery_errors_total{reason}`: discovery/runtime errors by bounded reason.
 
 `mc_gateway_kubernetes_skipped_services{reason}` uses only these reason values:

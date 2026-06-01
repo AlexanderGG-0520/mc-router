@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
 	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
+	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 )
 
 // reloadDiscoveryReport is the command-layer boundary for a future Kubernetes
@@ -15,6 +17,65 @@ import (
 // successful reload apply can record metrics.
 type reloadDiscoveryReport struct {
 	Result k8sdiscovery.Result
+}
+
+type reloadDiscoveryApplier interface {
+	ReloadFile(path string) error
+	ReloadConfigWithDiscovery(ctx context.Context, path string, cfg config.Config, provider discovery.RouteProvider) error
+	Metrics() *gatewaymetrics.Recorder
+}
+
+type kubernetesReloadReloader struct {
+	ctx              context.Context
+	applier          reloadDiscoveryApplier
+	logger           *slog.Logger
+	deps             discoveryStartupDeps
+	kubernetesConfig config.KubernetesDiscovery
+}
+
+func newKubernetesReloadReloader(ctx context.Context, applier reloadDiscoveryApplier, logger *slog.Logger, deps discoveryStartupDeps, kubernetesConfig config.KubernetesDiscovery) *kubernetesReloadReloader {
+	return &kubernetesReloadReloader{
+		ctx:              ctx,
+		applier:          applier,
+		logger:           logger,
+		deps:             deps,
+		kubernetesConfig: kubernetesConfig,
+	}
+}
+
+func (r *kubernetesReloadReloader) ReloadFile(path string) error {
+	if !r.kubernetesConfig.Enabled {
+		return r.applier.ReloadFile(path)
+	}
+
+	cfg, err := config.LoadFile(path)
+	if err != nil {
+		r.recordReloadFailed(path, err)
+		return err
+	}
+	discoveryConfig := cfg
+	discoveryConfig.Discovery.Kubernetes = r.kubernetesConfig
+	report, err := buildReloadDiscoveryReport(r.ctx, discoveryConfig, r.deps)
+	if err != nil {
+		r.recordReloadFailed(path, err)
+		return err
+	}
+	if err := r.applier.ReloadConfigWithDiscovery(r.ctx, path, cfg, report.routeProvider()); err != nil {
+		return err
+	}
+	if metrics := r.applier.Metrics(); metrics != nil {
+		metrics.KubernetesSkippedServicesByReason(report.Result.SkippedByReason)
+	}
+	return nil
+}
+
+func (r *kubernetesReloadReloader) recordReloadFailed(path string, err error) {
+	if metrics := r.applier.Metrics(); metrics != nil {
+		metrics.Reload(gatewaymetrics.ReloadResultFailed)
+	}
+	if r.logger != nil {
+		r.logger.Error("reload_failed", "config", path, "error", err)
+	}
 }
 
 func newReloadDiscoveryReport(result k8sdiscovery.Result) reloadDiscoveryReport {
