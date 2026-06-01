@@ -178,8 +178,10 @@ Kubernetes Service annotation discovery includes:
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary.
 - Startup `client-go` Service initial list.
+- SIGHUP reload Service re-list using startup Kubernetes discovery settings.
 - Runtime Service watch updates that publish complete discovery `Result` replacements.
 - Runtime watch retry/backoff supervision.
+- Low-cardinality discovery metrics and failure preservation.
 
 Static routes take precedence over discovered routes. `defaultRoute` remains outside the explicit route list and is evaluated after static and discovered routes. See [Kubernetes Discovery](kubernetes-discovery.md).
 
@@ -220,10 +222,13 @@ Reload and Kubernetes watch updates are serialized only while building and swapp
 
 Future route sources should feed the same router model rather than rewriting the proxy path:
 
-- Kubernetes Service labels or annotations.
-- Namespace scoped discovery.
+- Kubernetes Service labels.
+- Pod annotations.
+- EndpointSlice discovery.
 - CRD based route objects.
 - Generated route cache from a controller.
+
+These are post-MVP options, not commitments. Namespace-scoped Service annotation discovery is the implemented Kubernetes discovery mode.
 
 ## Kubernetes Direction
 

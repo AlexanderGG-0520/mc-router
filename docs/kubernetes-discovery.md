@@ -8,6 +8,8 @@ The current implementation performs a Kubernetes Service initial list at startup
 
 Watch updates rebuild the route snapshot from the latest valid static config plus the latest complete discovered route set. The active route snapshot is swapped only after rebuild succeeds.
 
+Namespace-scoped Service annotation discovery is the MVP-complete Kubernetes discovery mode. Remaining Kubernetes discovery ideas are optional post-MVP enhancements, not blockers for the current Service annotation workflow.
+
 ## Why Service Annotation Discovery First
 
 The first discovery mode uses Service annotations because Services are already the stable routing boundary for Minecraft backends. A Service has a stable DNS name, a namespace, and declared ports, which lets the gateway derive a backend without trusting arbitrary backend strings from annotations.
@@ -433,9 +435,9 @@ func RebuildRouteSnapshot(ctx context.Context, cfg config.Config, provider disco
 
 If the provider is `nil`, it behaves as if discovery is disabled. If the provider returns an error, the rebuild fails, preventing a partial or stale route update from being applied to the runtime.
 
-## Implementation Slicing
+## MVP Implementation Scope
 
-The current implementation intentionally stops at:
+The current MVP implementation includes:
 
 - Discovery config types and validation.
 - Kubernetes Service annotation parser tests.
@@ -455,14 +457,18 @@ The current implementation intentionally stops at:
 - Duplicate discovered host helper tests.
 - Documentation of the current merge and operation policy.
 
-Not implemented yet:
+## Post-MVP Kubernetes Discovery Backlog
 
-- Periodic resync.
+The following items are optional future work driven by operator needs, not requirements for namespace-scoped Service annotation discovery:
+
+- Configurable watch retry/backoff settings.
 - ClusterRole or all-namespaces RBAC manifests.
-- CRDs.
-- Wake-up or scale-to-zero controller behavior.
-- REST API or Web UI.
+- Pod annotation discovery.
+- EndpointSlice discovery.
+- CRD route discovery.
+- Informer-based implementation if direct watch semantics become limiting.
+- Periodic resync beyond watch retry re-listing.
 
 ## Current Status
 
-Current implementation is config, parser, pure controller core, merge-builder, route-only provider interface, Kubernetes snapshot provider, current namespace helper, startup client-go initial list, SIGHUP reload Service re-list, namespace-scoped Service watch controller core, runtime merge-boundary integration, runtime route snapshot updates after Service watch events, and retry/backoff recovery for runtime watch failures.
+Current implementation is namespace-scoped Service annotation discovery with config validation, parser, pure controller core, merge-builder, route-only provider interface, Kubernetes snapshot provider, current namespace helper, startup client-go initial list, `SIGHUP` reload Service re-list, namespace-scoped Service watch controller core, runtime merge-boundary integration, runtime route snapshot updates after Service watch events, retry/backoff recovery for runtime watch failures, and low-cardinality discovery metrics.
