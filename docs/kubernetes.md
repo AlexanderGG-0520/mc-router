@@ -145,7 +145,7 @@ sum by (reason) (rate(mc_gateway_kubernetes_discovery_errors_total[5m]))
 
 Kubernetes discovery metric labels are intentionally low-cardinality. They do not include namespace, Service name, host, backend, annotation value, resource version, or raw error text. See [Kubernetes Discovery](kubernetes-discovery.md) for metric definitions and reason values.
 
-`mc_gateway_kubernetes_skipped_services{reason}` reflects the latest successfully applied runtime discovery snapshot. Startup initial-list skipped Services are logged, but they are not exported as skipped Service metrics yet.
+`mc_gateway_kubernetes_skipped_services{reason}` reflects the latest successfully applied discovery snapshot. Startup records from the initial-list result after the startup route snapshot rebuild succeeds. Runtime records from successfully applied watch results.
 
 Example Service shape:
 

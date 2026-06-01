@@ -36,13 +36,15 @@ func run(configPath string, logger *slog.Logger) error {
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
 
-	snapshot, err := loadRouteSnapshot(ctx, configPath, logger)
+	startup, err := loadStartupWithDiscovery(ctx, configPath, logger, defaultDiscoveryStartupDeps())
 	if err != nil {
 		return err
 	}
+	snapshot := startup.Snapshot
 	cfg := snapshot.Config
 
 	server := proxy.NewServerFromSnapshot(snapshot, logger)
+	recordStartupDiscoveryMetrics(server.Metrics(), startup.DiscoveryReport)
 	runtimeDiscovery, err := startKubernetesRuntimeDiscovery(ctx, snapshot.StaticConfig, server, logger, defaultDiscoveryRuntimeDeps())
 	if err != nil {
 		return err
@@ -71,6 +73,13 @@ func run(configPath string, logger *slog.Logger) error {
 		return nil
 	}
 	return err
+}
+
+func recordStartupDiscoveryMetrics(recorder *gatewaymetrics.Recorder, report *startupDiscoveryReport) {
+	if recorder == nil || report == nil {
+		return
+	}
+	recorder.KubernetesSkippedServicesByReason(report.Result.SkippedByReason)
 }
 
 type configReloader interface {
