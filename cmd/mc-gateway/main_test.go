@@ -642,6 +642,39 @@ func TestKubernetesRuntimeDiscoveryMetricsRecordSkippedServices(t *testing.T) {
 	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonPortNotFound}, 0)
 }
 
+func TestKubernetesRuntimeDiscoverySkippedMetricsPreservedOnUpdateFailure(t *testing.T) {
+	updater := newRecordingDiscoveredRouteUpdater()
+	updater.metrics = gatewaymetrics.NewRecorder(true)
+	sink := newRuntimeDiscoverySink(context.Background(), updater, discardLogger(), updater.metrics)
+
+	sink.UpdateResult(k8sdiscovery.Result{
+		Routes: []k8sdiscovery.DiscoveredRoute{
+			{Host: "valid.example.com", Backend: "valid.minecraft.svc.cluster.local:25565"},
+		},
+		SkippedByReason: map[string]int{
+			k8sdiscovery.ReasonInvalidHost:   1,
+			k8sdiscovery.ReasonDuplicateHost: 2,
+		},
+	})
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonInvalidHost}, 1)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonDuplicateHost}, 2)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonPortNotFound}, 0)
+
+	updater.err = errors.New("update failed")
+	sink.UpdateResult(k8sdiscovery.Result{
+		SkippedByReason: map[string]int{
+			k8sdiscovery.ReasonPortNotFound: 4,
+		},
+	})
+
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonInvalidHost}, 1)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonDuplicateHost}, 2)
+	waitMainMetricValue(t, updater.metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonPortNotFound}, 0)
+	if got := discoveredHosts(updater.snapshot()); strings.Join(got, ",") != "valid.example.com" {
+		t.Fatalf("discovered hosts after failed update = %v, want [valid.example.com]", got)
+	}
+}
+
 func TestKubernetesRuntimeDiscoveryRetriesWatchFailureAndKeepsLastKnownGood(t *testing.T) {
 	cfg := runtimeDiscoveryConfig()
 	client := fake.NewSimpleClientset(runtimeAnnotatedService("old", "minecraft", "old.example.com", 25565))
