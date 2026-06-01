@@ -185,7 +185,7 @@ When `discovery.kubernetes.enabled` is `true`, startup performs this sequence:
 
 Invalid Service annotations are skipped and reported in the discovery `Result`. Duplicate discovered hosts are also skipped. Neither condition fails startup as long as the Kubernetes API list itself succeeded. Skipped Services, duplicate host metadata, and skipped reason counts stay on the `Result` for startup logging and future startup metrics; they are not exposed through `RouteProvider`.
 
-Startup skipped Service metrics are not implemented yet. The startup initial-list path already has access to the complete startup `Result` and logs its summary counts after the startup route snapshot rebuild succeeds. If startup skipped metrics are added later, that `Result` metadata should flow to the metrics recorder through an explicit startup discovery result or metadata boundary. It must not be passed through `RouteProvider`, `SnapshotProvider`, merge data, or `RouteSnapshot`.
+Startup skipped Service metrics are not implemented yet. The startup initial-list path already has access to the complete startup `Result` through its startup discovery report and logs summary counts after the startup route snapshot rebuild succeeds. If startup skipped metrics are added later, that `Result` metadata should flow to the metrics recorder through this explicit startup discovery result or metadata boundary. It must not be passed through `RouteProvider`, `SnapshotProvider`, merge data, or `RouteSnapshot`.
 
 ## Runtime Watch Updates
 
