@@ -16,12 +16,12 @@
 - Fallback response metrics for status and login fallback responses.
 - Low-cardinality Kubernetes discovery metrics.
 - Graceful shutdown.
-- SIGHUP config reload for static route updates on supported platforms.
+- SIGHUP config reload for static route updates and Kubernetes Service re-list on supported platforms.
 - Unit tests for parser, config, and router behavior.
 - Dockerfile.
 - Minimal Kubernetes manifest and namespace-scoped discovery RBAC example.
 - GitHub Actions CI.
-- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, startup client-go initial list, namespace-scoped Service watch controller, watch retry/backoff supervisor, namespace-scoped RBAC example, runtime merge-boundary integration, runtime route snapshot updates, and discovery metrics.
+- Kubernetes discovery config, current namespace helper, Service annotation parser, in-memory controller core, merge-builder, internal provider interface, memory provider, startup client-go initial list, SIGHUP reload Service re-list, namespace-scoped Service watch controller, watch retry/backoff supervisor, namespace-scoped RBAC example, runtime merge-boundary integration, runtime route snapshot updates, and discovery metrics.
 
 ## Not Included Yet
 

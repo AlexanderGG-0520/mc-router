@@ -4,7 +4,7 @@
 
 Kubernetes discovery generates gateway routes from Kubernetes Services instead of requiring every Minecraft backend route to be maintained by hand in the static YAML file.
 
-The current implementation performs a Kubernetes Service initial list at startup when `discovery.kubernetes.enabled` is true, then starts a namespace-scoped Service watch controller under a retry/backoff supervisor. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, a pure controller core that builds a discovery `Result` from `ServiceInput` values, a Kubernetes `SnapshotProvider` that exposes route-only snapshots through `RouteProvider`, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, runtime route snapshot updates, and watch failure recovery.
+The current implementation performs a Kubernetes Service initial list at startup when `discovery.kubernetes.enabled` is true, re-lists Services during `SIGHUP` reload, then starts a namespace-scoped Service watch controller under a retry/backoff supervisor. It adds configuration types, validation, namespace resolution, a `client-go` Service lister, a pure Service annotation parser, a pure controller core that builds a discovery `Result` from `ServiceInput` values, a Kubernetes `SnapshotProvider` that exposes route-only snapshots through `RouteProvider`, a namespace-scoped Service watch controller core, a pure merge builder for static plus discovered routes, reload/runtime route snapshot updates, and watch failure recovery.
 
 Watch updates rebuild the route snapshot from the latest valid static config plus the latest complete discovered route set. The active route snapshot is swapped only after rebuild succeeds.
 
@@ -49,7 +49,7 @@ Defaults:
 
 `annotationPrefix` must be a canonical lowercase DNS subdomain. It must not be empty, include leading or trailing whitespace, or include a slash. All-namespaces discovery is not implemented.
 
-Kubernetes discovery settings are startup settings in the current implementation. `SIGHUP` reload does not re-resolve the discovery namespace or restart the watch controller.
+Kubernetes discovery settings are startup settings in the current implementation. `SIGHUP` reload loads the new static route config, but its Kubernetes Service re-list continues to use the discovery namespace, annotation prefix, and client setup chosen at startup. Reload does not re-resolve the discovery namespace or restart the watch controller.
 
 ## Namespace Resolution
 
@@ -204,7 +204,7 @@ If the watch stream fails after the first successful runtime sync, the superviso
 
 When Kubernetes discovery is disabled, `SIGHUP` reload keeps the static-only reload behavior: it reads the static config file, validates it, and rebuilds the route snapshot without calling the Kubernetes API.
 
-When Kubernetes discovery is enabled at startup, `SIGHUP` reload reads the static config file, performs a fresh Kubernetes Service list, builds a complete Kubernetes discovery `Result`, converts `Result.Routes` through the route-only `SnapshotProvider` and `RouteProvider` path, and applies the rebuilt route snapshot only after all steps succeed. Reload does not restart the watch controller or mutate its internal Service state.
+When Kubernetes discovery is enabled at startup, `SIGHUP` reload reads the static config file, performs a fresh Kubernetes Service list using the startup discovery namespace, annotation prefix, and client setup, builds a complete Kubernetes discovery `Result`, converts `Result.Routes` through the route-only `SnapshotProvider` and `RouteProvider` path, and applies the rebuilt route snapshot only after all steps succeed. Reload does not restart the watch controller or mutate its internal Service state.
 
 Reload and watch updates are serialized by the server's route snapshot update lock. Active connections keep the snapshot they loaded at connection start. New connections use the latest successfully swapped snapshot. The next runtime watch complete `Result` may overwrite the reload-applied discovered route set normally.
 
@@ -213,7 +213,7 @@ Reload-triggered re-list uses the same discovery boundaries:
 - The re-list produces a complete Kubernetes discovery `Result` through the same `BuildDiscoveredRoutes` ServiceInput-to-Result boundary.
 - Route application converts `Result.Routes` through the route-only `SnapshotProvider` and `RouteProvider` path before rebuilding the route snapshot.
 - Skipped Service metrics update only after the reload-discovery `Result` is successfully applied to the active route snapshot.
-- If the config reload, Kubernetes re-list, discovery result construction, or route snapshot rebuild fails, the previous active route snapshot and previous skipped Service gauge values remain in place.
+- If config loading, Kubernetes listing, discovery result construction, or route snapshot apply fails, the previous active route snapshot and previous skipped Service gauge values remain in place.
 
 The command layer owns reload discovery `Result` metadata. `internal/proxy` continues to accept route-only providers or route-only data, without Kubernetes skipped metadata or duplicate host details.
 
@@ -379,7 +379,7 @@ type RouteProvider interface {
 }
 ```
 
-This interface allows the gateway runtime to fetch a snapshot of discovered routes without knowing the details of the underlying discovery source. It is intentionally route-only: skipped Services, duplicate host metadata, and skipped reason counts remain discovery `Result`, logging, or metrics concerns. Startup metrics must not widen this interface.
+This interface allows the gateway runtime to fetch a snapshot of discovered routes without knowing the details of the underlying discovery source. It is intentionally route-only: skipped Services, duplicate host metadata, and skipped reason counts remain discovery `Result`, logging, or metrics concerns. Startup, reload, and runtime metrics must not widen this interface.
 
 ### Memory Provider
 
@@ -387,17 +387,19 @@ A `MemoryProvider` is implemented for tests. It stores a list of discovered rout
 
 ### Kubernetes Snapshot Provider
 
-Kubernetes discovery uses `SnapshotProvider` to expose `Result.Routes` through `RouteProvider`. `NewSnapshotProviderFromResult(result)` copies only the route slice into the provider. It does not expose `Result.Skipped`, `Result.DuplicateHosts`, or `Result.SkippedByReason` through the runtime merge path. Startup skipped metrics read startup `Result` metadata beside this conversion, not from the provider.
+Kubernetes discovery uses `SnapshotProvider` to expose `Result.Routes` through `RouteProvider`. `NewSnapshotProviderFromResult(result)` copies only the route slice into the provider. It does not expose `Result.Skipped`, `Result.DuplicateHosts`, or `Result.SkippedByReason` through the runtime merge path. Startup and reload skipped metrics read `Result` metadata beside this conversion, not from the provider.
 
-### Kubernetes Service Initial List
+### Kubernetes Service Lists
 
-The project includes `client-go` dependency and the startup initial-list implementation for Kubernetes Services.
+The project includes `client-go` dependency and Service list implementations for startup and `SIGHUP` reload.
 
 - `ServiceLister` interface: abstracts listing Services and converting them to `ServiceInput`.
 - `ClientServiceLister`: implementation using `client-go`.
 - `ToServiceInput`: pure conversion from `corev1.Service` to `ServiceInput`.
 
-This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for `BuildDiscoveredRoutes`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into the startup route snapshot rebuild. After the rebuild succeeds, it logs initial-list result stats and records skipped Service metrics from `Result.SkippedByReason` through the startup discovery report boundary. The gateway then starts the Service watch controller for runtime updates.
+At startup, this implementation fetches a one-time snapshot of Services from the Kubernetes API when Kubernetes discovery is enabled. It prepares Services for `BuildDiscoveredRoutes`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into the startup route snapshot rebuild. After the rebuild succeeds, it logs initial-list result stats and records skipped Service metrics from `Result.SkippedByReason` through the startup discovery report boundary. The gateway then starts the Service watch controller for runtime updates.
+
+During `SIGHUP` reload, the command layer performs a fresh Service list using the startup discovery namespace, annotation prefix, and client setup. It builds a reload discovery `Result`, applies `Result.Routes` through the route-only provider path with the newly loaded static config, and records skipped Service metrics only after the reload route snapshot apply succeeds.
 
 ### Kubernetes Service Watch Controller Core
 
@@ -442,6 +444,7 @@ The current implementation intentionally stops at:
 - Internal `RouteProvider` interface, test `MemoryProvider`, and Kubernetes `SnapshotProvider`.
 - `client-go` dependency added.
 - Startup `ServiceLister` Kubernetes API initial list.
+- SIGHUP reload Kubernetes API Service re-list through the reload discovery report boundary.
 - `ToServiceInput` conversion from Kubernetes `corev1.Service`.
 - Current namespace resolution helper for `discovery.kubernetes.namespace == ""`.
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
@@ -462,4 +465,4 @@ Not implemented yet:
 
 ## Current Status
 
-Current implementation is config, parser, pure controller core, merge-builder, route-only provider interface, Kubernetes snapshot provider, current namespace helper, startup client-go initial list, namespace-scoped Service watch controller core, runtime merge-boundary integration, runtime route snapshot updates after Service watch events, and retry/backoff recovery for runtime watch failures.
+Current implementation is config, parser, pure controller core, merge-builder, route-only provider interface, Kubernetes snapshot provider, current namespace helper, startup client-go initial list, SIGHUP reload Service re-list, namespace-scoped Service watch controller core, runtime merge-boundary integration, runtime route snapshot updates after Service watch events, and retry/backoff recovery for runtime watch failures.

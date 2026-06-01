@@ -210,9 +210,9 @@ Metrics server settings are also startup settings. SIGHUP reload updates route s
 
 Fallback settings are part of the route config snapshot and are applied to new connections after a successful reload.
 
-Kubernetes discovery does not reconfigure its namespace, client, or annotation prefix during reload. When discovery was enabled at startup, reload performs a fresh namespace-scoped Service list, builds a complete discovery `Result` with `BuildDiscoveredRoutes`, applies routes through the route-only `SnapshotProvider` and `RouteProvider` path, and updates skipped Service metrics only after the reload result is successfully applied.
+Kubernetes discovery does not reconfigure its namespace, client, or annotation prefix during reload. When discovery was enabled at startup, reload loads the new static route config, performs a fresh Service list using the startup discovery namespace, annotation prefix, and client setup, builds a complete discovery `Result` with `BuildDiscoveredRoutes`, applies routes through the route-only `SnapshotProvider` and `RouteProvider` path, and updates skipped Service metrics only after the reload result is successfully applied.
 
-Reload does not restart or mutate the runtime watch controller. The next complete watch `Result` can replace the reload-applied discovery snapshot normally. Failed config reloads, re-list attempts, or rebuilds keep the previous active route snapshot and previous skipped Service gauge values.
+Reload does not restart or mutate the runtime watch controller. The next complete watch `Result` can replace the reload-applied discovery snapshot normally. Failed config loads, Kubernetes lists, discovery result builds, or route snapshot applies keep the previous active route snapshot and previous skipped Service gauge values.
 
 The implementation uses an immutable snapshot stored behind an atomic pointer. That keeps the per-connection hot path small: each connection loads one snapshot, then uses that config and router for deadlines, route selection, and backend dialing. It avoids holding a mutex while clients connect or while backend dials are in progress, and the race detector covers concurrent reload plus active connections.
 
