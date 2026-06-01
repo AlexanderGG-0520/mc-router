@@ -97,6 +97,56 @@ func TestServeReloadSignalsStopsWhenContextIsCanceled(t *testing.T) {
 	}
 }
 
+func TestReloadDiscoveryReportRouteProviderUsesResultRoutes(t *testing.T) {
+	report := newReloadDiscoveryReport(k8sdiscovery.Result{
+		Routes: []k8sdiscovery.DiscoveredRoute{
+			{Host: "one.example.com", Backend: "one.default.svc.cluster.local:25565"},
+			{Host: "two.example.com", Backend: "two.default.svc.cluster.local:25565"},
+		},
+		SkippedByReason: map[string]int{
+			k8sdiscovery.ReasonDuplicateHost: 2,
+		},
+	})
+
+	routes, err := report.routeProvider().Routes(context.Background())
+	if err != nil {
+		t.Fatalf("Routes: %v", err)
+	}
+	if len(routes) != 2 {
+		t.Fatalf("routes length = %d, want 2", len(routes))
+	}
+	if routes[0].Host != "one.example.com" || routes[1].Host != "two.example.com" {
+		t.Fatalf("routes = %#v", routes)
+	}
+	if got := report.Result.SkippedByReason[k8sdiscovery.ReasonDuplicateHost]; got != 2 {
+		t.Fatalf("skipped duplicate host count = %d, want 2", got)
+	}
+}
+
+func TestReloadDiscoveryReportRouteProviderDefensivelyCopiesRoutes(t *testing.T) {
+	result := k8sdiscovery.Result{
+		Routes: []k8sdiscovery.DiscoveredRoute{
+			{Host: "copy.example.com", Backend: "copy.default.svc.cluster.local:25565"},
+		},
+	}
+	report := newReloadDiscoveryReport(result)
+	result.Routes[0].Host = "mutated-before-read.example.com"
+
+	provider := report.routeProvider()
+	first, err := provider.Routes(context.Background())
+	if err != nil {
+		t.Fatalf("first Routes: %v", err)
+	}
+	first[0].Host = "mutated-after-read.example.com"
+	second, err := provider.Routes(context.Background())
+	if err != nil {
+		t.Fatalf("second Routes: %v", err)
+	}
+	if second[0].Host != "copy.example.com" {
+		t.Fatalf("route provider did not preserve defensive copy, got host %q", second[0].Host)
+	}
+}
+
 func TestLoadRouteSnapshotDiscoveryDisabledDoesNotCallKubernetesDeps(t *testing.T) {
 	configPath := writeMainConfig(t, `
 listen: ":0"
