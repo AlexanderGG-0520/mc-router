@@ -58,6 +58,8 @@ go vet ./...
 docker build -t mc-gateway:dev .
 ```
 
+For the v0.1.0 release checklist, including manual smoke checks and non-blocking post-MVP work, see [v0.1.0 Release Readiness](v0.1.0-readiness.md).
+
 Manual network acceptance should use at least two backend Minecraft servers and two DNS names pointing at the gateway. The gateway should route each client based on the server address entered in the Minecraft client.
 
 ## Connection Flow

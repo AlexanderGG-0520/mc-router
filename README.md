@@ -43,10 +43,11 @@ Implemented in this skeleton:
 - Unit tests for VarInt, handshake parsing, config loading, and route matching.
 - Dockerfile and minimal Kubernetes manifest.
 - GitHub Actions CI for `gofmt`, `go test`, `go vet`, and Docker build smoke.
+- Namespace-scoped Kubernetes Service annotation discovery, including startup initial list, `SIGHUP` reload re-list, runtime watch updates, retry/backoff recovery, and low-cardinality discovery metrics.
 
 Deferred by design:
 
-- Kubernetes auto-discovery from labels, annotations, or CRDs.
+- Kubernetes discovery beyond namespace-scoped Service annotations, such as Pod annotations, EndpointSlice discovery, CRDs, all-namespaces RBAC, or informer-based implementation.
 - Scale-to-zero wake-up and scale-down control.
 - Maintenance fallback behavior.
 - Simple Voice Chat or extra UDP/TCP port routing.
@@ -122,6 +123,8 @@ go vet ./...
 
 The normal test suite uses fake protocol backends and does not start a real Minecraft server. A separate optional real-server E2E smoke test is available through a manual GitHub Actions workflow and can also be run locally with Docker. See [docs/e2e.md](docs/e2e.md).
 
+For release gating, manual smoke checks, and non-blocking post-MVP work, see [docs/v0.1.0-readiness.md](docs/v0.1.0-readiness.md).
+
 ## Docker
 
 ```powershell
@@ -149,9 +152,7 @@ The manifest includes:
 - LoadBalancer Service on TCP `25565`
 - TCP readiness and liveness probes
 
-RBAC is not included because the MVP does not watch Kubernetes resources.
-
-Kubernetes Service annotation discovery is planned but currently limited to config and parser groundwork. See [docs/kubernetes-discovery.md](docs/kubernetes-discovery.md).
+Namespace-scoped Kubernetes Service annotation discovery is implemented. If discovery is enabled, use the namespace-scoped RBAC example in `deploy/kubernetes/discovery-rbac.yaml`. See [docs/kubernetes-discovery.md](docs/kubernetes-discovery.md).
 
 ## Security Notes
 
