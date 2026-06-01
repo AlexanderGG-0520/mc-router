@@ -4,7 +4,7 @@
 
 `mc-router` is a standalone Minecraft Java Edition gateway. It accepts TCP connections on one public listener, parses the first Minecraft handshake packet, reads the requested server address, selects a backend, forwards the original handshake bytes, then proxies TCP in both directions.
 
-The design is intentionally smaller than a Kubernetes controller. Static routes come first. Kubernetes discovery, wake-up, and policy control can be added as route providers or admission components later.
+The design is intentionally smaller than a Kubernetes controller. Static routes come first. Kubernetes discovery feeds the same route snapshot model through route providers, while wake-up and policy control can be added as separate admission components later.
 
 ## Initial Components
 
@@ -168,20 +168,21 @@ Lifecycle `reason` values used by logs and metrics are kept aligned:
 
 ## Route Sources
 
-The runtime always supports static YAML routes. When Kubernetes discovery is enabled, startup performs one namespace-scoped Kubernetes Service initial list, merges discovered routes into the initial route snapshot, then starts a namespace-scoped Service watch controller under a retry/backoff supervisor.
+The runtime always supports static YAML routes. When Kubernetes discovery is enabled, startup performs one namespace-scoped Kubernetes Service initial list, builds a Kubernetes discovery `Result`, exposes `Result.Routes` through a Kubernetes `SnapshotProvider`, merges those discovered routes into the initial route snapshot, then starts a namespace-scoped Service watch controller under a retry/backoff supervisor.
 
 Kubernetes Service annotation discovery includes:
 - Discovery configuration validation and annotation parsing.
-- In-memory controller core and `RouteProvider` interface.
+- Pure `BuildDiscoveredRoutes` ServiceInput-to-Result boundary.
+- Route-only `RouteProvider` interface and Kubernetes `SnapshotProvider`.
 - `RebuildRouteSnapshot` helper for unified static/discovered route management.
 - Runtime route snapshot boundary.
 - Startup `client-go` Service initial list.
-- Runtime Service watch updates.
+- Runtime Service watch updates that publish complete discovery `Result` replacements.
 - Runtime watch retry/backoff supervision.
 
 Static routes take precedence over discovered routes. `defaultRoute` remains outside the explicit route list and is evaluated after static and discovered routes. See [Kubernetes Discovery](kubernetes-discovery.md).
 
-Kubernetes watch updates provide a complete replacement set of discovered routes. The server rebuilds a route snapshot from the latest valid static config plus that discovered route set, then swaps the active snapshot only if the rebuild succeeds. Watch controller failures and rebuild failures keep the previous active snapshot. After the first successful sync, watch failures are retried with backoff by relisting Services and opening a new watch.
+Kubernetes watch updates provide a complete replacement discovery `Result`. The runtime converts `Result.Routes` through `SnapshotProvider`, then rebuilds a route snapshot from the latest valid static config plus that route-only provider. It swaps the active snapshot only if the rebuild succeeds. Skipped Services, duplicate host metadata, and skipped reason counts remain discovery result, logging, and metrics concerns rather than route-provider data. Watch controller failures and rebuild failures keep the previous active snapshot. After the first successful sync, watch failures are retried with backoff by relisting Services and opening a new watch.
 
 Kubernetes discovery metrics are updated only after successful runtime syncs and bounded failure points. Rebuild failures increment a discovery error counter and keep the previous discovered route gauge value.
 
