@@ -145,7 +145,7 @@ sum by (reason) (rate(mc_gateway_kubernetes_discovery_errors_total[5m]))
 
 Kubernetes discovery metric labels are intentionally low-cardinality. They do not include namespace, Service name, host, backend, annotation value, resource version, or raw error text. See [Kubernetes Discovery](kubernetes-discovery.md) for metric definitions and reason values.
 
-`mc_gateway_kubernetes_skipped_services{reason}` reflects the latest successfully applied discovery snapshot. Startup records from the initial-list result after the startup route snapshot rebuild succeeds. Runtime records from successfully applied watch results.
+`mc_gateway_kubernetes_skipped_services{reason}` reflects the latest successfully applied discovery snapshot. Startup records from the initial-list result after the startup route snapshot rebuild succeeds. Reload records from the reload Service list result after the reload route snapshot apply succeeds. Runtime records from successfully applied watch results.
 
 Example Service shape:
 
@@ -182,9 +182,9 @@ The gateway supports `SIGHUP` config reload on supported Unix platforms, includi
 
 Reload is atomic from the gateway's point of view. If the updated config is invalid, the running route snapshot stays active. Active connections are not disconnected by reload; new connections use the new route snapshot after a successful reload.
 
-Kubernetes discovery is not reconfigured during `SIGHUP` reload. If discovery was enabled at startup, the latest discovered routes remain active and are re-merged with the reloaded static config. Changes to Service annotations or Services are picked up by the running Service watch controller. If the watch fails after startup, the supervisor relists Services and reopens the watch with backoff while keeping the existing active route snapshot. Changes to discovery config values require a process restart.
+Kubernetes discovery is not reconfigured during `SIGHUP` reload. If discovery was enabled at startup, reload performs a fresh Service list in the configured namespace, rebuilds discovered routes through the same `BuildDiscoveredRoutes` and route-only provider boundaries used by startup/runtime discovery, and swaps the active route snapshot only after the static config and reload discovery result both apply successfully. Changes to discovery config values still require a process restart.
 
-`SIGHUP` reload does not currently perform a fresh Kubernetes Service list specifically for reload. Future reload re-list support should use the same complete discovery `Result` construction and route-only provider application boundaries as startup and runtime watch updates, and should update skipped Service metrics only after the reload result is successfully applied.
+The runtime Service watch controller is not restarted or mutated by reload. Its next complete watch `Result` may overwrite the reload-applied discovered route set normally. If the reload Service list or route rebuild fails, the previous active route snapshot and previous skipped Service metric values remain in place.
 
 Kubernetes ConfigMap projected volumes are updated asynchronously. Do not send `SIGHUP` until the mounted file has the expected content in the Pod. If you need deterministic rollout behavior across replicas, use a rolling restart instead of relying on manual signal timing.
 

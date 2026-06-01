@@ -173,7 +173,25 @@ func (s *Server) ReloadFile(path string) error {
 	defer s.snapshotMu.Unlock()
 
 	current := s.currentState()
-	snapshot, err := BuildRouteSnapshot(cfg, current.discoveredRoutes)
+	return s.reloadConfigLocked(path, cfg, current.discoveredRoutes)
+}
+
+func (s *Server) ReloadConfigWithDiscovery(ctx context.Context, path string, cfg config.Config, provider discovery.RouteProvider) error {
+	discoveredRoutes, err := discoveredRoutesFromProvider(ctx, provider)
+	if err != nil {
+		s.metrics.Reload(gatewaymetrics.ReloadResultFailed)
+		s.logger.Error("reload_failed", "config", path, "error", err)
+		return err
+	}
+
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+
+	return s.reloadConfigLocked(path, cfg, discoveredRoutes)
+}
+
+func (s *Server) reloadConfigLocked(path string, cfg config.Config, discoveredRoutes []kubernetes.DiscoveredRoute) error {
+	snapshot, err := BuildRouteSnapshot(cfg, discoveredRoutes)
 	if err != nil {
 		s.metrics.Reload(gatewaymetrics.ReloadResultFailed)
 		s.logger.Error("reload_failed", "config", path, "error", err)

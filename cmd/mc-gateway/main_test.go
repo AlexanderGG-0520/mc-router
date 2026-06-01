@@ -290,6 +290,169 @@ func TestBuildReloadDiscoveryReportOwnsResultData(t *testing.T) {
 	}
 }
 
+func TestKubernetesReloadReloaderAppliesFreshServiceList(t *testing.T) {
+	configPath := writeReloadDiscoveryConfig(t)
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("config.LoadFile: %v", err)
+	}
+	snapshot, err := proxy.BuildRouteSnapshot(cfg, []k8sdiscovery.DiscoveredRoute{
+		{Host: "old.example.com", Backend: "old.minecraft.svc.cluster.local:25565"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	server := proxy.NewServerFromSnapshot(snapshot, discardLogger())
+	lister := &fakeStartupServiceLister{
+		services: []k8sdiscovery.ServiceInput{
+			startupService("new", "minecraft", "new.example.com", 25565),
+		},
+	}
+	reloader := newKubernetesReloadReloader(context.Background(), server, discardLogger(), fakeDiscoveryDeps(t, "minecraft", lister), enabledReloadDiscoveryConfig())
+
+	if err := reloader.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+	updated := server.Snapshot()
+	if _, err := updated.Router.Select("new.example.com"); err != nil {
+		t.Fatalf("Select reloaded discovered route: %v", err)
+	}
+	if _, err := updated.Router.Select("old.example.com"); err == nil {
+		t.Fatal("old discovered route remained after reload re-list")
+	}
+	if updated.DiscoveryMerge.Stats.DiscoveredRoutes != 1 {
+		t.Fatalf("discovered routes = %d, want 1", updated.DiscoveryMerge.Stats.DiscoveredRoutes)
+	}
+}
+
+func TestKubernetesReloadReloaderUpdatesSkippedMetricsAfterSuccessfulApply(t *testing.T) {
+	configPath := writeReloadDiscoveryConfig(t)
+	server := newReloadDiscoveryTestServer(t, configPath, nil)
+	server.Metrics().KubernetesSkippedServicesByReason(map[string]int{
+		k8sdiscovery.ReasonInvalidHost:   5,
+		k8sdiscovery.ReasonDuplicateHost: 3,
+	})
+	lister := &fakeStartupServiceLister{
+		services: []k8sdiscovery.ServiceInput{
+			startupService("bad-host", "minecraft", "bad host.example.com", 25565),
+			startupService("valid", "minecraft", "valid.example.com", 25566),
+		},
+	}
+	reloader := newKubernetesReloadReloader(context.Background(), server, discardLogger(), fakeDiscoveryDeps(t, "minecraft", lister), enabledReloadDiscoveryConfig())
+
+	if err := reloader.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+	waitMainMetricValue(t, server.Metrics(), "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonInvalidHost}, 1)
+	waitMainMetricValue(t, server.Metrics(), "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonDuplicateHost}, 0)
+}
+
+func TestKubernetesReloadReloaderListErrorPreservesSnapshotAndSkippedMetrics(t *testing.T) {
+	configPath := writeReloadDiscoveryConfig(t)
+	server := newReloadDiscoveryTestServer(t, configPath, []k8sdiscovery.DiscoveredRoute{
+		{Host: "old.example.com", Backend: "old.minecraft.svc.cluster.local:25565"},
+	})
+	server.Metrics().KubernetesSkippedServicesByReason(map[string]int{
+		k8sdiscovery.ReasonInvalidHost: 4,
+	})
+	lister := &fakeStartupServiceLister{err: errors.New("list failed")}
+	reloader := newKubernetesReloadReloader(context.Background(), server, discardLogger(), fakeDiscoveryDeps(t, "minecraft", lister), enabledReloadDiscoveryConfig())
+
+	if err := reloader.ReloadFile(configPath); err == nil {
+		t.Fatal("ReloadFile succeeded with list error")
+	}
+	snapshot := server.Snapshot()
+	if _, err := snapshot.Router.Select("old.example.com"); err != nil {
+		t.Fatalf("old route missing after failed reload: %v", err)
+	}
+	waitMainMetricValue(t, server.Metrics(), "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonInvalidHost}, 4)
+}
+
+func TestKubernetesReloadReloaderApplyErrorPreservesSkippedMetrics(t *testing.T) {
+	configPath := writeReloadDiscoveryConfig(t)
+	metrics := gatewaymetrics.NewRecorder(true)
+	metrics.KubernetesSkippedServicesByReason(map[string]int{
+		k8sdiscovery.ReasonInvalidHost: 6,
+	})
+	applier := &fakeReloadDiscoveryApplier{
+		metrics: metrics,
+		err:     errors.New("apply failed"),
+	}
+	lister := &fakeStartupServiceLister{
+		services: []k8sdiscovery.ServiceInput{
+			startupService("bad-host", "minecraft", "bad host.example.com", 25565),
+		},
+	}
+	reloader := newKubernetesReloadReloader(context.Background(), applier, discardLogger(), fakeDiscoveryDeps(t, "minecraft", lister), enabledReloadDiscoveryConfig())
+
+	if err := reloader.ReloadFile(configPath); err == nil {
+		t.Fatal("ReloadFile succeeded with apply error")
+	}
+	waitMainMetricValue(t, metrics, "mc_gateway_kubernetes_skipped_services", map[string]string{"reason": k8sdiscovery.ReasonInvalidHost}, 6)
+	if applier.reloadConfigCalls != 1 {
+		t.Fatalf("ReloadConfigWithDiscovery calls = %d, want 1", applier.reloadConfigCalls)
+	}
+}
+
+func TestKubernetesReloadReloaderDisabledUsesStaticReloadWithoutDiscoveryDeps(t *testing.T) {
+	applier := &fakeReloadDiscoveryApplier{metrics: gatewaymetrics.NewRecorder(true)}
+	reloader := newKubernetesReloadReloader(context.Background(), applier, discardLogger(), discoveryStartupDeps{
+		resolveNamespace: func(string, k8sdiscovery.NamespaceResolver) (string, error) {
+			t.Fatal("resolveNamespace called when Kubernetes discovery is disabled")
+			return "", nil
+		},
+		inClusterConfig: func() (*rest.Config, error) {
+			t.Fatal("inClusterConfig called when Kubernetes discovery is disabled")
+			return nil, nil
+		},
+		newServiceLister: func(*rest.Config) (k8sdiscovery.ServiceLister, error) {
+			t.Fatal("newServiceLister called when Kubernetes discovery is disabled")
+			return nil, nil
+		},
+	}, config.KubernetesDiscovery{})
+
+	if err := reloader.ReloadFile("config.yaml"); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+	if applier.reloadFilePath != "config.yaml" {
+		t.Fatalf("ReloadFile path = %q, want config.yaml", applier.reloadFilePath)
+	}
+	if applier.reloadConfigCalls != 0 {
+		t.Fatalf("ReloadConfigWithDiscovery calls = %d, want 0", applier.reloadConfigCalls)
+	}
+}
+
+func TestKubernetesReloadReloaderUsesStartupDiscoveryConfig(t *testing.T) {
+	configPath := writeMainConfig(t, `
+listen: ":0"
+metrics:
+  enabled: true
+discovery:
+  kubernetes:
+    enabled: true
+    namespace: "changed"
+    annotationPrefix: "changed.example.com"
+unknownHostPolicy: deny
+`)
+	server := newReloadDiscoveryTestServer(t, writeReloadDiscoveryConfig(t), nil)
+	lister := &fakeStartupServiceLister{
+		services: []k8sdiscovery.ServiceInput{
+			startupService("smp", "minecraft", "smp.example.com", 25565),
+		},
+	}
+	reloader := newKubernetesReloadReloader(context.Background(), server, discardLogger(), fakeDiscoveryDeps(t, "minecraft", lister), enabledReloadDiscoveryConfig())
+
+	if err := reloader.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+	if lister.namespace != "minecraft" {
+		t.Fatalf("listed namespace = %q, want startup namespace minecraft", lister.namespace)
+	}
+	if _, err := server.Snapshot().Router.Select("smp.example.com"); err != nil {
+		t.Fatalf("Select route using startup annotation prefix: %v", err)
+	}
+}
+
 func TestLoadRouteSnapshotDiscoveryDisabledDoesNotCallKubernetesDeps(t *testing.T) {
 	configPath := writeMainConfig(t, `
 listen: ":0"
@@ -1049,6 +1212,27 @@ func (l *fakeStartupServiceLister) ListServices(ctx context.Context, namespace s
 	return append([]k8sdiscovery.ServiceInput(nil), l.services...), nil
 }
 
+type fakeReloadDiscoveryApplier struct {
+	reloadFilePath    string
+	reloadConfigCalls int
+	metrics           *gatewaymetrics.Recorder
+	err               error
+}
+
+func (a *fakeReloadDiscoveryApplier) ReloadFile(path string) error {
+	a.reloadFilePath = path
+	return a.err
+}
+
+func (a *fakeReloadDiscoveryApplier) ReloadConfigWithDiscovery(ctx context.Context, path string, cfg config.Config, provider discovery.RouteProvider) error {
+	a.reloadConfigCalls++
+	return a.err
+}
+
+func (a *fakeReloadDiscoveryApplier) Metrics() *gatewaymetrics.Recorder {
+	return a.metrics
+}
+
 func fakeDiscoveryDeps(t *testing.T, wantNamespace string, lister k8sdiscovery.ServiceLister) discoveryStartupDeps {
 	t.Helper()
 	return discoveryStartupDeps{
@@ -1070,6 +1254,19 @@ func fakeDiscoveryDeps(t *testing.T, wantNamespace string, lister k8sdiscovery.S
 	}
 }
 
+func newReloadDiscoveryTestServer(t *testing.T, configPath string, discoveredRoutes []k8sdiscovery.DiscoveredRoute) *proxy.Server {
+	t.Helper()
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		t.Fatalf("config.LoadFile: %v", err)
+	}
+	snapshot, err := proxy.BuildRouteSnapshot(cfg, discoveredRoutes)
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot: %v", err)
+	}
+	return proxy.NewServerFromSnapshot(snapshot, discardLogger())
+}
+
 func reloadDiscoveryConfig(namespace string, annotationPrefix string) config.Config {
 	return config.Config{
 		Discovery: config.Discovery{
@@ -1081,6 +1278,24 @@ func reloadDiscoveryConfig(namespace string, annotationPrefix string) config.Con
 			},
 		},
 	}
+}
+
+func enabledReloadDiscoveryConfig() config.KubernetesDiscovery {
+	return reloadDiscoveryConfig("minecraft", k8sdiscovery.DefaultAnnotationPrefix).Discovery.Kubernetes
+}
+
+func writeReloadDiscoveryConfig(t *testing.T) string {
+	t.Helper()
+	return writeMainConfig(t, `
+listen: ":0"
+metrics:
+  enabled: true
+discovery:
+  kubernetes:
+    enabled: true
+    namespace: "minecraft"
+unknownHostPolicy: deny
+`)
 }
 
 func startupService(name string, namespace string, host string, port int) k8sdiscovery.ServiceInput {
