@@ -138,6 +138,7 @@ For Kubernetes discovery behavior, watch:
 mc_gateway_kubernetes_watch_running
 mc_gateway_kubernetes_last_successful_sync_timestamp_seconds
 mc_gateway_kubernetes_discovered_routes
+sum by (reason) (mc_gateway_kubernetes_skipped_services)
 sum by (reason) (rate(mc_gateway_kubernetes_watch_restarts_total[5m]))
 sum by (reason) (rate(mc_gateway_kubernetes_discovery_errors_total[5m]))
 ```

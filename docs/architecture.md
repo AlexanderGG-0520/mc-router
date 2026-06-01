@@ -130,6 +130,7 @@ Current metrics are intentionally low-cardinality:
 - `mc_gateway_route_decisions_total{result}`
 - `mc_gateway_kubernetes_watch_restarts_total{reason}`
 - `mc_gateway_kubernetes_discovery_errors_total{reason}`
+- `mc_gateway_kubernetes_skipped_services{reason}`
 - `mc_gateway_active_connections`
 - `mc_gateway_config_generation`
 - `mc_gateway_routes`
@@ -184,7 +185,7 @@ Static routes take precedence over discovered routes. `defaultRoute` remains out
 
 Kubernetes watch updates provide a complete replacement discovery `Result`. The runtime converts `Result.Routes` through `SnapshotProvider`, then rebuilds a route snapshot from the latest valid static config plus that route-only provider. It swaps the active snapshot only if the rebuild succeeds. Skipped Services, duplicate host metadata, and skipped reason counts remain discovery result, logging, and metrics concerns rather than route-provider data. Watch controller failures and rebuild failures keep the previous active snapshot. After the first successful sync, watch failures are retried with backoff by relisting Services and opening a new watch.
 
-Kubernetes discovery metrics are updated only after successful runtime syncs and bounded failure points. Rebuild failures increment a discovery error counter and keep the previous discovered route gauge value.
+Kubernetes discovery metrics are updated only after successful runtime syncs and bounded failure points. Rebuild failures increment a discovery error counter and keep the previous discovered route and skipped Service gauges unchanged.
 
 ## Config Reload
 

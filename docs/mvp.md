@@ -27,7 +27,7 @@
 
 - Kubernetes Service re-list during `SIGHUP` reload.
 - Configurable retry/backoff settings for runtime Kubernetes watch failures.
-- Resource-level Kubernetes discovery metrics for invalid annotations and duplicate hosts.
+- Startup skipped Service metrics.
 - ClusterRole or all-namespaces discovery RBAC.
 - Pod annotations, EndpointSlice discovery, or CRD route discovery.
 - Scale-to-zero wake-up.

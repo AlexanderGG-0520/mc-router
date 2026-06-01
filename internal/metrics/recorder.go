@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
+	k8sdiscovery "github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -51,6 +52,20 @@ const (
 	KubernetesDiscoveryErrorReasonUnknown                   = "unknown"
 )
 
+var kubernetesSkippedServiceReasons = []string{
+	k8sdiscovery.ReasonDisabled,
+	k8sdiscovery.ReasonInvalidPrefix,
+	k8sdiscovery.ReasonInvalidServiceName,
+	k8sdiscovery.ReasonInvalidNamespace,
+	k8sdiscovery.ReasonMissingHost,
+	k8sdiscovery.ReasonInvalidHost,
+	k8sdiscovery.ReasonMissingPort,
+	k8sdiscovery.ReasonInvalidPort,
+	k8sdiscovery.ReasonPortNotFound,
+	k8sdiscovery.ReasonDuplicateHost,
+	k8sdiscovery.ReasonUnknown,
+}
+
 type Recorder struct {
 	enabled  bool
 	registry *prometheus.Registry
@@ -62,6 +77,7 @@ type Recorder struct {
 	routeDecisionsTotal              *prometheus.CounterVec
 	kubernetesWatchRestartsTotal     *prometheus.CounterVec
 	kubernetesDiscoveryErrorsTotal   *prometheus.CounterVec
+	kubernetesSkippedServices        *prometheus.GaugeVec
 	activeConnections                prometheus.Gauge
 	configGeneration                 prometheus.Gauge
 	routes                           prometheus.Gauge
@@ -107,6 +123,10 @@ func NewRecorder(enabled bool) *Recorder {
 			Name: "mc_gateway_kubernetes_discovery_errors_total",
 			Help: "Kubernetes discovery errors by low-cardinality reason.",
 		}, []string{"reason"}),
+		kubernetesSkippedServices: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "mc_gateway_kubernetes_skipped_services",
+			Help: "Number of Kubernetes Services skipped in the latest successfully applied discovery snapshot by low-cardinality reason.",
+		}, []string{"reason"}),
 		activeConnections: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "mc_gateway_active_connections",
 			Help: "Currently active accepted Minecraft gateway client connections.",
@@ -150,6 +170,7 @@ func NewRecorder(enabled bool) *Recorder {
 		r.routeDecisionsTotal,
 		r.kubernetesWatchRestartsTotal,
 		r.kubernetesDiscoveryErrorsTotal,
+		r.kubernetesSkippedServices,
 		r.activeConnections,
 		r.configGeneration,
 		r.routes,
@@ -244,6 +265,15 @@ func (r *Recorder) KubernetesDiscoverySync(discoveredRoutes int) {
 	}
 	r.kubernetesDiscoveredRoutes.Set(float64(discoveredRoutes))
 	r.kubernetesLastSuccessfulSyncTime.Set(float64(time.Now().Unix()))
+}
+
+func (r *Recorder) KubernetesSkippedServicesByReason(skippedByReason map[string]int) {
+	if !r.enabled {
+		return
+	}
+	for _, reason := range kubernetesSkippedServiceReasons {
+		r.kubernetesSkippedServices.WithLabelValues(reason).Set(float64(skippedByReason[reason]))
+	}
 }
 
 func (r *Recorder) KubernetesDiscoveryError(reason string) {
