@@ -31,6 +31,9 @@ type routeCandidate struct {
 	Namespace   string
 }
 
+// BuildDiscoveredRoutes is the pure snapshot-construction boundary for Service
+// annotation discovery. It converts a complete ServiceInput set into one
+// complete discovered-route Result without calling the Kubernetes API.
 func BuildDiscoveredRoutes(services []ServiceInput, options Options) Result {
 	prefix := options.AnnotationPrefix
 	if prefix == "" {
