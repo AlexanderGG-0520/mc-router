@@ -366,7 +366,7 @@ The project includes `client-go` dependency and the startup initial-list impleme
 - `ClientServiceLister`: implementation using `client-go`.
 - `ToServiceInput`: pure conversion from `corev1.Service` to `ServiceInput`.
 
-This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for `BuildDiscoveredRoutes`, logs the resulting discovery `Result`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into the startup route snapshot rebuild. The gateway then starts the Service watch controller for runtime updates.
+This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for `BuildDiscoveredRoutes`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into the startup route snapshot rebuild. After the rebuild succeeds, it logs initial-list result stats. The gateway then starts the Service watch controller for runtime updates.
 
 ### Kubernetes Service Watch Controller Core
 
