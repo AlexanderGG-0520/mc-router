@@ -214,6 +214,8 @@ Future Kubernetes Service re-list support for `SIGHUP` reload should preserve th
 - Skipped Service metrics should be updated only after the reload-discovery `Result` is successfully applied to the active route snapshot.
 - If the Kubernetes re-list, discovery result construction, or route snapshot rebuild fails, the previous active route snapshot and previous skipped Service gauge values should remain in place.
 
+The command layer should own reload discovery `Result` metadata. `internal/proxy` should continue to accept route-only providers or route-only data, without Kubernetes skipped metadata or duplicate host details.
+
 The reload re-list design is intentionally open. Before implementation, decide whether `SIGHUP` should force a Kubernetes Service re-list even when the runtime watch is healthy, whether reload should reuse the runtime discovery sink or use a dedicated reload path, how a reload-applied result interacts with the watch controller's next complete replacement event, and whether reload results should update the existing skipped Service gauge as another successfully applied discovery snapshot or need separate reload-specific metric semantics.
 
 ## Duplicate Host Policy
