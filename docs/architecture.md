@@ -185,7 +185,9 @@ Static routes take precedence over discovered routes. `defaultRoute` remains out
 
 Kubernetes watch updates provide a complete replacement discovery `Result`. The runtime converts `Result.Routes` through `SnapshotProvider`, then rebuilds a route snapshot from the latest valid static config plus that route-only provider. It swaps the active snapshot only if the rebuild succeeds. Skipped Services, duplicate host metadata, and skipped reason counts remain discovery result, logging, and metrics concerns rather than route-provider data. Watch controller failures and rebuild failures keep the previous active snapshot. After the first successful sync, watch failures are retried with backoff by relisting Services and opening a new watch.
 
-Kubernetes discovery metrics are updated only after successful runtime syncs and bounded failure points. Rebuild failures increment a discovery error counter and keep the previous discovered route and skipped Service gauges unchanged.
+Kubernetes discovery metrics are updated only after successful runtime syncs and bounded failure points. Rebuild failures increment a discovery error counter and keep the previous discovered route and skipped Service gauges unchanged. `mc_gateway_kubernetes_skipped_services{reason}` currently reflects only the latest successfully applied runtime discovery snapshot.
+
+Startup skipped Service metrics are intentionally deferred. Startup discovery already builds a complete Kubernetes discovery `Result` and logs initial-list summary counts after the startup route snapshot rebuild succeeds, but that metadata does not flow through `RouteProvider`, `SnapshotProvider`, merge data, or `RouteSnapshot`. A future startup skipped metric should receive startup `Result` metadata through an explicit startup discovery metrics boundary instead of widening the route-provider or route-snapshot contracts.
 
 ## Config Reload
 

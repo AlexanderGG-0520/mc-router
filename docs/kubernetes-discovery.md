@@ -183,7 +183,9 @@ When `discovery.kubernetes.enabled` is `true`, startup performs this sequence:
 7. Convert `Result.Routes` through `NewSnapshotProviderFromResult`.
 8. Merge static and discovered routes into the startup route snapshot.
 
-Invalid Service annotations are skipped and reported in the discovery `Result`. Duplicate discovered hosts are also skipped. Neither condition fails startup as long as the Kubernetes API list itself succeeded. Skipped Services, duplicate host metadata, and skipped reason counts stay on the `Result` for logging and runtime metrics; they are not exposed through `RouteProvider`.
+Invalid Service annotations are skipped and reported in the discovery `Result`. Duplicate discovered hosts are also skipped. Neither condition fails startup as long as the Kubernetes API list itself succeeded. Skipped Services, duplicate host metadata, and skipped reason counts stay on the `Result` for startup logging and future startup metrics; they are not exposed through `RouteProvider`.
+
+Startup skipped Service metrics are not implemented yet. The startup initial-list path already has access to the complete startup `Result` and logs its summary counts after the startup route snapshot rebuild succeeds. If startup skipped metrics are added later, that `Result` metadata should flow to the metrics recorder through an explicit startup discovery result or metadata boundary. It must not be passed through `RouteProvider`, `SnapshotProvider`, merge data, or `RouteSnapshot`.
 
 ## Runtime Watch Updates
 
@@ -221,6 +223,8 @@ The controller core applies this policy to the discovered route set before retur
 It uses the Service annotation parser, collects skipped resources by low-cardinality reason, disables duplicate discovered hosts, and returns routes in deterministic order. Invalid resources do not fail the whole snapshot; the builder returns the best valid discovered route set plus skip information in one complete `Result`.
 
 This controller core is used by both startup discovery and runtime watch updates. Startup uses the `Result` for initial-list logging and converts `Result.Routes` to a `SnapshotProvider` before rebuilding the initial route snapshot. Runtime watch updates pass the complete `Result` to the runtime sink, which converts `Result.Routes` to a `SnapshotProvider` before calling `UpdateDiscoveredRoutes`. Runtime discovery metrics track sync, watch retry, rebuild health, and skipped Service counts from the latest successfully applied runtime `Result`.
+
+The startup and runtime metric boundaries are intentionally separate. Runtime skipped Service metrics are recorded from runtime watch `Result.SkippedByReason` after `UpdateDiscoveredRoutes` succeeds. Startup skipped Service metrics are deferred until there is an explicit startup metrics boundary that can receive startup `Result` metadata directly. Keeping that boundary explicit preserves the route-only contract for `RouteProvider` and `SnapshotProvider`, and keeps skipped Service metadata out of route merge state.
 
 Skip reasons are intentionally low-cardinality so future logs and metrics can aggregate them safely:
 
@@ -294,7 +298,7 @@ Metric meanings:
 - `mc_gateway_kubernetes_watch_restarts_total{reason}`: watch supervisor retry/restart count after runtime watch failures.
 - `mc_gateway_kubernetes_watch_running`: `1` while the runtime watch supervisor is running, otherwise `0`.
 - `mc_gateway_kubernetes_last_successful_sync_timestamp_seconds`: Unix timestamp of the last successful discovery sync applied to runtime routing.
-- `mc_gateway_kubernetes_skipped_services{reason}`: number of Kubernetes Services skipped in the latest successfully applied runtime discovery snapshot by bounded skip reason.
+- `mc_gateway_kubernetes_skipped_services{reason}`: number of Kubernetes Services skipped in the latest successfully applied runtime discovery snapshot by bounded skip reason. Startup initial-list skips are not recorded in this metric yet.
 - `mc_gateway_kubernetes_discovery_errors_total{reason}`: discovery/runtime errors by bounded reason.
 
 `mc_gateway_kubernetes_skipped_services{reason}` uses only these reason values:
@@ -334,7 +338,7 @@ Metrics are disabled by default with the rest of the metrics endpoint. When metr
 
 Discovery metrics stay low-cardinality. Do not use namespace, Service name, host, backend, annotation value, Kubernetes resource version, or raw error message as metric labels. Keep labels to bounded values such as `reason`.
 
-Invalid Service annotations and duplicate discovered hosts are not counted in `mc_gateway_kubernetes_discovery_errors_total`; they are route-level skips reported through `mc_gateway_kubernetes_skipped_services{reason}` after a runtime discovery snapshot is successfully applied.
+Invalid Service annotations and duplicate discovered hosts are not counted in `mc_gateway_kubernetes_discovery_errors_total`; they are route-level skips reported through `mc_gateway_kubernetes_skipped_services{reason}` after a runtime discovery snapshot is successfully applied. Startup initial-list skipped Services are logged from the startup `Result`, but they are not exported as skipped Service metrics until a dedicated startup metrics recorder boundary is designed.
 
 ## Security Notes
 
@@ -364,7 +368,7 @@ type RouteProvider interface {
 }
 ```
 
-This interface allows the gateway runtime to fetch a snapshot of discovered routes without knowing the details of the underlying discovery source. It is intentionally route-only: skipped Services, duplicate host metadata, and skipped reason counts remain discovery `Result`, logging, or metrics concerns.
+This interface allows the gateway runtime to fetch a snapshot of discovered routes without knowing the details of the underlying discovery source. It is intentionally route-only: skipped Services, duplicate host metadata, and skipped reason counts remain discovery `Result`, logging, or metrics concerns. Startup metrics must not widen this interface.
 
 ### Memory Provider
 
@@ -372,7 +376,7 @@ A `MemoryProvider` is implemented for tests. It stores a list of discovered rout
 
 ### Kubernetes Snapshot Provider
 
-Kubernetes discovery uses `SnapshotProvider` to expose `Result.Routes` through `RouteProvider`. `NewSnapshotProviderFromResult(result)` copies only the route slice into the provider. It does not expose `Result.Skipped`, `Result.DuplicateHosts`, or `Result.SkippedByReason` through the runtime merge path.
+Kubernetes discovery uses `SnapshotProvider` to expose `Result.Routes` through `RouteProvider`. `NewSnapshotProviderFromResult(result)` copies only the route slice into the provider. It does not expose `Result.Skipped`, `Result.DuplicateHosts`, or `Result.SkippedByReason` through the runtime merge path. Future startup skipped metrics should read startup `Result` metadata before or beside this conversion, not from the provider.
 
 ### Kubernetes Service Initial List
 
@@ -382,7 +386,7 @@ The project includes `client-go` dependency and the startup initial-list impleme
 - `ClientServiceLister`: implementation using `client-go`.
 - `ToServiceInput`: pure conversion from `corev1.Service` to `ServiceInput`.
 
-This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for `BuildDiscoveredRoutes`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into the startup route snapshot rebuild. After the rebuild succeeds, it logs initial-list result stats. The gateway then starts the Service watch controller for runtime updates.
+This implementation fetches a one-time snapshot of Services from the Kubernetes API at startup when Kubernetes discovery is enabled. It prepares Services for `BuildDiscoveredRoutes`, converts `Result.Routes` through `SnapshotProvider`, and feeds that route-only provider into the startup route snapshot rebuild. After the rebuild succeeds, it logs initial-list result stats. It does not record startup skipped Service metrics yet. The gateway then starts the Service watch controller for runtime updates.
 
 ### Kubernetes Service Watch Controller Core
 
@@ -444,7 +448,7 @@ Not implemented yet:
 - CRDs.
 - Wake-up or scale-to-zero controller behavior.
 - REST API or Web UI.
-- Startup skipped Service metrics.
+- Startup skipped Service metrics through an explicit startup discovery `Result` or metadata boundary. They are deferred so skipped metadata is not smuggled through `RouteProvider`, `SnapshotProvider`, merge data, or `RouteSnapshot`.
 
 ## Current Status
 
