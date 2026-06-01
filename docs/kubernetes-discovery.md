@@ -206,6 +206,16 @@ If the watch stream fails after the first successful runtime sync, the superviso
 
 Reload and watch updates are serialized by the server's route snapshot update lock. Active connections keep the snapshot they loaded at connection start. New connections use the latest successfully swapped snapshot.
 
+Future Kubernetes Service re-list support for `SIGHUP` reload should preserve the same discovery boundaries:
+
+- A reload-triggered re-list should not bypass the Service watch/controller result construction path.
+- The re-list should produce a complete Kubernetes discovery `Result` through the same `BuildDiscoveredRoutes` ServiceInput-to-Result boundary.
+- Route application should still convert `Result.Routes` through the route-only `SnapshotProvider` and `RouteProvider` path before rebuilding the route snapshot.
+- Skipped Service metrics should be updated only after the reload-discovery `Result` is successfully applied to the active route snapshot.
+- If the Kubernetes re-list, discovery result construction, or route snapshot rebuild fails, the previous active route snapshot and previous skipped Service gauge values should remain in place.
+
+The reload re-list design is intentionally open. Before implementation, decide whether `SIGHUP` should force a Kubernetes Service re-list even when the runtime watch is healthy, whether reload should reuse the runtime discovery sink or use a dedicated reload path, how a reload-applied result interacts with the watch controller's next complete replacement event, and whether reload results should update the existing skipped Service gauge as another successfully applied discovery snapshot or need separate reload-specific metric semantics.
+
 ## Duplicate Host Policy
 
 Duplicate discovered hosts are unsafe because a controller cannot reliably infer the operator's intended backend. If the same host is discovered more than once, every discovered route for that host is disabled and reported with a duplicate reason. The project avoids first-wins behavior for discovered routes.
