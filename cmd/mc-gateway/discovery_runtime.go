@@ -227,11 +227,11 @@ func newRuntimeDiscoverySink(ctx context.Context, updater discoveredRouteUpdater
 }
 
 func (s *runtimeDiscoverySink) Update(routes []k8sdiscovery.DiscoveredRoute) {
-	s.update(routes, 0, 0)
+	s.update(k8sdiscovery.NewSnapshotProvider(routes), len(routes), 0, 0)
 }
 
 func (s *runtimeDiscoverySink) UpdateResult(result k8sdiscovery.Result) {
-	s.update(result.Routes, len(result.Skipped), len(result.DuplicateHosts))
+	s.update(k8sdiscovery.NewSnapshotProviderFromResult(result), len(result.Routes), len(result.Skipped), len(result.DuplicateHosts))
 }
 
 func (s *runtimeDiscoverySink) ready() <-chan struct{} {
@@ -242,9 +242,8 @@ func (s *runtimeDiscoverySink) synced() <-chan struct{} {
 	return s.syncedCh
 }
 
-func (s *runtimeDiscoverySink) update(routes []k8sdiscovery.DiscoveredRoute, skipped, duplicateHosts int) {
-	routes = append([]k8sdiscovery.DiscoveredRoute(nil), routes...)
-	err := s.updater.UpdateDiscoveredRoutes(s.ctx, k8sdiscovery.NewSnapshotProvider(routes))
+func (s *runtimeDiscoverySink) update(provider discovery.RouteProvider, routes, skipped, duplicateHosts int) {
+	err := s.updater.UpdateDiscoveredRoutes(s.ctx, provider)
 	s.readyOnce.Do(func() {
 		close(s.readyCh)
 	})
@@ -253,10 +252,10 @@ func (s *runtimeDiscoverySink) update(routes []k8sdiscovery.DiscoveredRoute, ski
 	default:
 	}
 	if err != nil {
-		logKubernetesRuntimeSnapshotFailed(s.logger, err, len(routes), skipped, duplicateHosts)
+		logKubernetesRuntimeSnapshotFailed(s.logger, err, routes, skipped, duplicateHosts)
 		return
 	}
-	logKubernetesRuntimeSnapshotUpdated(s.logger, len(routes), skipped, duplicateHosts)
+	logKubernetesRuntimeSnapshotUpdated(s.logger, routes, skipped, duplicateHosts)
 }
 
 func logKubernetesRuntimeDiscoveryStarted(logger *slog.Logger) {

@@ -14,6 +14,11 @@ func NewSnapshotProvider(routes []DiscoveredRoute) *SnapshotProvider {
 	}
 }
 
+// NewSnapshotProviderFromResult returns a provider for the routes in a discovery Result.
+func NewSnapshotProviderFromResult(result Result) *SnapshotProvider {
+	return NewSnapshotProvider(result.Routes)
+}
+
 // Routes returns a copy of the stored discovered routes.
 func (p *SnapshotProvider) Routes(ctx context.Context) ([]DiscoveredRoute, error) {
 	return cloneDiscoveredRoutes(p.routes), nil
