@@ -31,7 +31,7 @@ The Minecraft server image should stay focused on running one server process and
 Implemented in this skeleton:
 
 - TCP listener for Minecraft Java Edition connections.
-- Minecraft handshake parser with VarInt support.
+- Minecraft handshake parser with VarInt support, including Minecraft Java 1.20.5+ transfer intent.
 - Requested `serverAddress` based static route matching.
 - TCP proxying to selected backend `host:port`.
 - Unknown host deny policy, with optional default route policy.
