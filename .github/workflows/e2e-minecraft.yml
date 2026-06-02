@@ -19,6 +19,9 @@ on:
         type: string
         default: "767"
 
+permissions:
+  contents: read
+
 jobs:
   real-minecraft-smoke:
     name: real minecraft server smoke
