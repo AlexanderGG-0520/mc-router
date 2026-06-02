@@ -1,12 +1,14 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 WORKDIR /src
+ARG TARGETOS
+ARG TARGETARCH
 RUN apk add --no-cache ca-certificates
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mc-gateway ./cmd/mc-gateway
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/mc-gateway ./cmd/mc-gateway
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/mc-gateway /mc-gateway
