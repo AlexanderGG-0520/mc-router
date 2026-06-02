@@ -16,6 +16,7 @@ const (
 	HandshakePacketID = 0x00
 	NextStateStatus   = 1
 	NextStateLogin    = 2
+	NextStateTransfer = 3
 )
 
 var (
@@ -117,7 +118,7 @@ func ParseHandshakePayload(payload []byte, limits Limits) (Handshake, error) {
 	if err != nil {
 		return Handshake{}, fmt.Errorf("%w: next state: %w", ErrMalformedHandshake, err)
 	}
-	if nextState != NextStateStatus && nextState != NextStateLogin {
+	if nextState != NextStateStatus && nextState != NextStateLogin && nextState != NextStateTransfer {
 		return Handshake{}, fmt.Errorf("%w: %d", ErrUnsupportedNextState, nextState)
 	}
 	if r.Len() != 0 {

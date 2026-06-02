@@ -33,6 +33,23 @@ func TestReadHandshake(t *testing.T) {
 	}
 }
 
+func TestReadHandshakeAcceptsTransferNextState(t *testing.T) {
+	raw := buildHandshakePacket(t, 765, "transfer.example.com", 25565, NextStateTransfer)
+	got, preserved, err := ReadHandshake(bytes.NewReader(raw), DefaultLimits())
+	if err != nil {
+		t.Fatalf("ReadHandshake returned error: %v", err)
+	}
+	if !bytes.Equal(preserved, raw) {
+		t.Fatalf("preserved bytes changed")
+	}
+	if got.RouteAddress() != "transfer.example.com" {
+		t.Fatalf("route address = %q", got.RouteAddress())
+	}
+	if got.NextState != NextStateTransfer {
+		t.Fatalf("next state = %d, want transfer", got.NextState)
+	}
+}
+
 func TestReadHandshakeRejectsPacketTooLarge(t *testing.T) {
 	raw := append(WriteVarInt(10), []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}...)
 	_, _, err := ReadHandshake(bytes.NewReader(raw), Limits{MaxPacketLength: 4, MaxServerAddressBytes: 255})
@@ -83,7 +100,7 @@ func TestReadHandshakeRejectsUnsupportedPacketID(t *testing.T) {
 }
 
 func TestReadHandshakeRejectsInvalidNextState(t *testing.T) {
-	raw := buildHandshakePacket(t, 765, "smp.example.com", 25565, 99)
+	raw := buildHandshakePacket(t, 765, "smp.example.com", 25565, 4)
 	_, _, err := ReadHandshake(bytes.NewReader(raw), DefaultLimits())
 	if !errors.Is(err, ErrUnsupportedNextState) {
 		t.Fatalf("error = %v, want %v", err, ErrUnsupportedNextState)

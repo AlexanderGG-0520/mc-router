@@ -79,13 +79,13 @@ Manual network acceptance should use at least two backend Minecraft servers and 
 Automated tests now cover:
 
 - VarInt decoding, including malformed overlong VarInts.
-- Handshake parsing for valid login handshakes.
-- Rejection of oversized, truncated, unsupported packet id, invalid next state, invalid hostname, and too-long hostname handshakes.
+- Handshake parsing for valid login and Minecraft Java 1.20.5+ transfer-intent handshakes.
+- Rejection of oversized, truncated, unsupported packet id, unsupported next state, invalid hostname, and too-long hostname handshakes.
 - Static config validation for unknown fields, invalid policy, duplicate route, invalid backend, invalid route hostname, and missing default backend.
 - Route matching for case-insensitive hostnames and trailing dots.
 - Unknown host deny behavior.
 - Default route behavior.
-- Fake-backend TCP proxy integration where the backend receives the original handshake packet plus remaining client bytes.
+- Fake-backend TCP proxy integration where the backend receives the original handshake packet plus remaining client bytes, including transfer-intent handshakes.
 - Malformed handshake denial without connecting to the backend.
 - Idle client handshake read timeout.
 - Server shutdown on context cancellation.
@@ -106,7 +106,7 @@ Automated tests now cover:
 
 The soak test is intentionally small. It is meant to catch obvious lifecycle regressions, data races, and stuck connection handlers during CI. It is not a high-load benchmark, not a capacity test, and not a substitute for an end-to-end test against real Minecraft clients and servers.
 
-The protocol smoke tests use fixed protocol framing helpers and fake TCP backends. They verify that the router preserves the packet stream across state transitions that real clients use first: status and login start. They are not a full protocol compatibility suite. They do not validate encryption, compression, play state packets, or modded protocol extensions. The optional real-server E2E smoke test covers the first status and login-start responses from a real Paper server, but still does not complete encrypted login or play state.
+The protocol smoke tests use fixed protocol framing helpers and fake TCP backends. They verify that the router preserves the packet stream across state transitions that real clients use first: status and login start. Transfer-intent coverage verifies route selection and TCP proxying after a `next_state=3` handshake, but does not generate transfer packets. These tests are not a full protocol compatibility suite. They do not validate encryption, compression, play state packets, or modded protocol extensions. The optional real-server E2E smoke test covers the first status and login-start responses from a real Paper server, but still does not complete encrypted login or play state.
 
 ## Next Implementation Priorities
 
