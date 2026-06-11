@@ -38,6 +38,7 @@ Implemented in this skeleton:
 - Optional fallback responses for denied status pings, backend status dial failures, and denied login starts.
 - Structured JSON logging through Go `log/slog`.
 - Prometheus metrics endpoint when explicitly enabled, including low-cardinality fallback response counters.
+- Optional fixed-backend UDP relay foundation for local transport validation.
 - Handshake read timeout and backend dial timeout.
 - Graceful shutdown on SIGINT/SIGTERM.
 - Unit tests for VarInt, handshake parsing, config loading, and route matching.
@@ -50,7 +51,7 @@ Deferred by design:
 - Kubernetes discovery beyond namespace-scoped Service annotations, such as Pod annotations, EndpointSlice discovery, CRDs, all-namespaces RBAC, or informer-based implementation.
 - Scale-to-zero wake-up and scale-down control.
 - Maintenance fallback behavior.
-- Simple Voice Chat or extra UDP/TCP port routing.
+- Dynamic, Transfer-aware Simple Voice Chat routing.
 - REST API.
 - Web UI.
 - CRD definitions and controllers.
@@ -67,6 +68,14 @@ metrics:
   enabled: true
   listen: ":9090"
   path: "/metrics"
+udpRelay:
+  enabled: false
+  listen: ":24454"
+  backend: "hub:24454"
+  idleTimeout: "30s"
+  backendDialTimeout: "5s"
+  maxSessions: 4096
+  maxPacketSize: 65535
 fallback:
   enabled: true
   login:
@@ -100,6 +109,8 @@ routes:
 
 Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenticated Prometheus text metrics on `metrics.listen` and `metrics.path`. Do not expose this HTTP listener directly to the public internet; it is intended for internal scraping, such as from a Kubernetes cluster Prometheus.
 
+The UDP relay is disabled by default. Set `udpRelay.enabled: true` to bind one UDP listener and forward opaque datagrams bidirectionally to one explicit backend. The relay is a fixed-backend transport foundation only; it does not parse Simple Voice Chat packets, infer backends from TCP routes, or perform Transfer-aware routing.
+
 Fallback responses are counted with `mc_gateway_fallback_responses_total{state,reason}` after a fallback response packet is successfully written. Labels are intentionally bounded: `state` is `status` or `login`, and `reason` is one of the documented low-cardinality lifecycle reasons.
 
 Fallback responses are disabled by default. Set `fallback.enabled: true` and `fallback.status.enabled: true` to answer selected status pings with a minimal Minecraft status response. Route denied status responses default to enabled once status fallback is enabled; backend failure status responses require `fallback.status.respondOnBackendFailure: true` because they can reveal that a configured route exists. Set `fallback.login.enabled: true` to return a protocol 767 login-state disconnect packet for denied login starts.
@@ -124,6 +135,7 @@ go vet ./...
 The normal test suite uses fake protocol backends and does not start a real Minecraft server. A separate optional real-server E2E smoke test is available through a manual GitHub Actions workflow and can also be run locally with Docker. See [docs/e2e.md](docs/e2e.md).
 
 Local research and E2E setup for future Simple Voice Chat support is documented in [docs/voicechat-development.md](docs/voicechat-development.md). Simple Voice Chat remains deferred and is not supported yet.
+A fixed-backend UDP relay foundation is available for local development and transport validation; dynamic, Transfer-aware Simple Voice Chat routing remains deferred.
 
 For release gating, manual smoke checks, and non-blocking post-MVP work, see [docs/v0.1.0-readiness.md](docs/v0.1.0-readiness.md).
 
@@ -164,6 +176,7 @@ Namespace-scoped Kubernetes Service annotation discovery is implemented. If disc
 - Backend dial timeout is configured.
 - Unknown hosts are denied unless explicitly configured to use the default route.
 - Logs include route-level metadata, not raw packet payloads.
+- UDP relay payloads are opaque; relay sessions are bounded transport endpoint mappings, not player identity.
 - Parser and network proxy are separate packages to keep tests focused.
 
 See [docs/security.md](docs/security.md) for more detail.
