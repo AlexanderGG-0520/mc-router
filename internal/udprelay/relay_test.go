@@ -284,22 +284,39 @@ func TestRelayMetricsUseBoundedLabels(t *testing.T) {
 
 func TestConcurrentClients(t *testing.T) {
 	backend := newUDPBackend(t)
-	relay, _, stop := startTestRelay(t, backend.addr(), nil)
+
+	cfg := testConfig(backend.addr())
+	cfg.IdleTimeout = 10 * time.Second
+
+	relay, _, stop := startTestRelayWithConfig(t, cfg, nil)
 	defer stop()
+
 	const clients = 32
-	var wg sync.WaitGroup
+
+	clientConns := make([]*net.UDPConn, 0, clients)
 	for i := 0; i < clients; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			client := newUDPClient(t)
-			defer client.Close()
-			sendUDP(t, client, relay.Addr(), []byte("x"))
-		}()
+		client := newUDPClient(t)
+		clientConns = append(clientConns, client)
 	}
+	defer func() {
+		for _, client := range clientConns {
+			_ = client.Close()
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for _, client := range clientConns {
+		wg.Add(1)
+		go func(client *net.UDPConn) {
+			defer wg.Done()
+			sendUDP(t, client, relay.Addr(), []byte("x"))
+		}(client)
+	}
+
 	for i := 0; i < clients; i++ {
 		_ = backend.read(t)
 	}
+
 	wg.Wait()
 	waitRelaySessionCount(t, relay, clients)
 }
