@@ -11,9 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	"github.com/AlexanderGG-0520/mc-router/internal/logging"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxy"
+	"github.com/AlexanderGG-0520/mc-router/internal/udprelay"
 )
 
 func main() {
@@ -55,6 +57,12 @@ func run(configPath string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	udpRuntime, err := startUDPRelay(ctx, cfg, logger, server.Metrics())
+	if err != nil {
+		cancel()
+		waitMetricsShutdown(ctx, metricsServer)
+		return err
+	}
 
 	reloadCh := make(chan os.Signal, 1)
 	if signals := reloadSignals(); len(signals) > 0 {
@@ -69,11 +77,38 @@ func run(configPath string, logger *slog.Logger) error {
 	go func() {
 		proxyErrCh <- server.ListenAndServe(ctx)
 	}()
-	err = waitForServers(ctx, cancel, server, proxyErrCh, metricsServer)
+	err = waitForServers(ctx, cancel, server, proxyErrCh, metricsServer, udpRuntime)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
 	return err
+}
+
+type udpRelayRuntime struct {
+	relay *udprelay.Relay
+	done  chan error
+}
+
+func startUDPRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, recorder *gatewaymetrics.Recorder) (*udpRelayRuntime, error) {
+	if !cfg.UDPRelay.Enabled {
+		return nil, nil
+	}
+	relay, err := udprelay.New(udprelay.Config{
+		Listen:             cfg.UDPRelay.Listen,
+		Backend:            cfg.UDPRelay.Backend,
+		IdleTimeout:        cfg.UDPRelay.IdleTimeout.Duration,
+		BackendDialTimeout: cfg.UDPRelay.BackendDialTimeout.Duration,
+		MaxSessions:        cfg.UDPRelay.MaxSessions,
+		MaxPacketSize:      cfg.UDPRelay.MaxPacketSize,
+	}, logger, recorder)
+	if err != nil {
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- relay.Serve(ctx)
+	}()
+	return &udpRelayRuntime{relay: relay, done: done}, nil
 }
 
 func recordStartupDiscoveryMetrics(recorder *gatewaymetrics.Recorder, report *startupDiscoveryReport) {
@@ -98,21 +133,35 @@ func serveReloadSignals(ctx context.Context, reloadCh <-chan os.Signal, configPa
 	}
 }
 
-func waitForServers(ctx context.Context, cancel context.CancelFunc, server *proxy.Server, proxyErrCh <-chan error, metricsServer *gatewaymetrics.HTTPServer) error {
+func waitForServers(ctx context.Context, cancel context.CancelFunc, server *proxy.Server, proxyErrCh <-chan error, metricsServer *gatewaymetrics.HTTPServer, udpRuntime *udpRelayRuntime) error {
 	select {
 	case err := <-proxyErrCh:
 		cancel()
+		waitUDPRelayShutdown(udpRuntime)
 		waitMetricsShutdown(ctx, metricsServer)
 		return err
 	case err := <-metricsServerDone(metricsServer):
 		cancel()
+		waitUDPRelayShutdown(udpRuntime)
 		server.Shutdown()
 		proxyErr := <-proxyErrCh
 		if err != nil {
 			return err
 		}
 		return proxyErr
+	case err := <-udpRelayDone(udpRuntime):
+		cancel()
+		server.Shutdown()
+		waitMetricsShutdown(ctx, metricsServer)
+		return err
 	}
+}
+
+func udpRelayDone(udpRuntime *udpRelayRuntime) <-chan error {
+	if udpRuntime == nil {
+		return nil
+	}
+	return udpRuntime.done
 }
 
 func metricsServerDone(metricsServer *gatewaymetrics.HTTPServer) <-chan error {
@@ -134,4 +183,12 @@ func waitMetricsShutdown(ctx context.Context, metricsServer *gatewaymetrics.HTTP
 		_ = metricsServer.Shutdown(shutdownCtx)
 		<-metricsServer.Done()
 	}
+}
+
+func waitUDPRelayShutdown(udpRuntime *udpRelayRuntime) {
+	if udpRuntime == nil {
+		return
+	}
+	_ = udpRuntime.relay.Close()
+	<-udpRuntime.done
 }
