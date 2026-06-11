@@ -41,9 +41,9 @@ func TestProxyForwardsHandshakeAndRemainingBytesToKnownBackend(t *testing.T) {
 
 	handshake := buildHandshakePacket(765, "SMP.Example.COM.", 25565, mcproto.NextStateLogin)
 	remaining := []byte{0x01, 0x02, 0x03, 0x04}
-	client := dialAndWrite(t, gatewayAddr, append(append([]byte{}, handshake...), remaining...))
+	client := dialAndWrite(t, gatewayAddr, []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x00})
 	defer client.Close()
-	closeClientWrite(t, client)
+	readClosed(t, client)
 
 	got := waitBytes(t, backendBytes)
 	want := append(append([]byte{}, handshake...), remaining...)
