@@ -50,6 +50,18 @@ const (
 	KubernetesDiscoveryErrorReasonWatchError                = "watch_error"
 	KubernetesDiscoveryErrorReasonWatchSetupFailed          = "watch_setup_failed"
 	KubernetesDiscoveryErrorReasonUnknown                   = "unknown"
+
+	UDPPacketDirectionClientToBackend = "client_to_backend"
+	UDPPacketDirectionBackendToClient = "backend_to_client"
+
+	UDPPacketResultForwarded           = "forwarded"
+	UDPPacketResultDroppedSessionLimit = "dropped_session_limit"
+	UDPPacketResultDroppedReadError    = "dropped_read_error"
+	UDPPacketResultDroppedWriteError   = "dropped_write_error"
+
+	UDPSessionCloseReasonIdleTimeout  = "idle_timeout"
+	UDPSessionCloseReasonBackendError = "backend_error"
+	UDPSessionCloseReasonShutdown     = "shutdown"
 )
 
 var kubernetesSkippedServiceReasons = []string{
@@ -78,6 +90,11 @@ type Recorder struct {
 	kubernetesWatchRestartsTotal     *prometheus.CounterVec
 	kubernetesDiscoveryErrorsTotal   *prometheus.CounterVec
 	kubernetesSkippedServices        *prometheus.GaugeVec
+	udpPacketsTotal                  *prometheus.CounterVec
+	udpBytesTotal                    *prometheus.CounterVec
+	udpSessions                      prometheus.Gauge
+	udpSessionsCreatedTotal          prometheus.Counter
+	udpSessionsClosedTotal           *prometheus.CounterVec
 	activeConnections                prometheus.Gauge
 	configGeneration                 prometheus.Gauge
 	routes                           prometheus.Gauge
@@ -127,6 +144,26 @@ func NewRecorder(enabled bool) *Recorder {
 			Name: "mc_gateway_kubernetes_skipped_services",
 			Help: "Number of Kubernetes Services skipped in the latest successfully applied discovery snapshot by low-cardinality reason.",
 		}, []string{"reason"}),
+		udpPacketsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_udp_packets_total",
+			Help: "UDP relay packet events by low-cardinality direction and result.",
+		}, []string{"direction", "result"}),
+		udpBytesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_udp_bytes_total",
+			Help: "UDP relay bytes forwarded by low-cardinality direction.",
+		}, []string{"direction"}),
+		udpSessions: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "mc_gateway_udp_sessions",
+			Help: "Currently active UDP relay transport sessions.",
+		}),
+		udpSessionsCreatedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "mc_gateway_udp_sessions_created_total",
+			Help: "UDP relay transport sessions created.",
+		}),
+		udpSessionsClosedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_udp_sessions_closed_total",
+			Help: "UDP relay transport sessions closed by low-cardinality reason.",
+		}, []string{"reason"}),
 		activeConnections: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "mc_gateway_active_connections",
 			Help: "Currently active accepted Minecraft gateway client connections.",
@@ -171,6 +208,11 @@ func NewRecorder(enabled bool) *Recorder {
 		r.kubernetesWatchRestartsTotal,
 		r.kubernetesDiscoveryErrorsTotal,
 		r.kubernetesSkippedServices,
+		r.udpPacketsTotal,
+		r.udpBytesTotal,
+		r.udpSessions,
+		r.udpSessionsCreatedTotal,
+		r.udpSessionsClosedTotal,
 		r.activeConnections,
 		r.configGeneration,
 		r.routes,
@@ -281,4 +323,30 @@ func (r *Recorder) KubernetesDiscoveryError(reason string) {
 		return
 	}
 	r.kubernetesDiscoveryErrorsTotal.WithLabelValues(reason).Inc()
+}
+
+func (r *Recorder) UDPPacket(direction string, result string, bytes int) {
+	if !r.enabled {
+		return
+	}
+	r.udpPacketsTotal.WithLabelValues(direction, result).Inc()
+	if result == UDPPacketResultForwarded {
+		r.udpBytesTotal.WithLabelValues(direction).Add(float64(bytes))
+	}
+}
+
+func (r *Recorder) UDPSessionCreated() {
+	if !r.enabled {
+		return
+	}
+	r.udpSessionsCreatedTotal.Inc()
+	r.udpSessions.Inc()
+}
+
+func (r *Recorder) UDPSessionClosed(reason string) {
+	if !r.enabled {
+		return
+	}
+	r.udpSessionsClosedTotal.WithLabelValues(reason).Inc()
+	r.udpSessions.Dec()
 }

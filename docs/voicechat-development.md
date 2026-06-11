@@ -1,10 +1,26 @@
 # Simple Voice Chat Development
 
-This document defines the local research environment for future Simple Voice Chat support. It does not describe supported production UDP routing. `mc-router` currently routes Minecraft TCP handshakes only.
+This document defines the local research environment for future Simple Voice Chat support. `mc-router` supports Minecraft TCP routing and a fixed-backend UDP relay foundation for local transport validation. Dynamic, Transfer-aware Simple Voice Chat routing remains deferred.
 
 ## Architecture Under Test
 
-Intended eventual topology:
+Fixed Hub relay topology available in this environment:
+
+```text
+Minecraft client
+  ├─ TCP 25565
+  │      ↓
+  │   mc-router TCP hostname router
+  │      ↓
+  │   Hub backend
+  └─ UDP 24454
+         ↓
+      mc-router fixed UDP relay
+         ↓
+      Hub Simple Voice Chat UDP 24454
+```
+
+Intended eventual dynamic topology, not implemented yet:
 
 ```text
 Minecraft clients
@@ -16,18 +32,20 @@ Minecraft clients
          └─ Secondary backend
 ```
 
-Only TCP routing currently exists. The Compose environment exposes direct backend UDP ports so captures can establish a known-good Simple Voice Chat baseline before any UDP router is designed.
+The UDP relay currently maps one public UDP listener to one explicitly configured backend endpoint. It does not inspect Simple Voice Chat packets, parse encrypted payloads, associate UDP sessions with Minecraft TCP sessions, route by hostname or player identity, or switch backends after Minecraft Transfer.
+
+The fixed relay identifies a transport session by the full client UDP endpoint, `client IP + client UDP source port`. This is only a UDP transport mapping for one fixed backend. It is not sufficient for future dynamic backend selection, and UDP source-address spoofing cannot be fully prevented at this layer. Production deployments still need appropriate network filtering.
 
 Current local ports:
 
 - `25565/tcp`: `mc-router` public Minecraft TCP entry point.
-- `24454/udp`: reserved on `mc-router` for future voice routing. It is not handled today.
-- `24455/udp`: direct Hub Simple Voice Chat baseline.
+- `24454/udp`: `mc-router` fixed UDP relay to Hub Simple Voice Chat.
+- `24455/udp`: direct Hub Simple Voice Chat baseline that bypasses `mc-router`.
 - `24456/udp`: direct backend Simple Voice Chat baseline.
 - `25566/tcp` and `25567/tcp`: direct backend TCP debugging ports.
 - `25575/tcp` and `25576/tcp`: local RCON ports for Hub and backend.
 
-Simple Voice Chat is installed on both backend servers through `itzg/minecraft-server` Modrinth auto-downloads, pinned to Modrinth version ID `7ROzE7Qh` (`voicechat-bukkit-2.6.18.jar`). The JAR is downloaded into the server data volume at runtime and must not be committed.
+Simple Voice Chat is installed on both backend servers through `itzg/minecraft-server` Modrinth auto-downloads, pinned to Modrinth version ID `7ROzE7Qh` (`voicechat-bukkit-2.6.18.jar`). The JAR is downloaded into the server data volume at runtime and must not be committed. The Hub advertises `hub.mc-router.test:24454`, which is handled by the fixed UDP relay. The direct Hub baseline remains reachable through host UDP `24455`.
 
 ## Local Prerequisites
 
@@ -66,6 +84,30 @@ Inspect logs from another terminal:
 
 ```powershell
 docker compose -f compose.voicechat.yaml logs -f mc-router hub backend
+```
+
+Inspect only the UDP relay lifecycle and session logs:
+
+```powershell
+docker compose -f compose.voicechat.yaml logs -f mc-router | Select-String "udp_relay"
+```
+
+On Linux or macOS:
+
+```bash
+docker compose -f compose.voicechat.yaml logs -f mc-router | grep udp_relay
+```
+
+Inspect UDP relay metrics:
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:9090/metrics | Select-Object -ExpandProperty Content | Select-String "mc_gateway_udp_"
+```
+
+On Linux or macOS:
+
+```bash
+curl -s http://127.0.0.1:9090/metrics | grep mc_gateway_udp_
 ```
 
 Stop the environment without deleting server state:
@@ -112,7 +154,7 @@ If the server version changes, verify the `transfer` command syntax before relyi
 
 ## Packet Capture Procedure
 
-Host-level capture for the future shared public voice port:
+Host-level capture for the fixed shared public voice port:
 
 ```bash
 sudo tcpdump -ni any udp port 24454 -w voicechat.pcap
@@ -140,7 +182,50 @@ Inspect endpoints:
 tcpdump -nn -r voicechat-direct-backends.pcap
 ```
 
-In Wireshark, compare direct-backend traffic against future routed traffic by checking source IP, source UDP port, destination IP, destination UDP port, packet timing, and session changes around Transfer or reconnect events. Do not infer protocol fields from encrypted-looking payloads until upstream source inspection or packet captures confirm what is visible.
+In Wireshark, compare direct-backend traffic against fixed-relay traffic by checking source IP, source UDP port, destination IP, destination UDP port, packet timing, and session changes around Transfer or reconnect events. Do not infer protocol fields from encrypted-looking payloads until upstream source inspection or packet captures confirm what is visible.
+
+## Fixed Hub Relay Manual Checklist
+
+### Fixed Hub relay test
+
+1. Build and start Compose.
+2. Connect one real Minecraft client with the Simple Voice Chat client mod to `hub.mc-router.test:25565`.
+3. Confirm the client reports Voice Chat connected.
+4. Confirm UDP packets pass through `mc-router` on host UDP `24454`.
+5. Connect a second real client to the Hub and confirm speaking/listening works.
+6. Confirm `mc_gateway_udp_packets_total`, `mc_gateway_udp_bytes_total`, and `mc_gateway_udp_sessions` change in the metrics endpoint.
+
+### Same-IP test
+
+1. Connect two clients from the same machine or LAN.
+2. Confirm `mc-router` debug logs show distinct UDP session endpoints with different client source ports.
+3. Confirm no audio or backend reply crosses between clients.
+
+### Restart test
+
+1. Restart the Hub:
+
+   ```powershell
+   docker compose -f compose.voicechat.yaml restart hub
+   ```
+
+2. Confirm stale UDP sessions expire from `mc-router`.
+3. Confirm clients can reconnect without restarting `mc-router`.
+
+### Router restart test
+
+1. Restart `mc-router`:
+
+   ```powershell
+   docker compose -f compose.voicechat.yaml restart mc-router
+   ```
+
+2. Confirm clients can establish new Voice Chat sessions.
+3. Record whether the Simple Voice Chat client reconnects automatically or requires a manual reconnect.
+
+### Fault test
+
+Using the existing scoped nettools environment, test packet loss, latency, jitter, and temporary backend UDP unavailability. Expected relay behavior is transport-level only: packets may be delayed or dropped by the injected fault, stale sessions expire after the configured idle timeout, and new client packets create fresh sessions when the backend is reachable. Do not treat this as a Simple Voice Chat protocol guarantee.
 
 ## Research Questions
 
@@ -220,19 +305,20 @@ Disconnect the Minecraft client, wait for voice session cleanup evidence in logs
 
 | Test | Setup | Action | Expected result | Evidence to collect |
 | --- | --- | --- | --- | --- |
-| One client on Hub | Start Compose, client has Simple Voice Chat mod | Connect to `hub.mc-router.test:25565` | TCP route reaches Hub; direct Hub voice baseline connects to `24455/udp` | Client UI, Hub logs, UDP capture |
-| Two clients on Hub | Two modded clients on Hub | Both join Hub | Both are present; voice sessions are distinct | Client UI, Hub logs, endpoint tuples |
+| One client on Hub through fixed relay | Start Compose, client has Simple Voice Chat mod | Connect to `hub.mc-router.test:25565` | TCP route reaches Hub; fixed Hub voice relay connects through `24454/udp` | Client UI, Hub logs, router UDP logs, UDP metrics |
+| Two clients on Hub through fixed relay | Two modded clients on Hub | Both join Hub | Both are present; full UDP endpoint sessions are distinct | Client UI, Hub logs, endpoint tuples, router UDP logs |
+| Direct Hub voice baseline | Start Compose and capture `24455/udp` | Connect to Hub direct TCP debug port if needed | Direct Hub voice path bypasses `mc-router` | Client UI, Hub logs, UDP capture |
 | Direct backend voice connection | Start backend and capture `24456/udp` | Connect to `backend.mc-router.test:25565` | TCP route reaches backend; direct backend voice baseline connects | Backend logs, UDP capture |
 | Both clients speaking bidirectionally | Two clients on same backend | Speak from each client | Audio is bidirectional on direct baseline | Client observations, captures |
 | One client transfers to backend | One client on Hub | Run Hub RCON `transfer` command | Client reconnects to backend TCP route | RCON output, router logs, captures before/after |
 | Both clients transfer to backend | Two clients on Hub | Transfer both clients | Both clients reach backend and voice remains backend-local | Router logs, backend logs, captures |
 | Client returns to Hub | Client on backend | Transfer or reconnect to Hub | Client reaches Hub and voice baseline returns to Hub UDP port | Router logs, captures |
 | Backend restart | Client on backend | Restart `backend` service | TCP/voice behavior is observed and documented | Logs, client UI, captures |
-| mc-router restart | Client connected through router | Restart `mc-router` service | TCP behavior is observed; no UDP routing is expected | Router logs, client result |
+| mc-router restart | Client connected through router | Restart `mc-router` service | TCP behavior is observed; new fixed UDP relay sessions can be established | Router logs, client result |
 | Client reconnect | Client connected to Hub or backend | Disconnect and reconnect | New session behavior is documented | Logs, endpoint tuples |
 | Two clients from same public IP or LAN | Two clients behind same NAT/LAN | Both speak on same backend | Sessions remain distinguishable on direct baseline | Endpoint tuples, audio result |
 | Stale session cleanup | Client disconnects unexpectedly | Wait for server cleanup | Stale session lifetime is measured | Logs, capture timestamps |
-| Invalid UDP traffic | Capture running | Send malformed UDP to direct backend and reserved router port | No process crashes; behavior is recorded | Logs, exit status, capture |
+| Invalid UDP traffic | Capture running | Send malformed UDP to direct backend and fixed router relay port | No process crashes; behavior is recorded | Logs, exit status, capture |
 | Sustained voice traffic | Two clients connected | Speak intermittently for at least 30 minutes | No unbounded growth or session confusion is observed | Logs, captures, resource notes |
 
 ## Production-Readiness Gate

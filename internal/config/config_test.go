@@ -51,6 +51,27 @@ routes:
 	if cfg.Metrics.Path != "/metrics" {
 		t.Fatalf("metrics path = %q, want /metrics", cfg.Metrics.Path)
 	}
+	if cfg.UDPRelay.Enabled {
+		t.Fatal("udp relay enabled by default")
+	}
+	if cfg.UDPRelay.Listen != ":24454" {
+		t.Fatalf("udp relay listen = %q, want :24454", cfg.UDPRelay.Listen)
+	}
+	if cfg.UDPRelay.Backend != "127.0.0.1:24454" {
+		t.Fatalf("udp relay backend = %q, want 127.0.0.1:24454", cfg.UDPRelay.Backend)
+	}
+	if cfg.UDPRelay.IdleTimeout.Duration.String() != "30s" {
+		t.Fatalf("udp relay idle timeout = %s, want 30s", cfg.UDPRelay.IdleTimeout.Duration)
+	}
+	if cfg.UDPRelay.BackendDialTimeout.Duration.String() != "5s" {
+		t.Fatalf("udp relay backend dial timeout = %s, want 5s", cfg.UDPRelay.BackendDialTimeout.Duration)
+	}
+	if cfg.UDPRelay.MaxSessions != 4096 {
+		t.Fatalf("udp relay max sessions = %d, want 4096", cfg.UDPRelay.MaxSessions)
+	}
+	if cfg.UDPRelay.MaxPacketSize != MaxUDPRelayPacketSize {
+		t.Fatalf("udp relay max packet size = %d, want %d", cfg.UDPRelay.MaxPacketSize, MaxUDPRelayPacketSize)
+	}
 	if cfg.Discovery.Kubernetes.Enabled {
 		t.Fatal("kubernetes discovery enabled by default")
 	}
@@ -92,6 +113,144 @@ routes:
 	}
 	if cfg.Fallback.Login.RespondOnRouteDenied == nil || !*cfg.Fallback.Login.RespondOnRouteDenied {
 		t.Fatal("fallback login route denied response disabled by default")
+	}
+}
+
+func TestLoadAcceptsUDPRelayConfig(t *testing.T) {
+	cfg, err := Load([]byte(`
+udpRelay:
+  enabled: true
+  listen: "127.0.0.1:24454"
+  backend: "hub:24454"
+  idleTimeout: "45s"
+  backendDialTimeout: "3s"
+  maxSessions: 128
+  maxPacketSize: 1200
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.UDPRelay.Enabled {
+		t.Fatal("udp relay disabled")
+	}
+	if cfg.UDPRelay.Listen != "127.0.0.1:24454" {
+		t.Fatalf("udp relay listen = %q", cfg.UDPRelay.Listen)
+	}
+	if cfg.UDPRelay.Backend != "hub:24454" {
+		t.Fatalf("udp relay backend = %q", cfg.UDPRelay.Backend)
+	}
+	if cfg.UDPRelay.IdleTimeout.Duration.String() != "45s" {
+		t.Fatalf("udp relay idle timeout = %s", cfg.UDPRelay.IdleTimeout.Duration)
+	}
+	if cfg.UDPRelay.BackendDialTimeout.Duration.String() != "3s" {
+		t.Fatalf("udp relay backend dial timeout = %s", cfg.UDPRelay.BackendDialTimeout.Duration)
+	}
+	if cfg.UDPRelay.MaxSessions != 128 {
+		t.Fatalf("udp relay max sessions = %d", cfg.UDPRelay.MaxSessions)
+	}
+	if cfg.UDPRelay.MaxPacketSize != 1200 {
+		t.Fatalf("udp relay max packet size = %d", cfg.UDPRelay.MaxPacketSize)
+	}
+}
+
+func TestLoadIgnoresInvalidUDPRelayFieldsWhenDisabled(t *testing.T) {
+	_, err := Load([]byte(`
+udpRelay:
+  enabled: false
+  listen: ""
+  backend: ""
+  idleTimeout: "0s"
+  backendDialTimeout: "0s"
+  maxSessions: 0
+  maxPacketSize: 0
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error for disabled UDP relay: %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidEnabledUDPRelayConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "empty listen",
+			body: `listen: ""`,
+		},
+		{
+			name: "invalid listen",
+			body: `listen: "bad address"`,
+		},
+		{
+			name: "empty backend",
+			body: `backend: ""`,
+		},
+		{
+			name: "invalid backend port",
+			body: `backend: "hub:not-a-port"`,
+		},
+		{
+			name: "unspecified backend",
+			body: `backend: "0.0.0.0:24454"`,
+		},
+		{
+			name: "multicast backend",
+			body: `backend: "224.0.0.1:24454"`,
+		},
+		{
+			name: "broadcast backend",
+			body: `backend: "255.255.255.255:24454"`,
+		},
+		{
+			name: "zero idle timeout",
+			body: `idleTimeout: "0s"`,
+		},
+		{
+			name: "too large idle timeout",
+			body: `idleTimeout: "25h"`,
+		},
+		{
+			name: "zero backend dial timeout",
+			body: `backendDialTimeout: "0s"`,
+		},
+		{
+			name: "zero max sessions",
+			body: `maxSessions: 0`,
+		},
+		{
+			name: "too many sessions",
+			body: `maxSessions: 65537`,
+		},
+		{
+			name: "zero packet size",
+			body: `maxPacketSize: 0`,
+		},
+		{
+			name: "too large packet size",
+			body: `maxPacketSize: 65536`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load([]byte(`
+udpRelay:
+  enabled: true
+  listen: "127.0.0.1:24454"
+  backend: "hub:24454"
+  idleTimeout: "30s"
+  backendDialTimeout: "5s"
+  maxSessions: 4096
+  maxPacketSize: 65535
+  ` + tt.body + `
+unknownHostPolicy: "deny"
+`))
+			if err == nil {
+				t.Fatal("expected invalid UDP relay config error")
+			}
+		})
 	}
 }
 

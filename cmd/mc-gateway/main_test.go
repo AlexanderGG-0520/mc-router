@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,6 +34,34 @@ import (
 type fakeReloader struct {
 	paths chan string
 	err   error
+}
+
+func TestStartUDPRelayDisabledDoesNotBindPort(t *testing.T) {
+	reserved, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP reserve: %v", err)
+	}
+	addr := reserved.LocalAddr().String()
+	if err := reserved.Close(); err != nil {
+		t.Fatalf("Close reserve: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.UDPRelay.Enabled = false
+	cfg.UDPRelay.Listen = addr
+	runtime, err := startUDPRelay(context.Background(), cfg, discardLogger(), gatewaymetrics.NewRecorder(false))
+	if err != nil {
+		t.Fatalf("startUDPRelay returned error: %v", err)
+	}
+	if runtime != nil {
+		t.Fatal("startUDPRelay returned a runtime when disabled")
+	}
+
+	listener, err := net.ListenUDP("udp", mustResolveUDPAddr(t, addr))
+	if err != nil {
+		t.Fatalf("disabled UDP relay bound %s: %v", addr, err)
+	}
+	_ = listener.Close()
 }
 
 func (f *fakeReloader) ReloadFile(path string) error {
@@ -1566,4 +1595,13 @@ func writeMainFile(t *testing.T, content string) string {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
+func mustResolveUDPAddr(t *testing.T, address string) *net.UDPAddr {
+	t.Helper()
+	addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		t.Fatalf("ResolveUDPAddr: %v", err)
+	}
+	return addr
 }

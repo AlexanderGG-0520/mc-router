@@ -54,6 +54,9 @@ func TestDisabledRecorderIsNoop(t *testing.T) {
 	recorder.KubernetesDiscoverySync(2)
 	recorder.KubernetesSkippedServicesByReason(map[string]int{k8sdiscovery.ReasonInvalidHost: 1})
 	recorder.KubernetesDiscoveryError(KubernetesDiscoveryErrorReasonRebuildFailed)
+	recorder.UDPPacket(UDPPacketDirectionClientToBackend, UDPPacketResultForwarded, 12)
+	recorder.UDPSessionCreated()
+	recorder.UDPSessionClosed(UDPSessionCloseReasonShutdown)
 }
 
 func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
@@ -67,6 +70,10 @@ func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 	recorder.KubernetesDiscoverySync(2)
 	recorder.KubernetesSkippedServicesByReason(map[string]int{k8sdiscovery.ReasonInvalidHost: 1})
 	recorder.KubernetesDiscoveryError(KubernetesDiscoveryErrorReasonRebuildFailed)
+	recorder.UDPPacket(UDPPacketDirectionClientToBackend, UDPPacketResultForwarded, 12)
+	recorder.UDPPacket(UDPPacketDirectionBackendToClient, UDPPacketResultDroppedWriteError, 5)
+	recorder.UDPSessionCreated()
+	recorder.UDPSessionClosed(UDPSessionCloseReasonShutdown)
 
 	server, err := StartHTTP(ctx, config.Metrics{
 		Enabled: true,
@@ -106,6 +113,11 @@ func TestStartHTTPServesPrometheusTextAndStopsWithContext(t *testing.T) {
 		"mc_gateway_kubernetes_discovered_routes",
 		"mc_gateway_kubernetes_skipped_services",
 		"mc_gateway_kubernetes_discovery_errors_total",
+		"mc_gateway_udp_packets_total",
+		"mc_gateway_udp_bytes_total",
+		"mc_gateway_udp_sessions",
+		"mc_gateway_udp_sessions_created_total",
+		"mc_gateway_udp_sessions_closed_total",
 	} {
 		if !strings.Contains(string(body), name) {
 			t.Fatalf("metrics body did not include %s:\n%s", name, string(body))
