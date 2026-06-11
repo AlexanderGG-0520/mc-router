@@ -1,0 +1,142 @@
+name: mc-router-voicechat
+
+services:
+  mc-router:
+    container_name: mc-router-voicechat-router
+    build:
+      context: .
+    image: mc-gateway:voicechat-dev
+    command:
+      - -config
+      - /etc/mc-gateway/voicechat-local.yaml
+      - -log-level
+      - debug
+    depends_on:
+      hub:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    ports:
+      - "25565:25565/tcp"
+      - "127.0.0.1:9090:9090/tcp"
+      # Reserved for future mc-router UDP voice routing. The current binary does
+      # not listen on this port.
+      - "24454:24454/udp"
+    volumes:
+      - ./examples/voicechat-local.yaml:/etc/mc-gateway/voicechat-local.yaml:ro
+    networks:
+      voicechat:
+        aliases:
+          - mc-router.local
+          - hub.mc-router.test
+          - backend.mc-router.test
+
+  hub:
+    container_name: mc-router-voicechat-hub
+    image: itzg/minecraft-server:java21
+    environment:
+      EULA: "${MC_ROUTER_ACCEPT_MINECRAFT_EULA:-FALSE}"
+      TYPE: PAPER
+      VERSION: "1.21.1"
+      ONLINE_MODE: "FALSE"
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: "${MC_ROUTER_VOICECHAT_RCON_PASSWORD:-mc-router-voicechat-local}"
+      MEMORY: 1G
+      MOTD: "mc-router voicechat hub"
+      ENABLE_COMMAND_BLOCK: "true"
+      ACCEPTS_TRANSFERS: "true"
+      MODRINTH_PROJECTS: "paper:simple-voice-chat:7ROzE7Qh"
+      COPY_CONFIG_DEST: /data
+    ports:
+      - "127.0.0.1:25566:25565/tcp"
+      - "127.0.0.1:25575:25575/tcp"
+      # Direct backend UDP baseline for captures. This bypasses mc-router.
+      - "24455:24454/udp"
+    volumes:
+      - hub-data:/data
+      - ./examples/voicechat-local/hub:/config:ro
+    healthcheck:
+      test: mc-health
+      start_period: 2m
+      interval: 10s
+      retries: 30
+    networks:
+      voicechat:
+        aliases:
+          - hub
+
+  backend:
+    container_name: mc-router-voicechat-backend
+    image: itzg/minecraft-server:java21
+    environment:
+      EULA: "${MC_ROUTER_ACCEPT_MINECRAFT_EULA:-FALSE}"
+      TYPE: PAPER
+      VERSION: "1.21.1"
+      ONLINE_MODE: "FALSE"
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: "${MC_ROUTER_VOICECHAT_RCON_PASSWORD:-mc-router-voicechat-local}"
+      RCON_PORT: "25576"
+      MEMORY: 1G
+      MOTD: "mc-router voicechat backend"
+      ACCEPTS_TRANSFERS: "true"
+      MODRINTH_PROJECTS: "paper:simple-voice-chat:7ROzE7Qh"
+      COPY_CONFIG_DEST: /data
+    ports:
+      - "127.0.0.1:25567:25565/tcp"
+      - "127.0.0.1:25576:25576/tcp"
+      # Direct backend UDP baseline for captures. This bypasses mc-router.
+      - "24456:24455/udp"
+    volumes:
+      - backend-data:/data
+      - ./examples/voicechat-local/backend:/config:ro
+    healthcheck:
+      test: mc-health
+      start_period: 2m
+      interval: 10s
+      retries: 30
+    networks:
+      voicechat:
+        aliases:
+          - backend
+
+  hub-nettools:
+    container_name: mc-router-voicechat-hub-nettools
+    image: nicolaka/netshoot:v0.13
+    profiles:
+      - nettools
+    network_mode: "service:hub"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    command:
+      - sleep
+      - infinity
+    depends_on:
+      hub:
+        condition: service_started
+
+  backend-nettools:
+    container_name: mc-router-voicechat-backend-nettools
+    image: nicolaka/netshoot:v0.13
+    profiles:
+      - nettools
+    network_mode: "service:backend"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    command:
+      - sleep
+      - infinity
+    depends_on:
+      backend:
+        condition: service_started
+
+networks:
+  voicechat:
+    name: mc-router-voicechat-net
+
+volumes:
+  hub-data:
+    name: mc-router-voicechat-hub-data
+  backend-data:
+    name: mc-router-voicechat-backend-data

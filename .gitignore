@@ -27,6 +27,21 @@ go.work.sum
 
 # env file
 .env
+.env.*
+!.env.example
+
+# Local Simple Voice Chat research artifacts
+*.pcap
+*.pcapng
+voicechat-captures/
+captures/
+.mc-router-voicechat/
+voicechat-local-data/
+voicechat-server-data/
+voicechat-artifacts/
+voicechat-secrets/
+*.jar
+*.rcon
 
 # Editor/IDE
 # .idea/

@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 
+ARG BUILDPLATFORM=linux/amd64
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 WORKDIR /src
-ARG TARGETOS
-ARG TARGETARCH
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 RUN apk add --no-cache ca-certificates
 COPY go.mod go.sum ./
 RUN go mod download

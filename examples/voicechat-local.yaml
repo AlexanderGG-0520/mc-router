@@ -1,0 +1,32 @@
+listen: ":25565"
+handshakeTimeout: "5s"
+backendDialTimeout: "5s"
+metrics:
+  enabled: true
+  listen: ":9090"
+  path: "/metrics"
+fallback:
+  enabled: true
+  login:
+    enabled: false
+    respondOnRouteDenied: true
+    message: "Server unavailable. Please try again later."
+  status:
+    enabled: true
+    respondOnRouteDenied: true
+    respondOnBackendFailure: false
+    motd: "Server unavailable"
+    protocolName: "mc-gateway"
+    protocolVersion: 767
+    maxPlayers: 0
+    onlinePlayers: 0
+unknownHostPolicy: "deny"
+routes:
+  # Connect to hub.mc-router.test through mc-router's single public TCP entry
+  # point to reach the Hub backend.
+  - serverAddress: "hub.mc-router.test"
+    backend: "hub:25565"
+  # Connect to backend.mc-router.test through the same TCP entry point to reach
+  # the second backend. Hub Transfer tests should target this hostname.
+  - serverAddress: "backend.mc-router.test"
+    backend: "backend:25565"
