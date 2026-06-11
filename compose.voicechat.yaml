@@ -82,14 +82,14 @@ services:
           create_host_path: false
 
       - type: bind
-        source: ./companion/paper/build/libs/mc-router-voicechat-companion-paper-0.1.0-SNAPSHOT.jar
+        source: ./companion/paper/build/libs/mc-router-voicechat-companion-paper-0.2.0.jar
         target: /sources/mc-router-voicechat-companion-paper.jar
         read_only: true
         bind:
           create_host_path: false
 
       - type: bind
-        source: ./companion/fabric/build/libs/mc-router-voicechat-companion-fabric-0.1.0-SNAPSHOT.jar
+        source: ./companion/fabric/build/libs/mc-router-voicechat-companion-fabric-0.2.0.jar
         target: /sources/mc-router-voicechat-companion-fabric.jar
         read_only: true
         bind:
