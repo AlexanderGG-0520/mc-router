@@ -20,6 +20,9 @@ const (
 	RouteModeAllow                     = "allow"
 	KubernetesDiscoveryModeAnnotations = "service-annotations"
 	DefaultKubernetesAnnotationPrefix  = "mc-router.alexandergg.com"
+	MaxUDPRelayIdleTimeout             = 24 * time.Hour
+	MaxUDPRelaySessions                = 65536
+	MaxUDPRelayPacketSize              = 65535
 )
 
 type Duration struct {
@@ -47,6 +50,7 @@ type Config struct {
 	HandshakeTimeout   Duration     `yaml:"handshakeTimeout"`
 	BackendDialTimeout Duration     `yaml:"backendDialTimeout"`
 	Metrics            Metrics      `yaml:"metrics"`
+	UDPRelay           UDPRelay     `yaml:"udpRelay"`
 	Fallback           Fallback     `yaml:"fallback"`
 	Discovery          Discovery    `yaml:"discovery"`
 	DefaultRoute       DefaultRoute `yaml:"defaultRoute"`
@@ -81,6 +85,16 @@ type Metrics struct {
 	Enabled bool   `yaml:"enabled"`
 	Listen  string `yaml:"listen"`
 	Path    string `yaml:"path"`
+}
+
+type UDPRelay struct {
+	Enabled            bool     `yaml:"enabled"`
+	Listen             string   `yaml:"listen"`
+	Backend            string   `yaml:"backend"`
+	IdleTimeout        Duration `yaml:"idleTimeout"`
+	BackendDialTimeout Duration `yaml:"backendDialTimeout"`
+	MaxSessions        int      `yaml:"maxSessions"`
+	MaxPacketSize      int      `yaml:"maxPacketSize"`
 }
 
 type Discovery struct {
@@ -139,6 +153,14 @@ func Defaults() Config {
 			Listen: ":9090",
 			Path:   "/metrics",
 		},
+		UDPRelay: UDPRelay{
+			Listen:             ":24454",
+			Backend:            "127.0.0.1:24454",
+			IdleTimeout:        Duration{Duration: 30 * time.Second},
+			BackendDialTimeout: Duration{Duration: 5 * time.Second},
+			MaxSessions:        4096,
+			MaxPacketSize:      MaxUDPRelayPacketSize,
+		},
 		Discovery: Discovery{
 			Kubernetes: KubernetesDiscovery{
 				Mode:             KubernetesDiscoveryModeAnnotations,
@@ -188,6 +210,9 @@ func (c Config) Validate() error {
 		if !strings.HasPrefix(c.Metrics.Path, "/") {
 			errs = append(errs, errors.New("metrics.path must start with /"))
 		}
+	}
+	if err := validateUDPRelay(c.UDPRelay); err != nil {
+		errs = append(errs, err)
 	}
 	if err := validateKubernetesDiscovery(c.Discovery.Kubernetes); err != nil {
 		errs = append(errs, err)
@@ -247,6 +272,66 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func validateUDPRelay(relay UDPRelay) error {
+	if !relay.Enabled {
+		return nil
+	}
+	var errs []error
+	if strings.TrimSpace(relay.Listen) == "" {
+		errs = append(errs, errors.New("udpRelay.listen must not be empty when udpRelay.enabled is true"))
+	} else if _, err := net.ResolveUDPAddr("udp", relay.Listen); err != nil {
+		errs = append(errs, fmt.Errorf("udpRelay.listen must be a valid UDP listen address: %w", err))
+	}
+	if err := validateBackend(relay.Backend); err != nil {
+		errs = append(errs, fmt.Errorf("udpRelay.backend: %w", err))
+	} else if err := validateUDPBackendAddress(relay.Backend); err != nil {
+		errs = append(errs, fmt.Errorf("udpRelay.backend: %w", err))
+	}
+	if relay.IdleTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("udpRelay.idleTimeout must be positive when udpRelay.enabled is true"))
+	}
+	if relay.IdleTimeout.Duration > MaxUDPRelayIdleTimeout {
+		errs = append(errs, fmt.Errorf("udpRelay.idleTimeout must be no greater than %s", MaxUDPRelayIdleTimeout))
+	}
+	if relay.BackendDialTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("udpRelay.backendDialTimeout must be positive when udpRelay.enabled is true"))
+	}
+	if relay.MaxSessions <= 0 {
+		errs = append(errs, errors.New("udpRelay.maxSessions must be positive when udpRelay.enabled is true"))
+	}
+	if relay.MaxSessions > MaxUDPRelaySessions {
+		errs = append(errs, fmt.Errorf("udpRelay.maxSessions must be no greater than %d", MaxUDPRelaySessions))
+	}
+	if relay.MaxPacketSize <= 0 {
+		errs = append(errs, errors.New("udpRelay.maxPacketSize must be positive when udpRelay.enabled is true"))
+	}
+	if relay.MaxPacketSize > MaxUDPRelayPacketSize {
+		errs = append(errs, fmt.Errorf("udpRelay.maxPacketSize must be no greater than %d", MaxUDPRelayPacketSize))
+	}
+	return errors.Join(errs...)
+}
+
+func validateUDPBackendAddress(backend string) error {
+	host, _, err := net.SplitHostPort(backend)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	if ip.IsUnspecified() {
+		return errors.New("host must not be an unspecified address")
+	}
+	if ip.IsMulticast() {
+		return errors.New("host must not be a multicast address")
+	}
+	if ip4 := ip.To4(); ip4 != nil && ip4.Equal(net.IPv4bcast) {
+		return errors.New("host must not be the IPv4 broadcast address")
+	}
+	return nil
 }
 
 func validateKubernetesDiscovery(k KubernetesDiscovery) error {
