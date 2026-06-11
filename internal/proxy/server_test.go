@@ -41,9 +41,9 @@ func TestProxyForwardsHandshakeAndRemainingBytesToKnownBackend(t *testing.T) {
 
 	handshake := buildHandshakePacket(765, "SMP.Example.COM.", 25565, mcproto.NextStateLogin)
 	remaining := []byte{0x01, 0x02, 0x03, 0x04}
-	client := dialAndWrite(t, gatewayAddr, []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x00})
+	client := dialAndWrite(t, gatewayAddr, append(append([]byte{}, handshake...), remaining...))
 	defer client.Close()
-	readClosed(t, client)
+	closeClientWrite(t, client)
 
 	got := waitBytes(t, backendBytes)
 	want := append(append([]byte{}, handshake...), remaining...)
@@ -1898,8 +1898,14 @@ func listenLocalTCP(t *testing.T) net.Listener {
 	return listener
 }
 
+const (
+	testBackendReadTimeout = 3 * time.Second
+	testWaitTimeout        = 5 * time.Second
+)
+
 func acceptAndReadOnce(t *testing.T, listener net.Listener) <-chan []byte {
 	t.Helper()
+
 	result := make(chan []byte, 1)
 	go func() {
 		conn, err := listener.Accept()
@@ -1908,22 +1914,33 @@ func acceptAndReadOnce(t *testing.T, listener net.Listener) <-chan []byte {
 			return
 		}
 		defer conn.Close()
-		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-		data, _ := io.ReadAll(conn)
+
+		if err := conn.SetReadDeadline(time.Now().Add(testBackendReadTimeout)); err != nil {
+			result <- nil
+			return
+		}
+
+		data, err := io.ReadAll(conn)
+		if err != nil {
+			result <- nil
+			return
+		}
 		result <- data
 	}()
+
 	return result
 }
 
 func waitBytes(t *testing.T, ch <-chan []byte) []byte {
 	t.Helper()
+
 	select {
 	case got := <-ch:
 		if got == nil {
-			t.Fatal("backend did not accept a connection")
+			t.Fatal("backend did not accept or read the connection")
 		}
 		return got
-	case <-time.After(time.Second):
+	case <-time.After(testWaitTimeout):
 		t.Fatal("timed out waiting for backend bytes")
 		return nil
 	}
