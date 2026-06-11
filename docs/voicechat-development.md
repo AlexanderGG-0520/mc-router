@@ -1,6 +1,6 @@
 # Simple Voice Chat Development
 
-This document defines the local research environment for future Simple Voice Chat support. `mc-router` supports Minecraft TCP routing and a fixed-backend UDP relay foundation for local transport validation. Dynamic, Transfer-aware Simple Voice Chat routing remains deferred.
+This document defines the local research environment for future Simple Voice Chat support. `mc-router` supports Minecraft TCP routing and a fixed-backend UDP relay foundation for local transport validation. Dynamic, Transfer-aware Simple Voice Chat routing is under development and is documented in [voicechat-routing-design.md](voicechat-routing-design.md).
 
 ## Architecture Under Test
 
@@ -33,6 +33,8 @@ Minecraft clients
 ```
 
 The UDP relay currently maps one public UDP listener to one explicitly configured backend endpoint. It does not inspect Simple Voice Chat packets, parse encrypted payloads, associate UDP sessions with Minecraft TCP sessions, route by hostname or player identity, or switch backends after Minecraft Transfer.
+
+The dynamic routing investigation found that transparent mc-router-only routing is not sufficient: mc-router does not see the encrypted Minecraft plugin messages that establish Simple Voice Chat sessions. See [voicechat-routing-design.md](voicechat-routing-design.md) for the verified protocol findings and selected future companion-registration architecture.
 
 The fixed relay identifies a transport session by the full client UDP endpoint, `client IP + client UDP source port`. This is only a UDP transport mapping for one fixed backend. It is not sufficient for future dynamic backend selection, and UDP source-address spoofing cannot be fully prevented at this layer. Production deployments still need appropriate network filtering.
 
