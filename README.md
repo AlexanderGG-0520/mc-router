@@ -135,7 +135,7 @@ go vet ./...
 The normal test suite uses fake protocol backends and does not start a real Minecraft server. A separate optional real-server E2E smoke test is available through a manual GitHub Actions workflow and can also be run locally with Docker. See [docs/e2e.md](docs/e2e.md).
 
 Local research and E2E setup for future Simple Voice Chat support is documented in [docs/voicechat-development.md](docs/voicechat-development.md). Simple Voice Chat remains deferred and is not supported yet.
-A fixed-backend UDP relay foundation is available for local development and transport validation; dynamic, Transfer-aware Simple Voice Chat routing remains deferred.
+A fixed-backend UDP relay foundation is available for local development and transport validation. Dynamic and Transfer-aware Simple Voice Chat routing is under development; see [docs/voicechat-routing-design.md](docs/voicechat-routing-design.md).
 
 For release gating, manual smoke checks, and non-blocking post-MVP work, see [docs/v0.1.0-readiness.md](docs/v0.1.0-readiness.md).
 
