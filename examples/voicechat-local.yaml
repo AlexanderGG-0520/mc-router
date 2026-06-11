@@ -5,6 +5,14 @@ metrics:
   enabled: true
   listen: ":9090"
   path: "/metrics"
+udpRelay:
+  enabled: true
+  listen: ":24454"
+  backend: "hub:24454"
+  idleTimeout: "30s"
+  backendDialTimeout: "5s"
+  maxSessions: 4096
+  maxPacketSize: 65535
 fallback:
   enabled: true
   login:
