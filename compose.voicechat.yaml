@@ -111,9 +111,7 @@ services:
     restart: "no"
   mc-router:
     container_name: mc-router-voicechat-router
-    build:
-      context: .
-    image: mc-gateway:voicechat-dev
+    image: alecjp02/mc-router:v0.2.0
     command:
       - -config
       - /etc/mc-gateway/voicechat-local.yaml
