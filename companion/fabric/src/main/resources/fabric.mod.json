@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "mc_router_voicechat_companion",
+  "version": "${version}",
+  "name": "mc-router Voice Chat Companion",
+  "description": "Registers Simple Voice Chat sessions with mc-router before UDP authentication.",
+  "authors": [
+    "AlexanderGG-0520"
+  ],
+  "environment": "server",
+  "entrypoints": {
+    "server": [
+      "com.alecofc.mcrouter.voicechat.companion.fabric.McRouterVoicechatFabricMod"
+    ],
+    "voicechat": [
+      "com.alecofc.mcrouter.voicechat.companion.fabric.McRouterVoicechatFabricMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.18.4",
+    "minecraft": "26.1.x",
+    "java": ">=21",
+    "voicechat": ">=2.6.18"
+  }
+}

@@ -5,14 +5,26 @@ metrics:
   enabled: true
   listen: ":9090"
   path: "/metrics"
-udpRelay:
+voiceChat:
   enabled: true
   listen: ":24454"
-  backend: "hub:24454"
-  idleTimeout: "30s"
-  backendDialTimeout: "5s"
-  maxSessions: 4096
-  maxPacketSize: 65535
+  registration:
+    listen: ":9091"
+    registrationTTL: "30s"
+    requestTimeout: "5s"
+    maxRegistrations: 4096
+  session:
+    idleTimeout: "30s"
+    backendDialTimeout: "5s"
+    maxSessions: 4096
+    maxPacketSize: 65535
+  backends:
+    hub:
+      udp: "hub:24454"
+      tokenEnv: "VOICECHAT_TOKEN_HUB"
+    survival:
+      udp: "survival:24454"
+      tokenEnv: "VOICECHAT_TOKEN_SURVIVAL"
 fallback:
   enabled: true
   login:
@@ -34,7 +46,7 @@ routes:
   # point to reach the Hub backend.
   - serverAddress: "hub.mc-router.test"
     backend: "hub:25565"
-  # Connect to backend.mc-router.test through the same TCP entry point to reach
-  # the second backend. Hub Transfer tests should target this hostname.
-  - serverAddress: "backend.mc-router.test"
-    backend: "backend:25565"
+  # Connect to survival.mc-router.test through the same TCP entry point to reach
+  # the Fabric Survival backend. Hub Transfer tests should target this hostname.
+  - serverAddress: "survival.mc-router.test"
+    backend: "survival:25565"

@@ -72,6 +72,12 @@ routes:
 	if cfg.UDPRelay.MaxPacketSize != MaxUDPRelayPacketSize {
 		t.Fatalf("udp relay max packet size = %d, want %d", cfg.UDPRelay.MaxPacketSize, MaxUDPRelayPacketSize)
 	}
+	if cfg.VoiceChat.Enabled {
+		t.Fatal("voicechat enabled by default")
+	}
+	if cfg.VoiceChat.Listen != ":24454" {
+		t.Fatalf("voicechat listen = %q, want :24454", cfg.VoiceChat.Listen)
+	}
 	if cfg.Discovery.Kubernetes.Enabled {
 		t.Fatal("kubernetes discovery enabled by default")
 	}
@@ -113,6 +119,125 @@ routes:
 	}
 	if cfg.Fallback.Login.RespondOnRouteDenied == nil || !*cfg.Fallback.Login.RespondOnRouteDenied {
 		t.Fatal("fallback login route denied response disabled by default")
+	}
+}
+
+func TestLoadAcceptsVoiceChatConfig(t *testing.T) {
+	t.Setenv("VOICECHAT_TOKEN_HUB", "hub-secret")
+	t.Setenv("VOICECHAT_TOKEN_SURVIVAL", "survival-secret")
+	cfg, err := Load([]byte(`
+voiceChat:
+  enabled: true
+  listen: "127.0.0.1:24454"
+  registration:
+    listen: "127.0.0.1:9091"
+    registrationTTL: "45s"
+    requestTimeout: "2s"
+    maxRegistrations: 128
+  session:
+    idleTimeout: "40s"
+    backendDialTimeout: "3s"
+    maxSessions: 256
+    maxPacketSize: 1200
+  backends:
+    hub:
+      udp: "hub:24454"
+      tokenEnv: "VOICECHAT_TOKEN_HUB"
+    survival:
+      udp: "survival:24454"
+      tokenEnv: "VOICECHAT_TOKEN_SURVIVAL"
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.VoiceChat.Enabled {
+		t.Fatal("voicechat disabled")
+	}
+	if cfg.VoiceChat.Backends["hub"].Token() != "hub-secret" {
+		t.Fatal("hub token was not loaded from environment")
+	}
+	if cfg.VoiceChat.Backends["survival"].Token() != "survival-secret" {
+		t.Fatal("survival token was not loaded from environment")
+	}
+}
+
+func TestLoadRejectsInvalidVoiceChatConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		env  map[string]string
+	}{
+		{name: "empty listen", body: `listen: ""`},
+		{name: "invalid registration listen", body: `registration: { listen: "bad address" }`},
+		{name: "zero registration ttl", body: `registration: { registrationTTL: "0s" }`},
+		{name: "zero request timeout", body: `registration: { requestTimeout: "0s" }`},
+		{name: "zero registration limit", body: `registration: { maxRegistrations: 0 }`},
+		{name: "zero session idle timeout", body: `session: { idleTimeout: "0s" }`},
+		{name: "zero backend dial timeout", body: `session: { backendDialTimeout: "0s" }`},
+		{name: "zero max sessions", body: `session: { maxSessions: 0 }`},
+		{name: "too large packet size", body: `session: { maxPacketSize: 65536 }`},
+		{name: "empty backend map", body: `backends: {}`},
+		{name: "invalid backend udp", body: `backends: { hub: { udp: "hub:not-a-port", tokenEnv: "VOICECHAT_TOKEN_HUB" } }`},
+		{name: "missing token env", body: `backends: { hub: { udp: "hub:24454", tokenEnv: "VOICECHAT_TOKEN_MISSING" } }`},
+		{name: "duplicate token", body: `
+backends:
+  hub: { udp: "hub:24454", tokenEnv: "VOICECHAT_TOKEN_HUB" }
+  survival: { udp: "survival:24454", tokenEnv: "VOICECHAT_TOKEN_SURVIVAL" }
+`, env: map[string]string{"VOICECHAT_TOKEN_HUB": "same-token", "VOICECHAT_TOKEN_SURVIVAL": "same-token"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("VOICECHAT_TOKEN_HUB", "hub-secret")
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			_, err := Load([]byte(`
+voiceChat:
+  enabled: true
+  listen: "127.0.0.1:24454"
+  registration:
+    listen: "127.0.0.1:9091"
+    registrationTTL: "30s"
+    requestTimeout: "5s"
+    maxRegistrations: 4096
+  session:
+    idleTimeout: "30s"
+    backendDialTimeout: "5s"
+    maxSessions: 4096
+    maxPacketSize: 65535
+  backends:
+    hub:
+      udp: "hub:24454"
+      tokenEnv: "VOICECHAT_TOKEN_HUB"
+  ` + tt.body + `
+unknownHostPolicy: "deny"
+`))
+			if err == nil {
+				t.Fatal("expected invalid voicechat config error")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsFixedAndDynamicVoiceChatListenConflict(t *testing.T) {
+	t.Setenv("VOICECHAT_TOKEN_HUB", "hub-secret")
+	_, err := Load([]byte(`
+udpRelay:
+  enabled: true
+  listen: "127.0.0.1:24454"
+  backend: "hub:24454"
+voiceChat:
+  enabled: true
+  listen: "127.0.0.1:24454"
+  backends:
+    hub:
+      udp: "hub:24454"
+      tokenEnv: "VOICECHAT_TOKEN_HUB"
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected fixed and dynamic voicechat conflict")
 	}
 }
 
