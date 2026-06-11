@@ -16,6 +16,7 @@ import (
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxy"
 	"github.com/AlexanderGG-0520/mc-router/internal/udprelay"
+	"github.com/AlexanderGG-0520/mc-router/internal/voicechat"
 )
 
 func main() {
@@ -63,6 +64,13 @@ func run(configPath string, logger *slog.Logger) error {
 		waitMetricsShutdown(ctx, metricsServer)
 		return err
 	}
+	voiceRuntime, err := startVoiceChat(ctx, cfg, logger, server.Metrics())
+	if err != nil {
+		cancel()
+		waitUDPRelayShutdown(udpRuntime)
+		waitMetricsShutdown(ctx, metricsServer)
+		return err
+	}
 
 	reloadCh := make(chan os.Signal, 1)
 	if signals := reloadSignals(); len(signals) > 0 {
@@ -77,7 +85,7 @@ func run(configPath string, logger *slog.Logger) error {
 	go func() {
 		proxyErrCh <- server.ListenAndServe(ctx)
 	}()
-	err = waitForServers(ctx, cancel, server, proxyErrCh, metricsServer, udpRuntime)
+	err = waitForServers(ctx, cancel, server, proxyErrCh, metricsServer, udpRuntime, voiceRuntime)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
@@ -87,6 +95,11 @@ func run(configPath string, logger *slog.Logger) error {
 type udpRelayRuntime struct {
 	relay *udprelay.Relay
 	done  chan error
+}
+
+type voiceChatRuntime struct {
+	runtime *voicechat.Runtime
+	done    chan error
 }
 
 func startUDPRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, recorder *gatewaymetrics.Recorder) (*udpRelayRuntime, error) {
@@ -111,6 +124,39 @@ func startUDPRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 	return &udpRelayRuntime{relay: relay, done: done}, nil
 }
 
+func startVoiceChat(ctx context.Context, cfg config.Config, logger *slog.Logger, recorder *gatewaymetrics.Recorder) (*voiceChatRuntime, error) {
+	if !cfg.VoiceChat.Enabled {
+		return nil, nil
+	}
+	backends := make(map[string]voicechat.BackendConfig, len(cfg.VoiceChat.Backends))
+	for id, backend := range cfg.VoiceChat.Backends {
+		backends[id] = voicechat.BackendConfig{
+			UDP:   backend.UDP,
+			Token: backend.Token(),
+		}
+	}
+	runtime, err := voicechat.NewRuntime(voicechat.Config{
+		Listen:             cfg.VoiceChat.Listen,
+		RegistrationListen: cfg.VoiceChat.Registration.Listen,
+		RegistrationTTL:    cfg.VoiceChat.Registration.RegistrationTTL.Duration,
+		RequestTimeout:     cfg.VoiceChat.Registration.RequestTimeout.Duration,
+		MaxRegistrations:   cfg.VoiceChat.Registration.MaxRegistrations,
+		IdleTimeout:        cfg.VoiceChat.Session.IdleTimeout.Duration,
+		BackendDialTimeout: cfg.VoiceChat.Session.BackendDialTimeout.Duration,
+		MaxSessions:        cfg.VoiceChat.Session.MaxSessions,
+		MaxPacketSize:      cfg.VoiceChat.Session.MaxPacketSize,
+		Backends:           backends,
+	}, logger, recorder)
+	if err != nil {
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- runtime.Serve(ctx)
+	}()
+	return &voiceChatRuntime{runtime: runtime, done: done}, nil
+}
+
 func recordStartupDiscoveryMetrics(recorder *gatewaymetrics.Recorder, report *startupDiscoveryReport) {
 	if recorder == nil || report == nil {
 		return
@@ -133,15 +179,17 @@ func serveReloadSignals(ctx context.Context, reloadCh <-chan os.Signal, configPa
 	}
 }
 
-func waitForServers(ctx context.Context, cancel context.CancelFunc, server *proxy.Server, proxyErrCh <-chan error, metricsServer *gatewaymetrics.HTTPServer, udpRuntime *udpRelayRuntime) error {
+func waitForServers(ctx context.Context, cancel context.CancelFunc, server *proxy.Server, proxyErrCh <-chan error, metricsServer *gatewaymetrics.HTTPServer, udpRuntime *udpRelayRuntime, voiceRuntime *voiceChatRuntime) error {
 	select {
 	case err := <-proxyErrCh:
 		cancel()
+		waitVoiceChatShutdown(voiceRuntime)
 		waitUDPRelayShutdown(udpRuntime)
 		waitMetricsShutdown(ctx, metricsServer)
 		return err
 	case err := <-metricsServerDone(metricsServer):
 		cancel()
+		waitVoiceChatShutdown(voiceRuntime)
 		waitUDPRelayShutdown(udpRuntime)
 		server.Shutdown()
 		proxyErr := <-proxyErrCh
@@ -151,6 +199,13 @@ func waitForServers(ctx context.Context, cancel context.CancelFunc, server *prox
 		return proxyErr
 	case err := <-udpRelayDone(udpRuntime):
 		cancel()
+		waitVoiceChatShutdown(voiceRuntime)
+		server.Shutdown()
+		waitMetricsShutdown(ctx, metricsServer)
+		return err
+	case err := <-voiceChatDone(voiceRuntime):
+		cancel()
+		waitUDPRelayShutdown(udpRuntime)
 		server.Shutdown()
 		waitMetricsShutdown(ctx, metricsServer)
 		return err
@@ -169,6 +224,13 @@ func metricsServerDone(metricsServer *gatewaymetrics.HTTPServer) <-chan error {
 		return nil
 	}
 	return metricsServer.Done()
+}
+
+func voiceChatDone(voiceRuntime *voiceChatRuntime) <-chan error {
+	if voiceRuntime == nil {
+		return nil
+	}
+	return voiceRuntime.done
 }
 
 func waitMetricsShutdown(ctx context.Context, metricsServer *gatewaymetrics.HTTPServer) {
@@ -191,4 +253,12 @@ func waitUDPRelayShutdown(udpRuntime *udpRelayRuntime) {
 	}
 	_ = udpRuntime.relay.Close()
 	<-udpRuntime.done
+}
+
+func waitVoiceChatShutdown(voiceRuntime *voiceChatRuntime) {
+	if voiceRuntime == nil {
+		return
+	}
+	_ = voiceRuntime.runtime.Close()
+	<-voiceRuntime.done
 }

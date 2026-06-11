@@ -46,3 +46,7 @@ voicechat-secrets/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Java/Gradle build artifacts
+.gradle/
+build/

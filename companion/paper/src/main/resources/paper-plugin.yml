@@ -1,0 +1,14 @@
+name: mc-router-voicechat-companion
+main: com.alecofc.mcrouter.voicechat.companion.paper.McRouterVoicechatPaperPlugin
+version: ${version}
+description: Registers Simple Voice Chat sessions with mc-router before UDP authentication.
+api-version: "1.21.8"
+load: POSTWORLD
+authors:
+  - AlexanderGG-0520
+dependencies:
+  server:
+    voicechat:
+      load: BEFORE
+      required: true
+      join-classpath: true

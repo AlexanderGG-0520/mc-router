@@ -23,6 +23,7 @@ const (
 	MaxUDPRelayIdleTimeout             = 24 * time.Hour
 	MaxUDPRelaySessions                = 65536
 	MaxUDPRelayPacketSize              = 65535
+	MaxVoiceChatRegistrations          = 65536
 )
 
 type Duration struct {
@@ -51,6 +52,7 @@ type Config struct {
 	BackendDialTimeout Duration     `yaml:"backendDialTimeout"`
 	Metrics            Metrics      `yaml:"metrics"`
 	UDPRelay           UDPRelay     `yaml:"udpRelay"`
+	VoiceChat          VoiceChat    `yaml:"voiceChat"`
 	Fallback           Fallback     `yaml:"fallback"`
 	Discovery          Discovery    `yaml:"discovery"`
 	DefaultRoute       DefaultRoute `yaml:"defaultRoute"`
@@ -95,6 +97,38 @@ type UDPRelay struct {
 	BackendDialTimeout Duration `yaml:"backendDialTimeout"`
 	MaxSessions        int      `yaml:"maxSessions"`
 	MaxPacketSize      int      `yaml:"maxPacketSize"`
+}
+
+type VoiceChat struct {
+	Enabled      bool                    `yaml:"enabled"`
+	Listen       string                  `yaml:"listen"`
+	Registration VoiceRegistration       `yaml:"registration"`
+	Session      VoiceSession            `yaml:"session"`
+	Backends     map[string]VoiceBackend `yaml:"backends"`
+}
+
+type VoiceRegistration struct {
+	Listen           string   `yaml:"listen"`
+	RegistrationTTL  Duration `yaml:"registrationTTL"`
+	RequestTimeout   Duration `yaml:"requestTimeout"`
+	MaxRegistrations int      `yaml:"maxRegistrations"`
+}
+
+type VoiceSession struct {
+	IdleTimeout        Duration `yaml:"idleTimeout"`
+	BackendDialTimeout Duration `yaml:"backendDialTimeout"`
+	MaxSessions        int      `yaml:"maxSessions"`
+	MaxPacketSize      int      `yaml:"maxPacketSize"`
+}
+
+type VoiceBackend struct {
+	UDP      string `yaml:"udp"`
+	TokenEnv string `yaml:"tokenEnv"`
+	token    string
+}
+
+func (b VoiceBackend) Token() string {
+	return b.token
 }
 
 type Discovery struct {
@@ -161,6 +195,21 @@ func Defaults() Config {
 			MaxSessions:        4096,
 			MaxPacketSize:      MaxUDPRelayPacketSize,
 		},
+		VoiceChat: VoiceChat{
+			Listen: ":24454",
+			Registration: VoiceRegistration{
+				Listen:           "127.0.0.1:9091",
+				RegistrationTTL:  Duration{Duration: 30 * time.Second},
+				RequestTimeout:   Duration{Duration: 5 * time.Second},
+				MaxRegistrations: 4096,
+			},
+			Session: VoiceSession{
+				IdleTimeout:        Duration{Duration: 30 * time.Second},
+				BackendDialTimeout: Duration{Duration: 5 * time.Second},
+				MaxSessions:        4096,
+				MaxPacketSize:      MaxUDPRelayPacketSize,
+			},
+		},
 		Discovery: Discovery{
 			Kubernetes: KubernetesDiscovery{
 				Mode:             KubernetesDiscoveryModeAnnotations,
@@ -213,6 +262,12 @@ func (c Config) Validate() error {
 	}
 	if err := validateUDPRelay(c.UDPRelay); err != nil {
 		errs = append(errs, err)
+	}
+	if err := validateVoiceChat(&c.VoiceChat); err != nil {
+		errs = append(errs, err)
+	}
+	if c.UDPRelay.Enabled && c.VoiceChat.Enabled && c.UDPRelay.Listen == c.VoiceChat.Listen {
+		errs = append(errs, errors.New("udpRelay and voiceChat cannot use the same listen address"))
 	}
 	if err := validateKubernetesDiscovery(c.Discovery.Kubernetes); err != nil {
 		errs = append(errs, err)
@@ -270,6 +325,93 @@ func (c Config) Validate() error {
 		if err := validateBackend(route.Backend); err != nil {
 			errs = append(errs, fmt.Errorf("routes[%d].backend: %w", i, err))
 		}
+	}
+	return errors.Join(errs...)
+}
+
+func validateVoiceChat(voice *VoiceChat) error {
+	if !voice.Enabled {
+		return nil
+	}
+	var errs []error
+	if strings.TrimSpace(voice.Listen) == "" {
+		errs = append(errs, errors.New("voiceChat.listen must not be empty when voiceChat.enabled is true"))
+	} else if _, err := net.ResolveUDPAddr("udp", voice.Listen); err != nil {
+		errs = append(errs, fmt.Errorf("voiceChat.listen must be a valid UDP listen address: %w", err))
+	}
+	if strings.TrimSpace(voice.Registration.Listen) == "" {
+		errs = append(errs, errors.New("voiceChat.registration.listen must not be empty when voiceChat.enabled is true"))
+	} else if _, err := net.ResolveTCPAddr("tcp", voice.Registration.Listen); err != nil {
+		errs = append(errs, fmt.Errorf("voiceChat.registration.listen must be a valid TCP listen address: %w", err))
+	}
+	if voice.Registration.RegistrationTTL.Duration <= 0 {
+		errs = append(errs, errors.New("voiceChat.registration.registrationTTL must be positive when voiceChat.enabled is true"))
+	}
+	if voice.Registration.RegistrationTTL.Duration > MaxUDPRelayIdleTimeout {
+		errs = append(errs, fmt.Errorf("voiceChat.registration.registrationTTL must be no greater than %s", MaxUDPRelayIdleTimeout))
+	}
+	if voice.Registration.RequestTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("voiceChat.registration.requestTimeout must be positive when voiceChat.enabled is true"))
+	}
+	if voice.Registration.MaxRegistrations <= 0 {
+		errs = append(errs, errors.New("voiceChat.registration.maxRegistrations must be positive when voiceChat.enabled is true"))
+	}
+	if voice.Registration.MaxRegistrations > MaxVoiceChatRegistrations {
+		errs = append(errs, fmt.Errorf("voiceChat.registration.maxRegistrations must be no greater than %d", MaxVoiceChatRegistrations))
+	}
+	if voice.Session.IdleTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("voiceChat.session.idleTimeout must be positive when voiceChat.enabled is true"))
+	}
+	if voice.Session.IdleTimeout.Duration > MaxUDPRelayIdleTimeout {
+		errs = append(errs, fmt.Errorf("voiceChat.session.idleTimeout must be no greater than %s", MaxUDPRelayIdleTimeout))
+	}
+	if voice.Session.BackendDialTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("voiceChat.session.backendDialTimeout must be positive when voiceChat.enabled is true"))
+	}
+	if voice.Session.MaxSessions <= 0 {
+		errs = append(errs, errors.New("voiceChat.session.maxSessions must be positive when voiceChat.enabled is true"))
+	}
+	if voice.Session.MaxSessions > MaxUDPRelaySessions {
+		errs = append(errs, fmt.Errorf("voiceChat.session.maxSessions must be no greater than %d", MaxUDPRelaySessions))
+	}
+	if voice.Session.MaxPacketSize <= 0 {
+		errs = append(errs, errors.New("voiceChat.session.maxPacketSize must be positive when voiceChat.enabled is true"))
+	}
+	if voice.Session.MaxPacketSize > MaxUDPRelayPacketSize {
+		errs = append(errs, fmt.Errorf("voiceChat.session.maxPacketSize must be no greater than %d", MaxUDPRelayPacketSize))
+	}
+	if len(voice.Backends) == 0 {
+		errs = append(errs, errors.New("voiceChat.backends must contain at least one backend when voiceChat.enabled is true"))
+	}
+	seenTokens := map[string]string{}
+	for id, backend := range voice.Backends {
+		if strings.TrimSpace(id) == "" {
+			errs = append(errs, errors.New("voiceChat.backends contains an empty backend ID"))
+		}
+		if strings.ContainsAny(id, " \t\r\n/") {
+			errs = append(errs, fmt.Errorf("voiceChat.backends[%q] backend ID must not contain whitespace or /", id))
+		}
+		if err := validateBackend(backend.UDP); err != nil {
+			errs = append(errs, fmt.Errorf("voiceChat.backends[%q].udp: %w", id, err))
+		} else if err := validateUDPBackendAddress(backend.UDP); err != nil {
+			errs = append(errs, fmt.Errorf("voiceChat.backends[%q].udp: %w", id, err))
+		}
+		if strings.TrimSpace(backend.TokenEnv) == "" {
+			errs = append(errs, fmt.Errorf("voiceChat.backends[%q].tokenEnv must not be empty", id))
+			continue
+		}
+		token := os.Getenv(backend.TokenEnv)
+		if strings.TrimSpace(token) == "" {
+			errs = append(errs, fmt.Errorf("voiceChat.backends[%q].tokenEnv %q is not set or is empty", id, backend.TokenEnv))
+			continue
+		}
+		if other, ok := seenTokens[token]; ok {
+			errs = append(errs, fmt.Errorf("voiceChat.backends[%q].tokenEnv duplicates token for backend %q", id, other))
+			continue
+		}
+		seenTokens[token] = id
+		backend.token = token
+		voice.Backends[id] = backend
 	}
 	return errors.Join(errs...)
 }

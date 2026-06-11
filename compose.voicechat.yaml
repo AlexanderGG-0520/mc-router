@@ -1,6 +1,114 @@
 name: mc-router-voicechat
 
 services:
+  volume-permissions:
+    image: alpine:3.22
+    user: "0:0"
+    command:
+      - sh
+      - -ec
+      - |
+        for file in \
+          /sources/simple-voice-chat-paper.jar \
+          /sources/simple-voice-chat-fabric.jar \
+          /sources/fabric-api.jar \
+          /sources/mc-router-voicechat-companion-paper.jar \
+          /sources/mc-router-voicechat-companion-fabric.jar \
+          /sources/hub-voicechat-server.properties \
+          /sources/survival-voicechat-server.properties
+        do
+          test -f "$$file" || {
+            echo "Required source file is missing or is not a regular file: $$file" >&2
+            exit 1
+          }
+          done
+
+        mkdir -p \
+          /hub-data/plugins/voicechat \
+          /survival-data/mods \
+          /survival-data/config/voicechat
+
+        cp /sources/simple-voice-chat-paper.jar \
+          /hub-data/plugins/simple-voice-chat.jar
+
+        cp /sources/mc-router-voicechat-companion-paper.jar \
+          /hub-data/plugins/mc-router-voicechat-companion.jar
+
+        cp /sources/hub-voicechat-server.properties \
+          /hub-data/plugins/voicechat/voicechat-server.properties
+
+        cp /sources/fabric-api.jar \
+          /survival-data/mods/fabric-api.jar
+
+        cp /sources/simple-voice-chat-fabric.jar \
+          /survival-data/mods/simple-voice-chat.jar
+
+        cp /sources/mc-router-voicechat-companion-fabric.jar \
+          /survival-data/mods/mc-router-voicechat-companion.jar
+
+        cp /sources/survival-voicechat-server.properties \
+          /survival-data/config/voicechat/voicechat-server.properties
+
+        chown -R 10001:10001 /hub-data /survival-data
+        chmod -R u+rwX,go-rwx /hub-data /survival-data
+    volumes:
+      - type: volume
+        source: hub-data
+        target: /hub-data
+
+      - type: volume
+        source: survival-data
+        target: /survival-data
+
+      - type: bind
+        source: ./local-jars/simple-voice-chat-paper.jar
+        target: /sources/simple-voice-chat-paper.jar
+        read_only: true
+        bind:
+          create_host_path: false
+
+      - type: bind
+        source: ./local-jars/simple-voice-chat-fabric.jar
+        target: /sources/simple-voice-chat-fabric.jar
+        read_only: true
+        bind:
+          create_host_path: false
+
+      - type: bind
+        source: ./local-jars/fabric-api.jar
+        target: /sources/fabric-api.jar
+        read_only: true
+        bind:
+          create_host_path: false
+
+      - type: bind
+        source: ./companion/paper/build/libs/mc-router-voicechat-companion-paper-0.1.0-SNAPSHOT.jar
+        target: /sources/mc-router-voicechat-companion-paper.jar
+        read_only: true
+        bind:
+          create_host_path: false
+
+      - type: bind
+        source: ./companion/fabric/build/libs/mc-router-voicechat-companion-fabric-0.1.0-SNAPSHOT.jar
+        target: /sources/mc-router-voicechat-companion-fabric.jar
+        read_only: true
+        bind:
+          create_host_path: false
+
+      - type: bind
+        source: ./examples/voicechat-local/hub/plugins/voicechat/voicechat-server.properties
+        target: /sources/hub-voicechat-server.properties
+        read_only: true
+        bind:
+          create_host_path: false
+
+      - type: bind
+        source: ./examples/voicechat-local/backend/plugins/voicechat/voicechat-server.properties
+        target: /sources/survival-voicechat-server.properties
+        read_only: true
+        bind:
+          create_host_path: false
+    restart: "no"
   mc-router:
     container_name: mc-router-voicechat-router
     build:
@@ -14,13 +122,17 @@ services:
     depends_on:
       hub:
         condition: service_healthy
-      backend:
+      survival:
         condition: service_healthy
+    environment:
+      VOICECHAT_TOKEN_HUB: "${VOICECHAT_TOKEN_HUB:-change-me-hub-token}"
+      VOICECHAT_TOKEN_SURVIVAL: "${VOICECHAT_TOKEN_SURVIVAL:-change-me-survival-token}"
     ports:
       - "25565:25565/tcp"
       - "127.0.0.1:9090:9090/tcp"
-      # Fixed-backend UDP relay path to the Hub Simple Voice Chat listener.
       - "24454:24454/udp"
+    expose:
+      - "9091/tcp"
     volumes:
       - ./examples/voicechat-local.yaml:/etc/mc-gateway/voicechat-local.yaml:ro
     networks:
@@ -28,76 +140,103 @@ services:
         aliases:
           - mc-router.local
           - hub.mc-router.test
-          - backend.mc-router.test
+          - survival.mc-router.test
 
   hub:
     container_name: mc-router-voicechat-hub
-    image: itzg/minecraft-server:java21
+    image: "${MINECRAFT_SERVER_IMAGE_REPOSITORY:-alecjp02/minecraft-server}:runtime-jre21"
+    command:
+      - /entrypoint.sh
     environment:
-      EULA: "${MC_ROUTER_ACCEPT_MINECRAFT_EULA:-FALSE}"
-      TYPE: PAPER
-      VERSION: "1.21.1"
-      ONLINE_MODE: "FALSE"
-      ENABLE_RCON: "true"
-      RCON_PASSWORD: "${MC_ROUTER_VOICECHAT_RCON_PASSWORD:-mc-router-voicechat-local}"
-      MEMORY: 1G
-      MOTD: "mc-router voicechat hub"
+      EULA: "true"
+      TYPE: "paper"
+      VERSION: "1.21.8"
+
+      ONLINE_MODE: "false"
       ENABLE_COMMAND_BLOCK: "true"
       ACCEPTS_TRANSFERS: "true"
-      MODRINTH_PROJECTS: "paper:simple-voice-chat:7ROzE7Qh"
-      COPY_CONFIG_DEST: /data
+      MOTD: "mc-router voicechat hub"
+
+      MAX_MEMORY: "1G"
+      JVM_XMS: "512M"
+      JVM_XMX: "1G"
+
+      ENABLE_RCON: "true"
+      RCON_PASSWORD: "${MC_ROUTER_VOICECHAT_RCON_PASSWORD:-mc-router-voicechat-local}"
+      RCON_PORT: "25575"
+
+      MC_ROUTER_VOICECHAT_REGISTRATION_URL: "http://mc-router:9091"
+      MC_ROUTER_VOICECHAT_BACKEND_ID: "hub"
+      MC_ROUTER_VOICECHAT_TOKEN: "${VOICECHAT_TOKEN_HUB:-change-me-hub-token}"
+      MC_ROUTER_VOICECHAT_PUBLIC_HOST: "127.0.0.1:24454"
     ports:
       - "127.0.0.1:25566:25565/tcp"
       - "127.0.0.1:25575:25575/tcp"
-      # Direct Hub UDP baseline for captures. This bypasses mc-router and uses
-      # a different host port so the router can own the shared public test port.
-      - "24455:24454/udp"
     volumes:
       - hub-data:/data
-      - ./examples/voicechat-local/hub:/config:ro
     healthcheck:
-      test: mc-health
+      test:
+        - CMD-SHELL
+        - test -f /data/.ready
       start_period: 2m
       interval: 10s
+      timeout: 3s
       retries: 30
     networks:
       voicechat:
         aliases:
           - hub
+    depends_on:
+      volume-permissions:
+        condition: service_completed_successfully
 
-  backend:
-    container_name: mc-router-voicechat-backend
-    image: itzg/minecraft-server:java21
+  survival:
+    container_name: mc-router-voicechat-survival
+    image: "${MINECRAFT_SERVER_IMAGE_REPOSITORY:-alecjp02/minecraft-server}:runtime-jre25"
+    command:
+      - /entrypoint.sh
     environment:
-      EULA: "${MC_ROUTER_ACCEPT_MINECRAFT_EULA:-FALSE}"
-      TYPE: PAPER
-      VERSION: "1.21.1"
-      ONLINE_MODE: "FALSE"
+      EULA: "true"
+      TYPE: "fabric"
+      VERSION: "26.1.2"
+
+      ONLINE_MODE: "false"
+      ACCEPTS_TRANSFERS: "true"
+      MOTD: "mc-router voicechat survival"
+
+      MAX_MEMORY: "1G"
+      JVM_XMS: "512M"
+      JVM_XMX: "1G"
+
       ENABLE_RCON: "true"
       RCON_PASSWORD: "${MC_ROUTER_VOICECHAT_RCON_PASSWORD:-mc-router-voicechat-local}"
       RCON_PORT: "25576"
-      MEMORY: 1G
-      MOTD: "mc-router voicechat backend"
-      ACCEPTS_TRANSFERS: "true"
-      MODRINTH_PROJECTS: "paper:simple-voice-chat:7ROzE7Qh"
-      COPY_CONFIG_DEST: /data
+
+      MC_ROUTER_VOICECHAT_REGISTRATION_URL: "http://mc-router:9091"
+      MC_ROUTER_VOICECHAT_BACKEND_ID: "survival"
+      MC_ROUTER_VOICECHAT_TOKEN: "${VOICECHAT_TOKEN_SURVIVAL:-change-me-survival-token}"
+      MC_ROUTER_VOICECHAT_PUBLIC_HOST: "127.0.0.1:24454"
     ports:
       - "127.0.0.1:25567:25565/tcp"
       - "127.0.0.1:25576:25576/tcp"
-      # Direct backend UDP baseline for captures. This bypasses mc-router.
-      - "24456:24455/udp"
     volumes:
-      - backend-data:/data
-      - ./examples/voicechat-local/backend:/config:ro
+      - survival-data:/data
     healthcheck:
-      test: mc-health
+      test:
+        - CMD-SHELL
+        - test -f /data/.ready
       start_period: 2m
       interval: 10s
+      timeout: 3s
       retries: 30
     networks:
       voicechat:
         aliases:
           - backend
+          - survival
+    depends_on:
+      volume-permissions:
+        condition: service_completed_successfully
 
   hub-nettools:
     container_name: mc-router-voicechat-hub-nettools
@@ -115,12 +254,12 @@ services:
       hub:
         condition: service_started
 
-  backend-nettools:
-    container_name: mc-router-voicechat-backend-nettools
+  survival-nettools:
+    container_name: mc-router-voicechat-survival-nettools
     image: nicolaka/netshoot:v0.13
     profiles:
       - nettools
-    network_mode: "service:backend"
+    network_mode: "service:survival"
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -128,7 +267,7 @@ services:
       - sleep
       - infinity
     depends_on:
-      backend:
+      survival:
         condition: service_started
 
 networks:
@@ -138,5 +277,5 @@ networks:
 volumes:
   hub-data:
     name: mc-router-voicechat-hub-data
-  backend-data:
-    name: mc-router-voicechat-backend-data
+  survival-data:
+    name: mc-router-voicechat-survival-data

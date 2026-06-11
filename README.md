@@ -51,10 +51,107 @@ Deferred by design:
 - Kubernetes discovery beyond namespace-scoped Service annotations, such as Pod annotations, EndpointSlice discovery, CRDs, all-namespaces RBAC, or informer-based implementation.
 - Scale-to-zero wake-up and scale-down control.
 - Maintenance fallback behavior.
-- Dynamic, Transfer-aware Simple Voice Chat routing.
 - REST API.
 - Web UI.
 - CRD definitions and controllers.
+
+## Transfer-Aware Simple Voice Chat Routing
+
+`mc-router` includes an experimental dynamic UDP routing mode for [Simple Voice Chat](https://modrinth.com/plugin/simple-voice-chat).
+
+Unlike the fixed-backend UDP relay, this mode can route a player's Simple Voice Chat UDP traffic to the backend Minecraft server that currently owns that player, including after a Minecraft Transfer.
+
+The architecture consists of:
+
+* the Go-based `mc-gateway`, which owns the shared public UDP listener and the authenticated registration API;
+* a Paper or Fabric companion JAR installed on every participating backend;
+* one configured backend ID and authentication token per Minecraft backend.
+
+The companion registers a player's UUID with `mc-router` before the Simple Voice Chat UDP endpoint is sent to the client. Registrations use short-lived leases and are refreshed while the player remains connected. Replacing a registration closes stale UDP sessions so late replies from the previous backend are not forwarded after Transfer.
+
+Unknown, expired, malformed, or ambiguous sessions fail closed. `mc-router` does not decrypt, inspect, or log voice payloads or Simple Voice Chat secrets.
+
+### Current status
+
+Dynamic Simple Voice Chat routing is experimental and has not yet been declared production-ready.
+
+The following are implemented:
+
+* authenticated backend registration;
+* bounded, expiring player-to-backend leases;
+* UUID-based client UDP routing;
+* backend reassignment after Transfer;
+* stale-session closure;
+* same-IP client isolation;
+* Paper and Fabric companion JARs;
+* unit and local transport tests.
+
+The following still require real-client validation:
+
+* the exact Simple Voice Chat event order during Minecraft Transfer;
+* voice reconnection behavior after Transfer;
+* sustained multi-client operation;
+* backend and gateway restart behavior;
+* deployment behind the intended public UDP endpoint.
+
+A brief interruption in voice connectivity during Transfer is expected. Seamless audio continuity is not currently guaranteed.
+
+### Companion JARs
+
+Build both platform-specific companion JARs with:
+
+```bash
+gradle -p companion :fabric:jar :paper:jar
+```
+
+Generated artifacts:
+
+```text
+companion/fabric/build/libs/mc-router-voicechat-companion-fabric-<version>.jar
+companion/paper/build/libs/mc-router-voicechat-companion-paper-<version>.jar
+```
+
+Install exactly one companion JAR on each backend:
+
+* Fabric: place the Fabric JAR in `mods/`;
+* Paper: place the Paper JAR in `plugins/`.
+
+Simple Voice Chat must be installed separately on every backend. The companion does not bundle or redistribute Simple Voice Chat.
+
+### Required companion configuration
+
+The companion currently reads its configuration from environment variables.
+
+| Variable                                  | Required | Description                                                                 |
+| ----------------------------------------- | -------- | --------------------------------------------------------------------------- |
+| `MC_ROUTER_VOICECHAT_REGISTRATION_URL`    | Yes      | Internal registration API base URL, such as `http://mc-router:9091`         |
+| `MC_ROUTER_VOICECHAT_BACKEND_ID`          | Yes      | Backend ID matching one entry under `voiceChat.backends`                    |
+| `MC_ROUTER_VOICECHAT_TOKEN`               | Yes      | Authentication token assigned to that backend                               |
+| `MC_ROUTER_VOICECHAT_PUBLIC_HOST`         | Yes      | Public Simple Voice Chat endpoint sent to clients, including the UDP port   |
+| `MC_ROUTER_VOICECHAT_INSTANCE_ID`         | No       | Stable owner ID for this server instance; generated at startup when omitted |
+| `MC_ROUTER_VOICECHAT_TTL`                 | No       | Local lease timing basis as an ISO-8601 duration; defaults to `PT30S`       |
+| `MC_ROUTER_VOICECHAT_REFRESH_INTERVAL`    | No       | Lease refresh interval; defaults to half of the configured local TTL        |
+| `MC_ROUTER_VOICECHAT_REQUEST_TIMEOUT`     | No       | Registration HTTP timeout; defaults to `PT5S`                               |
+| `MC_ROUTER_VOICECHAT_MAX_TRACKED_PLAYERS` | No       | Maximum locally tracked players; defaults to `4096`                         |
+
+The registration API must remain on a trusted internal network. Do not expose backend authentication tokens or the registration listener to the public internet.
+
+### Compatibility
+
+The table below describes the versions currently targeted by the source tree. It is not a promise of compatibility with unlisted versions.
+
+| Component                      | Fabric companion | Paper companion                      | Validation status                                                                             |
+| ------------------------------ | ---------------- | ------------------------------------ | --------------------------------------------------------------------------------------------- |
+| Minecraft                      | `26.1.x`         | `1.21.8`                             | Builds successfully; cross-version Transfer environment still requires real-client validation |
+| Java                           | 25               | 21                                   | Compile and JAR packaging verified                                                            |
+| Fabric Loader                  | `>=0.18.4`       | N/A                                  | Matches the Simple Voice Chat 2.6.18 + Minecraft 26.1.2 upstream target                       |
+| Simple Voice Chat runtime      | `>=2.6.18`       | Version compatible with Paper 1.21.8 | API compilation and packaging verified; runtime event behavior still requires validation      |
+| Simple Voice Chat API artifact | `2.6.13`         | `2.6.13`                             | Compile-time dependency only                                                                  |
+| Companion                      | `0.1.0-SNAPSHOT` | `0.1.0-SNAPSHOT`                     | Experimental, unreleased                                                                      |
+
+The inspected Simple Voice Chat upstream target uses Minecraft `26.1.2`, Java 25, Fabric Loader `0.18.4`, and Simple Voice Chat `2.6.18+26.1.2`. The companion currently compiles against the separately published `voicechat-api:2.6.13` artifact. Runtime compatibility must be validated before the first stable companion release.
+
+See [docs/voicechat-routing-design.md](docs/voicechat-routing-design.md) for the protocol investigation, threat model, rejected alternatives, and session lifecycle.
 
 ## Config
 
@@ -134,8 +231,7 @@ go vet ./...
 
 The normal test suite uses fake protocol backends and does not start a real Minecraft server. A separate optional real-server E2E smoke test is available through a manual GitHub Actions workflow and can also be run locally with Docker. See [docs/e2e.md](docs/e2e.md).
 
-Local research and E2E setup for future Simple Voice Chat support is documented in [docs/voicechat-development.md](docs/voicechat-development.md). Simple Voice Chat remains deferred and is not supported yet.
-A fixed-backend UDP relay foundation is available for local development and transport validation. Dynamic and Transfer-aware Simple Voice Chat routing is under development; see [docs/voicechat-routing-design.md](docs/voicechat-routing-design.md).
+Local research and E2E setup for experimental Simple Voice Chat support is documented in [docs/voicechat-development.md](docs/voicechat-development.md). Dynamic, Transfer-aware routing is implemented but remains experimental and requires real-client validation before it is considered production-ready.
 
 For release gating, manual smoke checks, and non-blocking post-MVP work, see [docs/v0.1.0-readiness.md](docs/v0.1.0-readiness.md).
 

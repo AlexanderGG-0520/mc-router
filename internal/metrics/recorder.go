@@ -62,6 +62,35 @@ const (
 	UDPSessionCloseReasonIdleTimeout  = "idle_timeout"
 	UDPSessionCloseReasonBackendError = "backend_error"
 	UDPSessionCloseReasonShutdown     = "shutdown"
+
+	VoiceChatPacketDirectionClientToBackend = "client_to_backend"
+	VoiceChatPacketDirectionBackendToClient = "backend_to_client"
+
+	VoiceChatPacketResultForwarded                  = "forwarded"
+	VoiceChatPacketResultDroppedUnknownSession      = "dropped_unknown_session"
+	VoiceChatPacketResultDroppedExpiredRegistration = "dropped_expired_registration"
+	VoiceChatPacketResultDroppedMalformed           = "dropped_malformed"
+	VoiceChatPacketResultDroppedSessionLimit        = "dropped_session_limit"
+	VoiceChatPacketResultDroppedReadError           = "dropped_read_error"
+	VoiceChatPacketResultDroppedWriteError          = "dropped_write_error"
+
+	VoiceChatSessionCloseReasonIdleTimeout         = "idle_timeout"
+	VoiceChatSessionCloseReasonBackendError        = "backend_error"
+	VoiceChatSessionCloseReasonShutdown            = "shutdown"
+	VoiceChatSessionCloseReasonReassigned          = "reassigned"
+	VoiceChatSessionCloseReasonRegistrationExpired = "registration_expired"
+	VoiceChatSessionCloseReasonUnregistered        = "unregistered"
+
+	VoiceChatRegistrationResultCreated    = "created"
+	VoiceChatRegistrationResultReplaced   = "replaced"
+	VoiceChatRegistrationResultRefreshed  = "refreshed"
+	VoiceChatRegistrationResultDeleted    = "deleted"
+	VoiceChatRegistrationResultExpired    = "expired"
+	VoiceChatRegistrationResultAuthFailed = "auth_failed"
+	VoiceChatRegistrationResultMalformed  = "malformed"
+	VoiceChatRegistrationResultLimit      = "limit"
+	VoiceChatRegistrationResultStaleLease = "stale_lease"
+	VoiceChatRegistrationResultFailed     = "failed"
 )
 
 var kubernetesSkippedServiceReasons = []string{
@@ -95,6 +124,14 @@ type Recorder struct {
 	udpSessions                      prometheus.Gauge
 	udpSessionsCreatedTotal          prometheus.Counter
 	udpSessionsClosedTotal           *prometheus.CounterVec
+	voicechatPacketsTotal            *prometheus.CounterVec
+	voicechatBytesTotal              *prometheus.CounterVec
+	voicechatSessions                prometheus.Gauge
+	voicechatSessionsCreatedTotal    prometheus.Counter
+	voicechatSessionsClosedTotal     *prometheus.CounterVec
+	voicechatRegistrations           prometheus.Gauge
+	voicechatRegistrationEventsTotal *prometheus.CounterVec
+	voicechatBackendSwitchesTotal    prometheus.Counter
 	activeConnections                prometheus.Gauge
 	configGeneration                 prometheus.Gauge
 	routes                           prometheus.Gauge
@@ -164,6 +201,38 @@ func NewRecorder(enabled bool) *Recorder {
 			Name: "mc_gateway_udp_sessions_closed_total",
 			Help: "UDP relay transport sessions closed by low-cardinality reason.",
 		}, []string{"reason"}),
+		voicechatPacketsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_voicechat_packets_total",
+			Help: "Dynamic Simple Voice Chat packet events by low-cardinality direction and result.",
+		}, []string{"direction", "result"}),
+		voicechatBytesTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_voicechat_bytes_total",
+			Help: "Dynamic Simple Voice Chat bytes forwarded by low-cardinality direction.",
+		}, []string{"direction"}),
+		voicechatSessions: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "mc_gateway_voicechat_sessions",
+			Help: "Currently active dynamic Simple Voice Chat UDP transport sessions.",
+		}),
+		voicechatSessionsCreatedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "mc_gateway_voicechat_sessions_created_total",
+			Help: "Dynamic Simple Voice Chat UDP transport sessions created.",
+		}),
+		voicechatSessionsClosedTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_voicechat_sessions_closed_total",
+			Help: "Dynamic Simple Voice Chat UDP transport sessions closed by low-cardinality reason.",
+		}, []string{"reason"}),
+		voicechatRegistrations: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "mc_gateway_voicechat_registrations",
+			Help: "Currently active dynamic Simple Voice Chat backend registrations.",
+		}),
+		voicechatRegistrationEventsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_voicechat_registration_events_total",
+			Help: "Dynamic Simple Voice Chat registration events by low-cardinality result.",
+		}, []string{"result"}),
+		voicechatBackendSwitchesTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "mc_gateway_voicechat_backend_switches_total",
+			Help: "Dynamic Simple Voice Chat backend ownership replacements where the backend changed.",
+		}),
 		activeConnections: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "mc_gateway_active_connections",
 			Help: "Currently active accepted Minecraft gateway client connections.",
@@ -213,6 +282,14 @@ func NewRecorder(enabled bool) *Recorder {
 		r.udpSessions,
 		r.udpSessionsCreatedTotal,
 		r.udpSessionsClosedTotal,
+		r.voicechatPacketsTotal,
+		r.voicechatBytesTotal,
+		r.voicechatSessions,
+		r.voicechatSessionsCreatedTotal,
+		r.voicechatSessionsClosedTotal,
+		r.voicechatRegistrations,
+		r.voicechatRegistrationEventsTotal,
+		r.voicechatBackendSwitchesTotal,
 		r.activeConnections,
 		r.configGeneration,
 		r.routes,
@@ -349,4 +426,51 @@ func (r *Recorder) UDPSessionClosed(reason string) {
 	}
 	r.udpSessionsClosedTotal.WithLabelValues(reason).Inc()
 	r.udpSessions.Dec()
+}
+
+func (r *Recorder) VoiceChatPacket(direction string, result string, bytes int) {
+	if !r.enabled {
+		return
+	}
+	r.voicechatPacketsTotal.WithLabelValues(direction, result).Inc()
+	if result == VoiceChatPacketResultForwarded {
+		r.voicechatBytesTotal.WithLabelValues(direction).Add(float64(bytes))
+	}
+}
+
+func (r *Recorder) VoiceChatSessionCreated() {
+	if !r.enabled {
+		return
+	}
+	r.voicechatSessionsCreatedTotal.Inc()
+	r.voicechatSessions.Inc()
+}
+
+func (r *Recorder) VoiceChatSessionClosed(reason string) {
+	if !r.enabled {
+		return
+	}
+	r.voicechatSessionsClosedTotal.WithLabelValues(reason).Inc()
+	r.voicechatSessions.Dec()
+}
+
+func (r *Recorder) VoiceChatRegistrationsSet(count int) {
+	if !r.enabled {
+		return
+	}
+	r.voicechatRegistrations.Set(float64(count))
+}
+
+func (r *Recorder) VoiceChatRegistrationEvent(result string) {
+	if !r.enabled {
+		return
+	}
+	r.voicechatRegistrationEventsTotal.WithLabelValues(result).Inc()
+}
+
+func (r *Recorder) VoiceChatBackendSwitch() {
+	if !r.enabled {
+		return
+	}
+	r.voicechatBackendSwitchesTotal.Inc()
 }
