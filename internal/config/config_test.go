@@ -169,8 +169,41 @@ unknownHostPolicy: "deny"
 	if cfg.Bedrock.DefaultBackend != "mc-hub.mc-hub.svc.cluster.local:19132" {
 		t.Fatalf("bedrock default backend = %q", cfg.Bedrock.DefaultBackend)
 	}
+	if len(cfg.Bedrock.Routes) != 0 {
+		t.Fatalf("bedrock routes length = %d, want 0", len(cfg.Bedrock.Routes))
+	}
 	if cfg.Bedrock.SessionTimeout.Duration.String() != "45s" {
 		t.Fatalf("bedrock session timeout = %s", cfg.Bedrock.SessionTimeout.Duration)
+	}
+}
+
+func TestLoadAcceptsBedrockRoutes(t *testing.T) {
+	cfg, err := Load([]byte(`
+bedrock:
+  enabled: true
+  listen: "127.0.0.1:19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  sessionTimeout: "45s"
+  routes:
+    - name: hub
+      backend: "mc-hub.mc-hub.svc.cluster.local:19132"
+    - name: creative
+      backend: "mc-creative.mc-creative.svc.cluster.local:19132"
+    - name: survival
+      backend: "mc-survival.mc-survival.svc.cluster.local:19132"
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(cfg.Bedrock.Routes) != 3 {
+		t.Fatalf("bedrock routes length = %d, want 3", len(cfg.Bedrock.Routes))
+	}
+	if cfg.Bedrock.Routes[1].Name != "creative" {
+		t.Fatalf("second bedrock route name = %q", cfg.Bedrock.Routes[1].Name)
+	}
+	if cfg.Bedrock.Routes[1].Backend != "mc-creative.mc-creative.svc.cluster.local:19132" {
+		t.Fatalf("second bedrock route backend = %q", cfg.Bedrock.Routes[1].Backend)
 	}
 }
 
@@ -202,6 +235,15 @@ func TestLoadRejectsInvalidEnabledBedrockConfig(t *testing.T) {
 		{name: "unspecified default backend", body: `defaultBackend: "0.0.0.0:19132"`},
 		{name: "multicast default backend", body: `defaultBackend: "224.0.0.1:19132"`},
 		{name: "broadcast default backend", body: `defaultBackend: "255.255.255.255:19132"`},
+		{name: "empty route name", body: `routes: [{ name: "", backend: "hub:19132" }]`},
+		{name: "duplicate route name", body: `
+routes:
+  - name: hub
+    backend: "hub:19132"
+  - name: hub
+    backend: "other:19132"`},
+		{name: "invalid route backend", body: `routes: [{ name: "hub", backend: "hub:not-a-port" }]`},
+		{name: "unspecified route backend", body: `routes: [{ name: "hub", backend: "0.0.0.0:19132" }]`},
 		{name: "zero session timeout", body: `sessionTimeout: "0s"`},
 		{name: "too large session timeout", body: `sessionTimeout: "25h"`},
 	}

@@ -69,11 +69,29 @@ Known limitations:
 
 ## Bedrock UDP Forwarding
 
-Bedrock Edition uses UDP, normally port `19132`. When `bedrock.enabled` is true, `mc-gateway` binds `bedrock.listen` and forwards opaque UDP datagrams to `bedrock.defaultBackend`.
+Bedrock Edition uses UDP, normally port `19132`. When `bedrock.enabled` is true, `mc-gateway` binds `bedrock.listen` and forwards opaque UDP datagrams to a Bedrock backend resolver. The resolver is configured from `bedrock.defaultBackend` plus optional named `bedrock.routes`.
 
-The Bedrock path maintains one expiring UDP relay session per client UDP address. Packets from a client are sent to the configured default backend, and packets received from that backend session socket are written back to the original client address. Idle sessions expire after `bedrock.sessionTimeout`, and the listener and sessions close when the main process context is cancelled.
+The Bedrock path maintains one expiring UDP relay session per client UDP address. A backend is selected when the first packet for a client UDP address creates a session. All later packets from that same client address use the same backend until the session expires or closes. Packets received from that backend session socket are written back to the original client address. Idle sessions expire after `bedrock.sessionTimeout`, and the listener and sessions close when the main process context is cancelled.
 
-This feature does not parse RakNet or Bedrock packets, does not implement hostname-based Bedrock routing, and does not translate Bedrock protocol to Java protocol. Geyser must run on a backend Minecraft server or separate internal service. The first implementation is a single public UDP entrypoint for one default Geyser backend; Java TCP routing remains unchanged.
+This feature does not parse RakNet or Bedrock packets and does not translate Bedrock protocol to Java protocol. Geyser must run on each backend Minecraft server or separate internal service that should accept Bedrock players.
+
+Named `bedrock.routes` are accepted so operators can describe the intended Geyser backend set:
+
+```yaml
+bedrock:
+  enabled: true
+  listen: ":19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  routes:
+    - name: hub
+      backend: "mc-hub.mc-hub.svc.cluster.local:19132"
+    - name: creative
+      backend: "mc-creative.mc-creative.svc.cluster.local:19132"
+    - name: survival
+      backend: "mc-survival.mc-survival.svc.cluster.local:19132"
+```
+
+Current route selection still falls back to `bedrock.defaultBackend` for new sessions. Unlike the Java TCP handshake, Bedrock UDP traffic does not currently expose a supported requested hostname or backend name to `mc-router` without substantially parsing RakNet/Bedrock protocol state. Host-aware or name-aware Bedrock routing is therefore future work. The design goal remains one public UDP `19132` entrypoint rather than exposing public UDP `19133`, `19134`, and so on per backend. Java TCP routing remains separate and unchanged.
 
 ## Fallback Responses
 

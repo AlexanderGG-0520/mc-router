@@ -10,6 +10,18 @@ bedrock:
   listen: ":19132"
   defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
   sessionTimeout: "30s"
+  # Named Geyser-enabled Bedrock backends. These describe the intended backend
+  # set behind the single public UDP 19132 listener.
+  #
+  # Current selection still falls back to defaultBackend because mc-router does
+  # not yet extract a reliable Bedrock/RakNet routing key.
+  routes:
+    - name: hub
+      backend: "mc-hub.mc-hub.svc.cluster.local:19132"
+    - name: creative
+      backend: "mc-creative.mc-creative.svc.cluster.local:19132"
+    - name: survival
+      backend: "mc-survival.mc-survival.svc.cluster.local:19132"
 # Fallback responses are disabled by default. This example opts in to a
 # generic status response for denied status pings.
 fallback:

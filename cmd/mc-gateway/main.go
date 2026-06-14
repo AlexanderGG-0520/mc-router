@@ -141,9 +141,20 @@ func startBedrock(ctx context.Context, cfg config.Config, logger *slog.Logger, r
 	if !cfg.Bedrock.Enabled {
 		return nil, nil
 	}
+	routes := make([]udprelay.NamedBackendRoute, 0, len(cfg.Bedrock.Routes))
+	for _, route := range cfg.Bedrock.Routes {
+		routes = append(routes, udprelay.NamedBackendRoute{
+			Name:    route.Name,
+			Backend: route.Backend,
+		})
+	}
+	resolver, err := udprelay.NewNamedBackendResolver(cfg.Bedrock.DefaultBackend, routes)
+	if err != nil {
+		return nil, err
+	}
 	relay, err := udprelay.New(udprelay.Config{
 		Listen:             cfg.Bedrock.Listen,
-		Backend:            cfg.Bedrock.DefaultBackend,
+		Resolver:           resolver,
 		IdleTimeout:        cfg.Bedrock.SessionTimeout.Duration,
 		BackendDialTimeout: cfg.BackendDialTimeout.Duration,
 		MaxSessions:        config.MaxUDPRelaySessions,

@@ -102,10 +102,16 @@ type UDPRelay struct {
 }
 
 type Bedrock struct {
-	Enabled        bool     `yaml:"enabled"`
-	Listen         string   `yaml:"listen"`
-	DefaultBackend string   `yaml:"defaultBackend"`
-	SessionTimeout Duration `yaml:"sessionTimeout"`
+	Enabled        bool           `yaml:"enabled"`
+	Listen         string         `yaml:"listen"`
+	DefaultBackend string         `yaml:"defaultBackend"`
+	SessionTimeout Duration       `yaml:"sessionTimeout"`
+	Routes         []BedrockRoute `yaml:"routes"`
+}
+
+type BedrockRoute struct {
+	Name    string `yaml:"name"`
+	Backend string `yaml:"backend"`
 }
 
 type VoiceChat struct {
@@ -490,6 +496,26 @@ func validateBedrock(bedrock Bedrock) error {
 		errs = append(errs, fmt.Errorf("bedrock.defaultBackend: %w", err))
 	} else if err := validateUDPBackendAddress(bedrock.DefaultBackend); err != nil {
 		errs = append(errs, fmt.Errorf("bedrock.defaultBackend: %w", err))
+	}
+	seenRoutes := map[string]struct{}{}
+	for i, route := range bedrock.Routes {
+		name := strings.TrimSpace(route.Name)
+		if name == "" {
+			errs = append(errs, fmt.Errorf("bedrock.routes[%d].name must not be empty", i))
+		} else {
+			if name != route.Name {
+				errs = append(errs, fmt.Errorf("bedrock.routes[%d].name must not contain leading or trailing whitespace", i))
+			}
+			if _, ok := seenRoutes[name]; ok {
+				errs = append(errs, fmt.Errorf("bedrock.routes[%d].name duplicates %q", i, name))
+			}
+			seenRoutes[name] = struct{}{}
+		}
+		if err := validateBackend(route.Backend); err != nil {
+			errs = append(errs, fmt.Errorf("bedrock.routes[%d].backend: %w", i, err))
+		} else if err := validateUDPBackendAddress(route.Backend); err != nil {
+			errs = append(errs, fmt.Errorf("bedrock.routes[%d].backend: %w", i, err))
+		}
 	}
 	if bedrock.SessionTimeout.Duration <= 0 {
 		errs = append(errs, errors.New("bedrock.sessionTimeout must be positive when bedrock.enabled is true"))

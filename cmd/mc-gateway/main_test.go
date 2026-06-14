@@ -126,6 +126,41 @@ func TestStartBedrockForwardsUDPDatagramAndBackendResponse(t *testing.T) {
 	}
 }
 
+func TestStartBedrockRoutesFallbackToDefaultBackend(t *testing.T) {
+	hubBackend := newMainUDPBackend(t)
+	creativeBackend := newMainUDPBackend(t)
+	cfg := config.Defaults()
+	cfg.Bedrock.Enabled = true
+	cfg.Bedrock.Listen = "127.0.0.1:0"
+	cfg.Bedrock.DefaultBackend = hubBackend.addr()
+	cfg.Bedrock.Routes = []config.BedrockRoute{
+		{Name: "hub", Backend: hubBackend.addr()},
+		{Name: "creative", Backend: creativeBackend.addr()},
+	}
+	cfg.Bedrock.SessionTimeout.Duration = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime, err := startBedrock(ctx, cfg, discardLogger(), gatewaymetrics.NewRecorder(false))
+	if err != nil {
+		t.Fatalf("startBedrock returned error: %v", err)
+	}
+	defer func() {
+		cancel()
+		waitBedrockShutdown(runtime)
+	}()
+
+	client := newMainUDPClient(t)
+	defer client.Close()
+
+	sendMainUDP(t, client, runtime.relay.Addr(), []byte("creative-request-without-route-key"))
+	packet := hubBackend.read(t)
+	if !bytes.Equal(packet.payload, []byte("creative-request-without-route-key")) {
+		t.Fatalf("hub backend payload = %q", packet.payload)
+	}
+	assertNoMainBackendPacket(t, creativeBackend)
+}
+
 func (f *fakeReloader) ReloadFile(path string) error {
 	f.paths <- path
 	return f.err
@@ -1454,6 +1489,20 @@ func (b *mainUDPBackend) reply(t *testing.T, to *net.UDPAddr, payload []byte) {
 	t.Helper()
 	if _, err := b.conn.WriteToUDP(payload, to); err != nil {
 		t.Fatalf("backend reply: %v", err)
+	}
+}
+
+func assertNoMainBackendPacket(t *testing.T, backend *mainUDPBackend) {
+	t.Helper()
+	if err := backend.conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline backend: %v", err)
+	}
+	_, _, err := backend.conn.ReadFromUDP(make([]byte, 1))
+	if err == nil {
+		t.Fatal("backend received unexpected packet")
+	}
+	if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("backend read error = %v, want timeout", err)
 	}
 }
 

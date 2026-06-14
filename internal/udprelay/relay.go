@@ -15,10 +15,21 @@ import (
 type Config struct {
 	Listen             string
 	Backend            string
+	Resolver           BackendResolver
 	IdleTimeout        time.Duration
 	BackendDialTimeout time.Duration
 	MaxSessions        int
 	MaxPacketSize      int
+}
+
+type BackendSelection struct {
+	Name string
+	Addr *net.UDPAddr
+}
+
+type BackendResolver interface {
+	ResolveBackend(ctx context.Context, clientAddr *net.UDPAddr, initialPayload []byte) (BackendSelection, error)
+	DefaultBackend() string
 }
 
 type Relay struct {
@@ -27,7 +38,7 @@ type Relay struct {
 	metrics *gatewaymetrics.Recorder
 
 	listener *net.UDPConn
-	backend  *net.UDPAddr
+	resolver BackendResolver
 
 	mu       sync.Mutex
 	sessions map[string]*session
@@ -39,10 +50,11 @@ type Relay struct {
 }
 
 type session struct {
-	relay      *Relay
-	key        string
-	clientAddr *net.UDPAddr
-	backend    *net.UDPConn
+	relay       *Relay
+	key         string
+	clientAddr  *net.UDPAddr
+	backendAddr *net.UDPAddr
+	backend     *net.UDPConn
 
 	mu           sync.Mutex
 	lastActivity time.Time
@@ -72,12 +84,13 @@ func New(cfg Config, logger *slog.Logger, metrics *gatewaymetrics.Recorder) (*Re
 	if err != nil {
 		return nil, fmt.Errorf("resolve UDP listen address %q: %w", cfg.Listen, err)
 	}
-	backendAddr, err := net.ResolveUDPAddr("udp", cfg.Backend)
-	if err != nil {
-		return nil, fmt.Errorf("resolve UDP backend address %q: %w", cfg.Backend, err)
-	}
-	if err := validateBackendAddr(backendAddr); err != nil {
-		return nil, fmt.Errorf("invalid UDP backend address %q: %w", cfg.Backend, err)
+	resolver := cfg.Resolver
+	if resolver == nil {
+		var err error
+		resolver, err = NewStaticBackendResolver(cfg.Backend)
+		if err != nil {
+			return nil, err
+		}
 	}
 	listener, err := net.ListenUDP("udp", listenAddr)
 	if err != nil {
@@ -89,7 +102,7 @@ func New(cfg Config, logger *slog.Logger, metrics *gatewaymetrics.Recorder) (*Re
 		logger:   logger,
 		metrics:  metrics,
 		listener: listener,
-		backend:  backendAddr,
+		resolver: resolver,
 		sessions: make(map[string]*session),
 		closeCh:  make(chan struct{}),
 	}, nil
@@ -103,7 +116,7 @@ func (r *Relay) Addr() string {
 }
 
 func (r *Relay) Serve(ctx context.Context) error {
-	r.logger.Info("udp_relay_started", "address", r.listener.LocalAddr().String(), "backend", r.backend.String())
+	r.logger.Info("udp_relay_started", "address", r.listener.LocalAddr().String(), "backend", r.resolver.DefaultBackend())
 	defer r.logger.Info("udp_relay_stopped")
 
 	r.wg.Add(1)
@@ -159,7 +172,7 @@ func (r *Relay) Close() error {
 }
 
 func (r *Relay) forwardToBackend(ctx context.Context, clientAddr *net.UDPAddr, payload []byte) error {
-	sess, created, err := r.sessionForClient(ctx, clientAddr)
+	sess, created, err := r.sessionForClient(ctx, clientAddr, payload)
 	if err != nil {
 		if errors.Is(err, errSessionLimit) {
 			r.packet(gatewaymetrics.UDPPacketDirectionClientToBackend, gatewaymetrics.UDPPacketResultDroppedSessionLimit, len(payload))
@@ -170,7 +183,7 @@ func (r *Relay) forwardToBackend(ctx context.Context, clientAddr *net.UDPAddr, p
 		return err
 	}
 	if created {
-		r.logger.Debug("udp_relay_session_created", "remote", clientAddr.String())
+		r.logger.Debug("udp_relay_session_created", "remote", clientAddr.String(), "backend", sess.backendAddr.String())
 	}
 	sess.touch()
 	if _, err := sess.writeBackend(payload); err != nil {
@@ -184,7 +197,7 @@ func (r *Relay) forwardToBackend(ctx context.Context, clientAddr *net.UDPAddr, p
 
 var errSessionLimit = errors.New("udp relay session limit reached")
 
-func (r *Relay) sessionForClient(ctx context.Context, clientAddr *net.UDPAddr) (*session, bool, error) {
+func (r *Relay) sessionForClient(ctx context.Context, clientAddr *net.UDPAddr, initialPayload []byte) (*session, bool, error) {
 	key := clientAddr.String()
 	r.mu.Lock()
 	if r.closed {
@@ -201,10 +214,18 @@ func (r *Relay) sessionForClient(ctx context.Context, clientAddr *net.UDPAddr) (
 	}
 	r.mu.Unlock()
 
+	selection, err := r.resolver.ResolveBackend(ctx, cloneUDPAddr(clientAddr), append([]byte(nil), initialPayload...))
+	if err != nil {
+		return nil, false, err
+	}
+	if selection.Addr == nil {
+		return nil, false, errors.New("backend resolver returned empty address")
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, r.cfg.BackendDialTimeout)
 	defer cancel()
 	dialer := net.Dialer{}
-	conn, err := dialer.DialContext(dialCtx, "udp", r.backend.String())
+	conn, err := dialer.DialContext(dialCtx, "udp", selection.Addr.String())
 	if err != nil {
 		return nil, false, err
 	}
@@ -218,6 +239,7 @@ func (r *Relay) sessionForClient(ctx context.Context, clientAddr *net.UDPAddr) (
 		relay:        r,
 		key:          key,
 		clientAddr:   cloneUDPAddr(clientAddr),
+		backendAddr:  cloneUDPAddr(selection.Addr),
 		backend:      udpConn,
 		lastActivity: time.Now(),
 	}

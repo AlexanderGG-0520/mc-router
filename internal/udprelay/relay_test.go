@@ -84,6 +84,82 @@ func TestRelayReusesSessionForSameEndpoint(t *testing.T) {
 	}
 }
 
+func TestNamedBackendResolverFallsBackToDefaultWhenNoRouteKeyAvailable(t *testing.T) {
+	defaultBackend := newUDPBackend(t)
+	creativeBackend := newUDPBackend(t)
+	resolver, err := NewNamedBackendResolver(defaultBackend.addr(), []NamedBackendRoute{
+		{Name: "creative", Backend: creativeBackend.addr()},
+	})
+	if err != nil {
+		t.Fatalf("NewNamedBackendResolver: %v", err)
+	}
+
+	selection, err := resolver.ResolveBackend(context.Background(), nil, []byte("any bedrock datagram"))
+	if err != nil {
+		t.Fatalf("ResolveBackend: %v", err)
+	}
+	if selection.Addr.String() != defaultBackend.addr() {
+		t.Fatalf("resolved backend = %s, want default %s", selection.Addr, defaultBackend.addr())
+	}
+}
+
+func TestRelayKeepsSameClientOnInitiallySelectedBackend(t *testing.T) {
+	backendA := newUDPBackend(t)
+	backendB := newUDPBackend(t)
+	resolver := &rotatingResolver{
+		backends: []*net.UDPAddr{
+			mustResolveUDPAddr(t, backendA.addr()),
+			mustResolveUDPAddr(t, backendB.addr()),
+		},
+	}
+	cfg := testConfig("")
+	cfg.Resolver = resolver
+	relay, _, stop := startTestRelayWithConfig(t, cfg, nil)
+	defer stop()
+	client := newUDPClient(t)
+	defer client.Close()
+
+	sendUDP(t, client, relay.Addr(), []byte("one"))
+	first := backendA.read(t)
+	sendUDP(t, client, relay.Addr(), []byte("two"))
+	second := backendA.read(t)
+	assertNoBackendPacket(t, backendB)
+
+	if first.from.String() != second.from.String() {
+		t.Fatalf("session source changed for same client: %s != %s", first.from, second.from)
+	}
+	if got := resolver.callCount(); got != 1 {
+		t.Fatalf("resolver calls = %d, want 1", got)
+	}
+}
+
+func TestRelayForwardsToSelectedBackend(t *testing.T) {
+	hubBackend := newUDPBackend(t)
+	creativeBackend := newUDPBackend(t)
+	resolver := &payloadResolver{
+		defaultBackend:  mustResolveUDPAddr(t, hubBackend.addr()),
+		creativeBackend: mustResolveUDPAddr(t, creativeBackend.addr()),
+	}
+	cfg := testConfig("")
+	cfg.Resolver = resolver
+	relay, _, stop := startTestRelayWithConfig(t, cfg, nil)
+	defer stop()
+	client := newUDPClient(t)
+	defer client.Close()
+
+	sendUDP(t, client, relay.Addr(), []byte("creative"))
+	packet := creativeBackend.read(t)
+	if !bytes.Equal(packet.payload, []byte("creative")) {
+		t.Fatalf("creative backend payload = %q", packet.payload)
+	}
+	assertNoBackendPacket(t, hubBackend)
+
+	creativeBackend.reply(t, packet.from, []byte("creative-reply"))
+	if got := readUDP(t, client); !bytes.Equal(got, []byte("creative-reply")) {
+		t.Fatalf("client reply = %q, want creative-reply", got)
+	}
+}
+
 func TestRelayExpiresIdleSessionsAndRefreshesActivity(t *testing.T) {
 	backend := newUDPBackend(t)
 	cfg := testConfig(backend.addr())
@@ -330,6 +406,17 @@ type udpBackend struct {
 	conn *net.UDPConn
 }
 
+type rotatingResolver struct {
+	backends []*net.UDPAddr
+	mu       sync.Mutex
+	calls    int
+}
+
+type payloadResolver struct {
+	defaultBackend  *net.UDPAddr
+	creativeBackend *net.UDPAddr
+}
+
 func newUDPBackend(t *testing.T) *udpBackend {
 	t.Helper()
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
@@ -405,6 +492,40 @@ func testConfig(backend string) Config {
 	}
 }
 
+func (r *rotatingResolver) ResolveBackend(context.Context, *net.UDPAddr, []byte) (BackendSelection, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	backend := r.backends[r.calls%len(r.backends)]
+	r.calls++
+	return BackendSelection{Name: "rotating", Addr: cloneUDPAddr(backend)}, nil
+}
+
+func (r *rotatingResolver) DefaultBackend() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.backends) == 0 {
+		return ""
+	}
+	return r.backends[0].String()
+}
+
+func (r *rotatingResolver) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+func (r *payloadResolver) ResolveBackend(_ context.Context, _ *net.UDPAddr, payload []byte) (BackendSelection, error) {
+	if bytes.Equal(payload, []byte("creative")) {
+		return BackendSelection{Name: "creative", Addr: cloneUDPAddr(r.creativeBackend)}, nil
+	}
+	return BackendSelection{Name: "default", Addr: cloneUDPAddr(r.defaultBackend)}, nil
+}
+
+func (r *payloadResolver) DefaultBackend() string {
+	return r.defaultBackend.String()
+}
+
 func newUDPClient(t *testing.T) *net.UDPConn {
 	t.Helper()
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
@@ -423,6 +544,15 @@ func sendUDP(t *testing.T, conn *net.UDPConn, address string, payload []byte) {
 	if _, err := conn.WriteToUDP(payload, addr); err != nil {
 		t.Fatalf("WriteToUDP: %v", err)
 	}
+}
+
+func mustResolveUDPAddr(t *testing.T, address string) *net.UDPAddr {
+	t.Helper()
+	addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		t.Fatalf("ResolveUDPAddr: %v", err)
+	}
+	return addr
 }
 
 func readUDP(t *testing.T, conn *net.UDPConn) []byte {
