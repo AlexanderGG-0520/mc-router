@@ -5,6 +5,11 @@ metrics:
   enabled: true
   listen: ":9090"
   path: "/metrics"
+bedrock:
+  enabled: true
+  listen: ":19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  sessionTimeout: "30s"
 # Fallback responses are disabled by default. This example opts in to a
 # generic status response for denied status pings.
 fallback:
@@ -27,9 +32,11 @@ fallback:
     onlinePlayers: 0
 unknownHostPolicy: "deny"
 defaultRoute:
-  backend: "lobby.default.svc.cluster.local:25565"
+  backend: "mc-hub.mc-hub.svc.cluster.local:25565"
   mode: "allow"
 routes:
+  - serverAddress: "hub.example.com"
+    backend: "mc-hub.mc-hub.svc.cluster.local:25565"
   - serverAddress: "smp.example.com"
     backend: "alec-smp.alec-smp.svc.cluster.local:25565"
   - serverAddress: "lobby.example.com"

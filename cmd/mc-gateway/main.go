@@ -64,9 +64,17 @@ func run(configPath string, logger *slog.Logger) error {
 		waitMetricsShutdown(ctx, metricsServer)
 		return err
 	}
+	bedrockRuntime, err := startBedrock(ctx, cfg, logger, server.Metrics())
+	if err != nil {
+		cancel()
+		waitUDPRelayShutdown(udpRuntime)
+		waitMetricsShutdown(ctx, metricsServer)
+		return err
+	}
 	voiceRuntime, err := startVoiceChat(ctx, cfg, logger, server.Metrics())
 	if err != nil {
 		cancel()
+		waitBedrockShutdown(bedrockRuntime)
 		waitUDPRelayShutdown(udpRuntime)
 		waitMetricsShutdown(ctx, metricsServer)
 		return err
@@ -85,7 +93,7 @@ func run(configPath string, logger *slog.Logger) error {
 	go func() {
 		proxyErrCh <- server.ListenAndServe(ctx)
 	}()
-	err = waitForServers(ctx, cancel, server, proxyErrCh, metricsServer, udpRuntime, voiceRuntime)
+	err = waitForServers(ctx, cancel, server, proxyErrCh, metricsServer, udpRuntime, bedrockRuntime, voiceRuntime)
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
@@ -93,6 +101,11 @@ func run(configPath string, logger *slog.Logger) error {
 }
 
 type udpRelayRuntime struct {
+	relay *udprelay.Relay
+	done  chan error
+}
+
+type bedrockRuntime struct {
 	relay *udprelay.Relay
 	done  chan error
 }
@@ -122,6 +135,28 @@ func startUDPRelay(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 		done <- relay.Serve(ctx)
 	}()
 	return &udpRelayRuntime{relay: relay, done: done}, nil
+}
+
+func startBedrock(ctx context.Context, cfg config.Config, logger *slog.Logger, recorder *gatewaymetrics.Recorder) (*bedrockRuntime, error) {
+	if !cfg.Bedrock.Enabled {
+		return nil, nil
+	}
+	relay, err := udprelay.New(udprelay.Config{
+		Listen:             cfg.Bedrock.Listen,
+		Backend:            cfg.Bedrock.DefaultBackend,
+		IdleTimeout:        cfg.Bedrock.SessionTimeout.Duration,
+		BackendDialTimeout: cfg.BackendDialTimeout.Duration,
+		MaxSessions:        config.MaxUDPRelaySessions,
+		MaxPacketSize:      config.MaxUDPRelayPacketSize,
+	}, logger, recorder)
+	if err != nil {
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- relay.Serve(ctx)
+	}()
+	return &bedrockRuntime{relay: relay, done: done}, nil
 }
 
 func startVoiceChat(ctx context.Context, cfg config.Config, logger *slog.Logger, recorder *gatewaymetrics.Recorder) (*voiceChatRuntime, error) {
@@ -179,17 +214,19 @@ func serveReloadSignals(ctx context.Context, reloadCh <-chan os.Signal, configPa
 	}
 }
 
-func waitForServers(ctx context.Context, cancel context.CancelFunc, server *proxy.Server, proxyErrCh <-chan error, metricsServer *gatewaymetrics.HTTPServer, udpRuntime *udpRelayRuntime, voiceRuntime *voiceChatRuntime) error {
+func waitForServers(ctx context.Context, cancel context.CancelFunc, server *proxy.Server, proxyErrCh <-chan error, metricsServer *gatewaymetrics.HTTPServer, udpRuntime *udpRelayRuntime, bedrockRuntime *bedrockRuntime, voiceRuntime *voiceChatRuntime) error {
 	select {
 	case err := <-proxyErrCh:
 		cancel()
 		waitVoiceChatShutdown(voiceRuntime)
+		waitBedrockShutdown(bedrockRuntime)
 		waitUDPRelayShutdown(udpRuntime)
 		waitMetricsShutdown(ctx, metricsServer)
 		return err
 	case err := <-metricsServerDone(metricsServer):
 		cancel()
 		waitVoiceChatShutdown(voiceRuntime)
+		waitBedrockShutdown(bedrockRuntime)
 		waitUDPRelayShutdown(udpRuntime)
 		server.Shutdown()
 		proxyErr := <-proxyErrCh
@@ -200,11 +237,20 @@ func waitForServers(ctx context.Context, cancel context.CancelFunc, server *prox
 	case err := <-udpRelayDone(udpRuntime):
 		cancel()
 		waitVoiceChatShutdown(voiceRuntime)
+		waitBedrockShutdown(bedrockRuntime)
+		server.Shutdown()
+		waitMetricsShutdown(ctx, metricsServer)
+		return err
+	case err := <-bedrockDone(bedrockRuntime):
+		cancel()
+		waitVoiceChatShutdown(voiceRuntime)
+		waitUDPRelayShutdown(udpRuntime)
 		server.Shutdown()
 		waitMetricsShutdown(ctx, metricsServer)
 		return err
 	case err := <-voiceChatDone(voiceRuntime):
 		cancel()
+		waitBedrockShutdown(bedrockRuntime)
 		waitUDPRelayShutdown(udpRuntime)
 		server.Shutdown()
 		waitMetricsShutdown(ctx, metricsServer)
@@ -217,6 +263,13 @@ func udpRelayDone(udpRuntime *udpRelayRuntime) <-chan error {
 		return nil
 	}
 	return udpRuntime.done
+}
+
+func bedrockDone(bedrockRuntime *bedrockRuntime) <-chan error {
+	if bedrockRuntime == nil {
+		return nil
+	}
+	return bedrockRuntime.done
 }
 
 func metricsServerDone(metricsServer *gatewaymetrics.HTTPServer) <-chan error {
@@ -253,6 +306,14 @@ func waitUDPRelayShutdown(udpRuntime *udpRelayRuntime) {
 	}
 	_ = udpRuntime.relay.Close()
 	<-udpRuntime.done
+}
+
+func waitBedrockShutdown(bedrockRuntime *bedrockRuntime) {
+	if bedrockRuntime == nil {
+		return
+	}
+	_ = bedrockRuntime.relay.Close()
+	<-bedrockRuntime.done
 }
 
 func waitVoiceChatShutdown(voiceRuntime *voiceChatRuntime) {
