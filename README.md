@@ -156,27 +156,40 @@ See [docs/voicechat-routing-design.md](docs/voicechat-routing-design.md) for the
 
 ## Bedrock UDP Forwarding
 
-`mc-router` can expose one public Minecraft Bedrock Edition UDP entrypoint, normally UDP `19132`, and forward opaque datagrams to Geyser-enabled backends.
+`mc-router` can expose one public Minecraft Bedrock Edition UDP entrypoint, normally UDP `19132`, and send Bedrock players to Geyser-enabled backends.
 
-This is UDP forwarding only. `mc-router` does not parse RakNet or Bedrock protocol packets, does not translate between Bedrock and Java protocols, and does not install, start, or configure Geyser. Run Geyser on every backend Minecraft server or backend service that should accept Bedrock players.
+Two Bedrock modes are available:
 
-Bedrock routes can be configured as named backends. `bedrock.defaultBackend` remains required and is the fallback route for backward compatibility. At present, `mc-router` still sends new Bedrock UDP sessions to `bedrock.defaultBackend` because Bedrock UDP traffic does not expose a Java-style requested hostname to `mc-router` without substantial RakNet/Bedrock parsing. Host-aware or name-aware Bedrock selection is future work once there is a reliable routing key. Java Edition TCP routing on `listen`, normally TCP `25565`, is separate and unchanged.
+* `udp-forward`: opaque UDP forwarding to `bedrock.defaultBackend`. This preserves the original low-level relay behavior and does not parse RakNet or Bedrock packets.
+* `host-proxy`: Bedrock-aware routing using gophertunnel. `mc-router` accepts the Bedrock login, reads the client's requested `ServerAddress`, matches it against `bedrock.routes[].hosts`, then connects to the selected Geyser backend. Unknown hosts fall back to `bedrock.defaultBackend`.
 
-The intended design is one public UDP `19132` listener rather than exposing one public UDP port per backend server.
+Run Geyser on every backend Minecraft server or backend service that should accept Bedrock players. `mc-router` still does not run Geyser and does not translate Bedrock to Java itself.
+
+The intended design is one public UDP `19132` listener rather than exposing one public UDP port per backend server. Java Edition TCP routing on `listen`, normally TCP `25565`, is separate and unchanged.
+
+`host-proxy` terminates and re-originates the Bedrock session, so it has a larger compatibility surface than `udp-forward`. It depends on gophertunnel tracking current Minecraft Bedrock protocol versions. Backend authentication settings must allow the proxied Bedrock connection model used by the deployment; validate this with the target Geyser/Floodgate configuration before relying on it in production.
 
 ```yaml
 listen: ":25565"
 bedrock:
   enabled: true
+  mode: "host-proxy"
   listen: ":19132"
   defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
   sessionTimeout: "30s"
   routes:
     - name: hub
+      hosts:
+        - "play.example.com"
+        - "hub.play.example.com"
       backend: "mc-hub.mc-hub.svc.cluster.local:19132"
     - name: creative
+      hosts:
+        - "creative.play.example.com"
       backend: "mc-creative.mc-creative.svc.cluster.local:19132"
     - name: survival
+      hosts:
+        - "survival.play.example.com"
       backend: "mc-survival.mc-survival.svc.cluster.local:19132"
 ```
 
@@ -202,15 +215,23 @@ udpRelay:
   maxPacketSize: 65535
 bedrock:
   enabled: false
+  mode: "udp-forward"
   listen: ":19132"
   defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
   sessionTimeout: "30s"
   routes:
     - name: hub
+      hosts:
+        - "play.example.com"
+        - "hub.play.example.com"
       backend: "mc-hub.mc-hub.svc.cluster.local:19132"
     - name: creative
+      hosts:
+        - "creative.play.example.com"
       backend: "mc-creative.mc-creative.svc.cluster.local:19132"
     - name: survival
+      hosts:
+        - "survival.play.example.com"
       backend: "mc-survival.mc-survival.svc.cluster.local:19132"
 fallback:
   enabled: true
@@ -247,7 +268,7 @@ Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenti
 
 The UDP relay is disabled by default. Set `udpRelay.enabled: true` to bind one UDP listener and forward opaque datagrams bidirectionally to one explicit backend. The relay is a fixed-backend transport foundation only; it does not parse Simple Voice Chat packets, infer backends from TCP routes, or perform Transfer-aware routing.
 
-Bedrock UDP forwarding is disabled by default. Set `bedrock.enabled: true` to bind one UDP listener, usually `:19132`, and forward Bedrock Edition datagrams. `bedrock.defaultBackend` remains the active fallback backend. `bedrock.routes` can define named Geyser-enabled backends for the intended multi-backend model, but current selection still uses `defaultBackend` because no supported Bedrock routing key is extracted yet. Each backend route must point at a Geyser-enabled Minecraft server or separate Geyser service. `mc-router` does not perform Bedrock protocol parsing or Bedrock-to-Java translation.
+Bedrock support is disabled by default. Set `bedrock.enabled: true` to bind one UDP listener, usually `:19132`. `bedrock.mode` defaults to `udp-forward`. Use `host-proxy` when hostname-based Bedrock routing is required. Each route host is matched case-insensitively, and host values with ports such as `creative.play.example.com:19132` are normalized to the host. Each backend route must point at a Geyser-enabled Minecraft server or separate Geyser service.
 
 Fallback responses are counted with `mc_gateway_fallback_responses_total{state,reason}` after a fallback response packet is successfully written. Labels are intentionally bounded: `state` is `status` or `login`, and `reason` is one of the documented low-cardinality lifecycle reasons.
 

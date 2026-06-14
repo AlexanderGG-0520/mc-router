@@ -115,7 +115,7 @@ func TestStartBedrockForwardsUDPDatagramAndBackendResponse(t *testing.T) {
 	client := newMainUDPClient(t)
 	defer client.Close()
 
-	sendMainUDP(t, client, runtime.relay.Addr(), []byte("bedrock-ping"))
+	sendMainUDP(t, client, runtime.Addr(), []byte("bedrock-ping"))
 	packet := backend.read(t)
 	if !bytes.Equal(packet.payload, []byte("bedrock-ping")) {
 		t.Fatalf("backend payload = %q, want bedrock-ping", packet.payload)
@@ -153,7 +153,7 @@ func TestStartBedrockRoutesFallbackToDefaultBackend(t *testing.T) {
 	client := newMainUDPClient(t)
 	defer client.Close()
 
-	sendMainUDP(t, client, runtime.relay.Addr(), []byte("creative-request-without-route-key"))
+	sendMainUDP(t, client, runtime.Addr(), []byte("creative-request-without-route-key"))
 	packet := hubBackend.read(t)
 	if !bytes.Equal(packet.payload, []byte("creative-request-without-route-key")) {
 		t.Fatalf("hub backend payload = %q", packet.payload)

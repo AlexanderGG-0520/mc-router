@@ -38,6 +38,10 @@ Remote IP addresses can be personal data in some environments. Retention and acc
 
 The default `unknownHostPolicy` is `deny`. This is safer for a public Minecraft entry point because random scanners and mistyped hosts do not reach a backend unless the operator explicitly opts into a default route.
 
+## Bedrock Host Proxy
+
+`bedrock.mode: host-proxy` terminates the Bedrock login in `mc-router` so it can read the requested `ServerAddress` and select a backend. This is different from opaque UDP forwarding. The backend sees a new Bedrock connection originated by `mc-router`, so Geyser/Floodgate authentication and identity handling must be validated for the deployment before production use.
+
 ## Known Gaps
 
 - No per-IP rate limit.

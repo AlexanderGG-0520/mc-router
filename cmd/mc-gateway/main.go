@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AlexanderGG-0520/mc-router/internal/bedrockproxy"
+	"github.com/AlexanderGG-0520/mc-router/internal/bedrockroute"
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	"github.com/AlexanderGG-0520/mc-router/internal/logging"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
@@ -106,8 +108,11 @@ type udpRelayRuntime struct {
 }
 
 type bedrockRuntime struct {
-	relay *udprelay.Relay
-	done  chan error
+	closer interface {
+		Close() error
+	}
+	addr func() string
+	done chan error
 }
 
 type voiceChatRuntime struct {
@@ -141,6 +146,36 @@ func startBedrock(ctx context.Context, cfg config.Config, logger *slog.Logger, r
 	if !cfg.Bedrock.Enabled {
 		return nil, nil
 	}
+	mode := cfg.Bedrock.Mode
+	if mode == "" {
+		mode = config.BedrockModeUDPForward
+	}
+	if mode == config.BedrockModeHostProxy {
+		routes := make([]bedrockroute.Route, 0, len(cfg.Bedrock.Routes))
+		for _, route := range cfg.Bedrock.Routes {
+			routes = append(routes, bedrockroute.Route{
+				Name:    route.Name,
+				Hosts:   route.Hosts,
+				Backend: route.Backend,
+			})
+		}
+		proxy, err := bedrockproxy.New(bedrockproxy.Config{
+			Listen:             cfg.Bedrock.Listen,
+			DefaultBackend:     cfg.Bedrock.DefaultBackend,
+			Routes:             routes,
+			BackendDialTimeout: cfg.BackendDialTimeout.Duration,
+		}, logger)
+		if err != nil {
+			return nil, err
+		}
+		done := make(chan error, 1)
+		go func() {
+			done <- proxy.Serve(ctx)
+		}()
+		logger.Info("bedrock_host_proxy_enabled", "listen", cfg.Bedrock.Listen)
+		return &bedrockRuntime{closer: proxy, addr: proxy.Addr, done: done}, nil
+	}
+
 	routes := make([]udprelay.NamedBackendRoute, 0, len(cfg.Bedrock.Routes))
 	for _, route := range cfg.Bedrock.Routes {
 		routes = append(routes, udprelay.NamedBackendRoute{
@@ -167,7 +202,14 @@ func startBedrock(ctx context.Context, cfg config.Config, logger *slog.Logger, r
 	go func() {
 		done <- relay.Serve(ctx)
 	}()
-	return &bedrockRuntime{relay: relay, done: done}, nil
+	return &bedrockRuntime{closer: relay, addr: relay.Addr, done: done}, nil
+}
+
+func (r *bedrockRuntime) Addr() string {
+	if r == nil || r.addr == nil {
+		return ""
+	}
+	return r.addr()
 }
 
 func startVoiceChat(ctx context.Context, cfg config.Config, logger *slog.Logger, recorder *gatewaymetrics.Recorder) (*voiceChatRuntime, error) {
@@ -323,7 +365,7 @@ func waitBedrockShutdown(bedrockRuntime *bedrockRuntime) {
 	if bedrockRuntime == nil {
 		return
 	}
-	_ = bedrockRuntime.relay.Close()
+	_ = bedrockRuntime.closer.Close()
 	<-bedrockRuntime.done
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AlexanderGG-0520/mc-router/internal/bedrockroute"
 	"github.com/AlexanderGG-0520/mc-router/internal/hostaddr"
 	"gopkg.in/yaml.v3"
 )
@@ -19,6 +20,8 @@ const (
 	UnknownHostDefault                 = "default"
 	RouteModeAllow                     = "allow"
 	KubernetesDiscoveryModeAnnotations = "service-annotations"
+	BedrockModeUDPForward              = "udp-forward"
+	BedrockModeHostProxy               = "host-proxy"
 	DefaultKubernetesAnnotationPrefix  = "mc-router.alexandergg.com"
 	MaxUDPRelayIdleTimeout             = 24 * time.Hour
 	MaxUDPRelaySessions                = 65536
@@ -103,6 +106,7 @@ type UDPRelay struct {
 
 type Bedrock struct {
 	Enabled        bool           `yaml:"enabled"`
+	Mode           string         `yaml:"mode"`
 	Listen         string         `yaml:"listen"`
 	DefaultBackend string         `yaml:"defaultBackend"`
 	SessionTimeout Duration       `yaml:"sessionTimeout"`
@@ -110,8 +114,9 @@ type Bedrock struct {
 }
 
 type BedrockRoute struct {
-	Name    string `yaml:"name"`
-	Backend string `yaml:"backend"`
+	Name    string   `yaml:"name"`
+	Hosts   []string `yaml:"hosts"`
+	Backend string   `yaml:"backend"`
 }
 
 type VoiceChat struct {
@@ -211,6 +216,7 @@ func Defaults() Config {
 			MaxPacketSize:      MaxUDPRelayPacketSize,
 		},
 		Bedrock: Bedrock{
+			Mode:           BedrockModeUDPForward,
 			SessionTimeout: Duration{Duration: DefaultBedrockSessionTimeout},
 		},
 		VoiceChat: VoiceChat{
@@ -492,12 +498,18 @@ func validateBedrock(bedrock Bedrock) error {
 	} else if _, err := net.ResolveUDPAddr("udp", bedrock.Listen); err != nil {
 		errs = append(errs, fmt.Errorf("bedrock.listen must be a valid UDP listen address: %w", err))
 	}
+	switch bedrock.Mode {
+	case "", BedrockModeUDPForward, BedrockModeHostProxy:
+	default:
+		errs = append(errs, fmt.Errorf("bedrock.mode must be %q or %q", BedrockModeUDPForward, BedrockModeHostProxy))
+	}
 	if err := validateBackend(bedrock.DefaultBackend); err != nil {
 		errs = append(errs, fmt.Errorf("bedrock.defaultBackend: %w", err))
 	} else if err := validateUDPBackendAddress(bedrock.DefaultBackend); err != nil {
 		errs = append(errs, fmt.Errorf("bedrock.defaultBackend: %w", err))
 	}
 	seenRoutes := map[string]struct{}{}
+	seenHosts := map[string]string{}
 	for i, route := range bedrock.Routes {
 		name := strings.TrimSpace(route.Name)
 		if name == "" {
@@ -510,6 +522,18 @@ func validateBedrock(bedrock Bedrock) error {
 				errs = append(errs, fmt.Errorf("bedrock.routes[%d].name duplicates %q", i, name))
 			}
 			seenRoutes[name] = struct{}{}
+		}
+		for hostIndex, host := range route.Hosts {
+			normalized, err := bedrockroute.NormalizeHost(host)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("bedrock.routes[%d].hosts[%d]: %w", i, hostIndex, err))
+				continue
+			}
+			if existing, ok := seenHosts[normalized]; ok {
+				errs = append(errs, fmt.Errorf("bedrock.routes[%d].hosts[%d] duplicates host %q from route %q", i, hostIndex, normalized, existing))
+				continue
+			}
+			seenHosts[normalized] = name
 		}
 		if err := validateBackend(route.Backend); err != nil {
 			errs = append(errs, fmt.Errorf("bedrock.routes[%d].backend: %w", i, err))
