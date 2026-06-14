@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -62,6 +63,67 @@ func TestStartUDPRelayDisabledDoesNotBindPort(t *testing.T) {
 		t.Fatalf("disabled UDP relay bound %s: %v", addr, err)
 	}
 	_ = listener.Close()
+}
+
+func TestStartBedrockDisabledDoesNotBindPort(t *testing.T) {
+	reserved, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP reserve: %v", err)
+	}
+	addr := reserved.LocalAddr().String()
+	if err := reserved.Close(); err != nil {
+		t.Fatalf("Close reserve: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Bedrock.Enabled = false
+	cfg.Bedrock.Listen = addr
+	runtime, err := startBedrock(context.Background(), cfg, discardLogger(), gatewaymetrics.NewRecorder(false))
+	if err != nil {
+		t.Fatalf("startBedrock returned error: %v", err)
+	}
+	if runtime != nil {
+		t.Fatal("startBedrock returned a runtime when disabled")
+	}
+
+	listener, err := net.ListenUDP("udp", mustResolveUDPAddr(t, addr))
+	if err != nil {
+		t.Fatalf("disabled bedrock forwarder bound %s: %v", addr, err)
+	}
+	_ = listener.Close()
+}
+
+func TestStartBedrockForwardsUDPDatagramAndBackendResponse(t *testing.T) {
+	backend := newMainUDPBackend(t)
+	cfg := config.Defaults()
+	cfg.Bedrock.Enabled = true
+	cfg.Bedrock.Listen = "127.0.0.1:0"
+	cfg.Bedrock.DefaultBackend = backend.addr()
+	cfg.Bedrock.SessionTimeout.Duration = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime, err := startBedrock(ctx, cfg, discardLogger(), gatewaymetrics.NewRecorder(false))
+	if err != nil {
+		t.Fatalf("startBedrock returned error: %v", err)
+	}
+	defer func() {
+		cancel()
+		waitBedrockShutdown(runtime)
+	}()
+
+	client := newMainUDPClient(t)
+	defer client.Close()
+
+	sendMainUDP(t, client, runtime.relay.Addr(), []byte("bedrock-ping"))
+	packet := backend.read(t)
+	if !bytes.Equal(packet.payload, []byte("bedrock-ping")) {
+		t.Fatalf("backend payload = %q, want bedrock-ping", packet.payload)
+	}
+	backend.reply(t, packet.from, []byte("bedrock-pong"))
+	if got := readMainUDP(t, client); !bytes.Equal(got, []byte("bedrock-pong")) {
+		t.Fatalf("client reply = %q, want bedrock-pong", got)
+	}
 }
 
 func (f *fakeReloader) ReloadFile(path string) error {
@@ -1350,6 +1412,93 @@ type recordingDiscoveredRouteUpdater struct {
 	updates int
 	err     error
 	metrics *gatewaymetrics.Recorder
+}
+
+type mainUDPPacket struct {
+	payload []byte
+	from    *net.UDPAddr
+}
+
+type mainUDPBackend struct {
+	conn *net.UDPConn
+}
+
+func newMainUDPBackend(t *testing.T) *mainUDPBackend {
+	t.Helper()
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP backend: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return &mainUDPBackend{conn: conn}
+}
+
+func (b *mainUDPBackend) addr() string {
+	return b.conn.LocalAddr().String()
+}
+
+func (b *mainUDPBackend) read(t *testing.T) mainUDPPacket {
+	t.Helper()
+	buf := make([]byte, 65535)
+	if err := b.conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline backend: %v", err)
+	}
+	n, from, err := b.conn.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("backend read: %v", err)
+	}
+	return mainUDPPacket{payload: append([]byte(nil), buf[:n]...), from: cloneMainUDPAddr(from)}
+}
+
+func (b *mainUDPBackend) reply(t *testing.T, to *net.UDPAddr, payload []byte) {
+	t.Helper()
+	if _, err := b.conn.WriteToUDP(payload, to); err != nil {
+		t.Fatalf("backend reply: %v", err)
+	}
+}
+
+func newMainUDPClient(t *testing.T) *net.UDPConn {
+	t.Helper()
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP client: %v", err)
+	}
+	return conn
+}
+
+func sendMainUDP(t *testing.T, conn *net.UDPConn, address string, payload []byte) {
+	t.Helper()
+	addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		t.Fatalf("ResolveUDPAddr: %v", err)
+	}
+	if _, err := conn.WriteToUDP(payload, addr); err != nil {
+		t.Fatalf("WriteToUDP: %v", err)
+	}
+}
+
+func readMainUDP(t *testing.T, conn *net.UDPConn) []byte {
+	t.Helper()
+	buf := make([]byte, 65535)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline client: %v", err)
+	}
+	n, _, err := conn.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("client read: %v", err)
+	}
+	return append([]byte(nil), buf[:n]...)
+}
+
+func cloneMainUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	cloned := *addr
+	if addr.IP != nil {
+		cloned.IP = append(net.IP(nil), addr.IP...)
+	}
+	return &cloned
 }
 
 func newRecordingDiscoveredRouteUpdater() *recordingDiscoveredRouteUpdater {

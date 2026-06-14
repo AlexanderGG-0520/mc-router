@@ -24,6 +24,7 @@ const (
 	MaxUDPRelaySessions                = 65536
 	MaxUDPRelayPacketSize              = 65535
 	MaxVoiceChatRegistrations          = 65536
+	DefaultBedrockSessionTimeout       = 30 * time.Second
 )
 
 type Duration struct {
@@ -52,6 +53,7 @@ type Config struct {
 	BackendDialTimeout Duration     `yaml:"backendDialTimeout"`
 	Metrics            Metrics      `yaml:"metrics"`
 	UDPRelay           UDPRelay     `yaml:"udpRelay"`
+	Bedrock            Bedrock      `yaml:"bedrock"`
 	VoiceChat          VoiceChat    `yaml:"voiceChat"`
 	Fallback           Fallback     `yaml:"fallback"`
 	Discovery          Discovery    `yaml:"discovery"`
@@ -97,6 +99,13 @@ type UDPRelay struct {
 	BackendDialTimeout Duration `yaml:"backendDialTimeout"`
 	MaxSessions        int      `yaml:"maxSessions"`
 	MaxPacketSize      int      `yaml:"maxPacketSize"`
+}
+
+type Bedrock struct {
+	Enabled        bool     `yaml:"enabled"`
+	Listen         string   `yaml:"listen"`
+	DefaultBackend string   `yaml:"defaultBackend"`
+	SessionTimeout Duration `yaml:"sessionTimeout"`
 }
 
 type VoiceChat struct {
@@ -195,6 +204,9 @@ func Defaults() Config {
 			MaxSessions:        4096,
 			MaxPacketSize:      MaxUDPRelayPacketSize,
 		},
+		Bedrock: Bedrock{
+			SessionTimeout: Duration{Duration: DefaultBedrockSessionTimeout},
+		},
 		VoiceChat: VoiceChat{
 			Listen: ":24454",
 			Registration: VoiceRegistration{
@@ -263,11 +275,20 @@ func (c Config) Validate() error {
 	if err := validateUDPRelay(c.UDPRelay); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateBedrock(c.Bedrock); err != nil {
+		errs = append(errs, err)
+	}
 	if err := validateVoiceChat(&c.VoiceChat); err != nil {
 		errs = append(errs, err)
 	}
 	if c.UDPRelay.Enabled && c.VoiceChat.Enabled && c.UDPRelay.Listen == c.VoiceChat.Listen {
 		errs = append(errs, errors.New("udpRelay and voiceChat cannot use the same listen address"))
+	}
+	if c.Bedrock.Enabled && c.UDPRelay.Enabled && c.Bedrock.Listen == c.UDPRelay.Listen {
+		errs = append(errs, errors.New("bedrock and udpRelay cannot use the same listen address"))
+	}
+	if c.Bedrock.Enabled && c.VoiceChat.Enabled && c.Bedrock.Listen == c.VoiceChat.Listen {
+		errs = append(errs, errors.New("bedrock and voiceChat cannot use the same listen address"))
 	}
 	if err := validateKubernetesDiscovery(c.Discovery.Kubernetes); err != nil {
 		errs = append(errs, err)
@@ -451,6 +472,30 @@ func validateUDPRelay(relay UDPRelay) error {
 	}
 	if relay.MaxPacketSize > MaxUDPRelayPacketSize {
 		errs = append(errs, fmt.Errorf("udpRelay.maxPacketSize must be no greater than %d", MaxUDPRelayPacketSize))
+	}
+	return errors.Join(errs...)
+}
+
+func validateBedrock(bedrock Bedrock) error {
+	if !bedrock.Enabled {
+		return nil
+	}
+	var errs []error
+	if strings.TrimSpace(bedrock.Listen) == "" {
+		errs = append(errs, errors.New("bedrock.listen must not be empty when bedrock.enabled is true"))
+	} else if _, err := net.ResolveUDPAddr("udp", bedrock.Listen); err != nil {
+		errs = append(errs, fmt.Errorf("bedrock.listen must be a valid UDP listen address: %w", err))
+	}
+	if err := validateBackend(bedrock.DefaultBackend); err != nil {
+		errs = append(errs, fmt.Errorf("bedrock.defaultBackend: %w", err))
+	} else if err := validateUDPBackendAddress(bedrock.DefaultBackend); err != nil {
+		errs = append(errs, fmt.Errorf("bedrock.defaultBackend: %w", err))
+	}
+	if bedrock.SessionTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("bedrock.sessionTimeout must be positive when bedrock.enabled is true"))
+	}
+	if bedrock.SessionTimeout.Duration > MaxUDPRelayIdleTimeout {
+		errs = append(errs, fmt.Errorf("bedrock.sessionTimeout must be no greater than %s", MaxUDPRelayIdleTimeout))
 	}
 	return errors.Join(errs...)
 }

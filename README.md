@@ -39,6 +39,7 @@ Implemented in this skeleton:
 - Structured JSON logging through Go `log/slog`.
 - Prometheus metrics endpoint when explicitly enabled, including low-cardinality fallback response counters.
 - Optional fixed-backend UDP relay foundation for local transport validation.
+- Optional Bedrock Edition UDP entrypoint forwarding to one Geyser-enabled backend.
 - Handshake read timeout and backend dial timeout.
 - Graceful shutdown on SIGINT/SIGTERM.
 - Unit tests for VarInt, handshake parsing, config loading, and route matching.
@@ -153,6 +154,23 @@ The inspected Simple Voice Chat upstream target uses Minecraft `26.1.2`, Java 25
 
 See [docs/voicechat-routing-design.md](docs/voicechat-routing-design.md) for the protocol investigation, threat model, rejected alternatives, and session lifecycle.
 
+## Bedrock UDP Forwarding
+
+`mc-router` can expose one public Minecraft Bedrock Edition UDP entrypoint, normally UDP `19132`, and forward opaque datagrams to one configured Geyser backend.
+
+This is UDP forwarding only. `mc-router` does not parse RakNet or Bedrock protocol packets, does not translate between Bedrock and Java protocols, and does not install, start, or configure Geyser. Run Geyser on a backend Minecraft server or as a separate backend service, then point `bedrock.defaultBackend` at that service.
+
+The initial Bedrock implementation forwards every client session to one default backend. Hostname-based Bedrock routing is not implemented. Java Edition TCP routing on `listen`, normally TCP `25565`, is unchanged.
+
+```yaml
+listen: ":25565"
+bedrock:
+  enabled: true
+  listen: ":19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  sessionTimeout: "30s"
+```
+
 ## Config
 
 Static YAML is the first supported route source:
@@ -173,6 +191,11 @@ udpRelay:
   backendDialTimeout: "5s"
   maxSessions: 4096
   maxPacketSize: 65535
+bedrock:
+  enabled: false
+  listen: ":19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  sessionTimeout: "30s"
 fallback:
   enabled: true
   login:
@@ -208,6 +231,8 @@ Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenti
 
 The UDP relay is disabled by default. Set `udpRelay.enabled: true` to bind one UDP listener and forward opaque datagrams bidirectionally to one explicit backend. The relay is a fixed-backend transport foundation only; it does not parse Simple Voice Chat packets, infer backends from TCP routes, or perform Transfer-aware routing.
 
+Bedrock UDP forwarding is disabled by default. Set `bedrock.enabled: true` to bind one UDP listener, usually `:19132`, and forward Bedrock Edition datagrams to `bedrock.defaultBackend`. The backend must be a Geyser-enabled Minecraft server or separate Geyser service. `mc-router` does not perform Bedrock protocol parsing or Bedrock-to-Java translation.
+
 Fallback responses are counted with `mc_gateway_fallback_responses_total{state,reason}` after a fallback response packet is successfully written. Labels are intentionally bounded: `state` is `status` or `login`, and `reason` is one of the documented low-cardinality lifecycle reasons.
 
 Fallback responses are disabled by default. Set `fallback.enabled: true` and `fallback.status.enabled: true` to answer selected status pings with a minimal Minecraft status response. Route denied status responses default to enabled once status fallback is enabled; backend failure status responses require `fallback.status.respondOnBackendFailure: true` because they can reveal that a configured route exists. Set `fallback.login.enabled: true` to return a protocol 767 login-state disconnect packet for denied login starts.
@@ -239,7 +264,7 @@ For release gating, manual smoke checks, and non-blocking post-MVP work, see [do
 
 ```powershell
 docker build -t mc-gateway:dev .
-docker run --rm -p 25565:25565 -p 127.0.0.1:9090:9090 -v ${PWD}/examples/config.yaml:/etc/mc-gateway/config.yaml:ro mc-gateway:dev
+docker run --rm -p 25565:25565 -p 19132:19132/udp -p 127.0.0.1:9090:9090 -v ${PWD}/examples/config.yaml:/etc/mc-gateway/config.yaml:ro mc-gateway:dev
 ```
 
 The Dockerfile uses a multi-stage build and `gcr.io/distroless/static-debian12:nonroot` for the runtime image. Distroless keeps the image small and removes shell/package-manager attack surface while retaining a minimal base with non-root support. Alpine is easier to debug interactively, but the runtime container should not require a shell for the MVP. If operational debugging becomes painful, a separate debug image target can be added later.
@@ -260,6 +285,7 @@ The manifest includes:
 - ConfigMap backed YAML config
 - Deployment with non-root security context
 - LoadBalancer Service on TCP `25565`
+- Optional Bedrock forwarding requires exposing UDP `19132` when `bedrock.enabled` is true.
 - TCP readiness and liveness probes
 
 Namespace-scoped Kubernetes Service annotation discovery is implemented. If discovery is enabled, use the namespace-scoped RBAC example in `deploy/kubernetes/discovery-rbac.yaml`. See [docs/kubernetes-discovery.md](docs/kubernetes-discovery.md).

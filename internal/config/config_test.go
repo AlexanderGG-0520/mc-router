@@ -72,6 +72,18 @@ routes:
 	if cfg.UDPRelay.MaxPacketSize != MaxUDPRelayPacketSize {
 		t.Fatalf("udp relay max packet size = %d, want %d", cfg.UDPRelay.MaxPacketSize, MaxUDPRelayPacketSize)
 	}
+	if cfg.Bedrock.Enabled {
+		t.Fatal("bedrock enabled by default")
+	}
+	if cfg.Bedrock.Listen != "" {
+		t.Fatalf("bedrock listen = %q, want empty", cfg.Bedrock.Listen)
+	}
+	if cfg.Bedrock.DefaultBackend != "" {
+		t.Fatalf("bedrock default backend = %q, want empty", cfg.Bedrock.DefaultBackend)
+	}
+	if cfg.Bedrock.SessionTimeout.Duration.String() != "30s" {
+		t.Fatalf("bedrock session timeout = %s, want 30s", cfg.Bedrock.SessionTimeout.Duration)
+	}
 	if cfg.VoiceChat.Enabled {
 		t.Fatal("voicechat enabled by default")
 	}
@@ -119,6 +131,95 @@ routes:
 	}
 	if cfg.Fallback.Login.RespondOnRouteDenied == nil || !*cfg.Fallback.Login.RespondOnRouteDenied {
 		t.Fatal("fallback login route denied response disabled by default")
+	}
+}
+
+func TestLoadIgnoresInvalidBedrockFieldsWhenDisabled(t *testing.T) {
+	_, err := Load([]byte(`
+bedrock:
+  enabled: false
+  listen: ""
+  defaultBackend: ""
+  sessionTimeout: "0s"
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error for disabled bedrock: %v", err)
+	}
+}
+
+func TestLoadAcceptsBedrockConfig(t *testing.T) {
+	cfg, err := Load([]byte(`
+bedrock:
+  enabled: true
+  listen: "127.0.0.1:19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  sessionTimeout: "45s"
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Bedrock.Enabled {
+		t.Fatal("bedrock disabled")
+	}
+	if cfg.Bedrock.Listen != "127.0.0.1:19132" {
+		t.Fatalf("bedrock listen = %q", cfg.Bedrock.Listen)
+	}
+	if cfg.Bedrock.DefaultBackend != "mc-hub.mc-hub.svc.cluster.local:19132" {
+		t.Fatalf("bedrock default backend = %q", cfg.Bedrock.DefaultBackend)
+	}
+	if cfg.Bedrock.SessionTimeout.Duration.String() != "45s" {
+		t.Fatalf("bedrock session timeout = %s", cfg.Bedrock.SessionTimeout.Duration)
+	}
+}
+
+func TestLoadAcceptsBedrockDefaultSessionTimeout(t *testing.T) {
+	cfg, err := Load([]byte(`
+bedrock:
+  enabled: true
+  listen: "127.0.0.1:19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Bedrock.SessionTimeout.Duration != DefaultBedrockSessionTimeout {
+		t.Fatalf("bedrock session timeout = %s, want %s", cfg.Bedrock.SessionTimeout.Duration, DefaultBedrockSessionTimeout)
+	}
+}
+
+func TestLoadRejectsInvalidEnabledBedrockConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty listen", body: `listen: ""`},
+		{name: "invalid listen", body: `listen: "bad address"`},
+		{name: "empty default backend", body: `defaultBackend: ""`},
+		{name: "invalid default backend port", body: `defaultBackend: "hub:not-a-port"`},
+		{name: "unspecified default backend", body: `defaultBackend: "0.0.0.0:19132"`},
+		{name: "multicast default backend", body: `defaultBackend: "224.0.0.1:19132"`},
+		{name: "broadcast default backend", body: `defaultBackend: "255.255.255.255:19132"`},
+		{name: "zero session timeout", body: `sessionTimeout: "0s"`},
+		{name: "too large session timeout", body: `sessionTimeout: "25h"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load([]byte(`
+bedrock:
+  enabled: true
+  listen: "127.0.0.1:19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  sessionTimeout: "30s"
+  ` + tt.body + `
+unknownHostPolicy: "deny"
+`))
+			if err == nil {
+				t.Fatal("expected invalid bedrock config error")
+			}
+		})
 	}
 }
 

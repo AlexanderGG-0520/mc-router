@@ -13,6 +13,7 @@ The design is intentionally smaller than a Kubernetes controller. Static routes 
 - `internal/mcproto`: Minecraft VarInt and handshake parsing.
 - `internal/router`: normalized hostname to backend selection.
 - `internal/proxy`: listener, per-connection handling, backend dial, TCP copy.
+- `internal/udprelay`: opaque UDP forwarding sessions used by fixed-backend UDP features.
 - `internal/metrics`: Prometheus registry, low-cardinality proxy metrics, and optional HTTP metrics server.
 - `internal/logging`: structured JSON logger setup.
 
@@ -65,6 +66,14 @@ Known limitations:
 
 - The gateway sends a login-state disconnect packet only for explicitly enabled route denied login fallback.
 - Copy close reasons identify the first completed direction; low-level TCP reset details are not classified beyond that.
+
+## Bedrock UDP Forwarding
+
+Bedrock Edition uses UDP, normally port `19132`. When `bedrock.enabled` is true, `mc-gateway` binds `bedrock.listen` and forwards opaque UDP datagrams to `bedrock.defaultBackend`.
+
+The Bedrock path maintains one expiring UDP relay session per client UDP address. Packets from a client are sent to the configured default backend, and packets received from that backend session socket are written back to the original client address. Idle sessions expire after `bedrock.sessionTimeout`, and the listener and sessions close when the main process context is cancelled.
+
+This feature does not parse RakNet or Bedrock packets, does not implement hostname-based Bedrock routing, and does not translate Bedrock protocol to Java protocol. Geyser must run on a backend Minecraft server or separate internal service. The first implementation is a single public UDP entrypoint for one default Geyser backend; Java TCP routing remains unchanged.
 
 ## Fallback Responses
 
