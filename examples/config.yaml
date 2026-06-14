@@ -7,9 +7,26 @@ metrics:
   path: "/metrics"
 bedrock:
   enabled: true
+  mode: "host-proxy"
   listen: ":19132"
   defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
   sessionTimeout: "30s"
+  # host-proxy mode reads the Bedrock login ServerAddress and matches it
+  # against these route hosts. Unknown hosts fall back to defaultBackend.
+  routes:
+    - name: hub
+      hosts:
+        - "play.example.com"
+        - "hub.play.example.com"
+      backend: "mc-hub.mc-hub.svc.cluster.local:19132"
+    - name: creative
+      hosts:
+        - "creative.play.example.com"
+      backend: "mc-creative.mc-creative.svc.cluster.local:19132"
+    - name: survival
+      hosts:
+        - "survival.play.example.com"
+      backend: "mc-survival.mc-survival.svc.cluster.local:19132"
 # Fallback responses are disabled by default. This example opts in to a
 # generic status response for denied status pings.
 fallback:

@@ -69,11 +69,44 @@ Known limitations:
 
 ## Bedrock UDP Forwarding
 
-Bedrock Edition uses UDP, normally port `19132`. When `bedrock.enabled` is true, `mc-gateway` binds `bedrock.listen` and forwards opaque UDP datagrams to `bedrock.defaultBackend`.
+Bedrock Edition uses UDP, normally port `19132`. When `bedrock.enabled` is true, `mc-gateway` binds `bedrock.listen` and runs one of two modes:
 
-The Bedrock path maintains one expiring UDP relay session per client UDP address. Packets from a client are sent to the configured default backend, and packets received from that backend session socket are written back to the original client address. Idle sessions expire after `bedrock.sessionTimeout`, and the listener and sessions close when the main process context is cancelled.
+- `udp-forward`: opaque UDP forwarding to `bedrock.defaultBackend`.
+- `host-proxy`: Bedrock-aware routing through gophertunnel, selecting a backend from the requested Bedrock `ServerAddress`.
 
-This feature does not parse RakNet or Bedrock packets, does not implement hostname-based Bedrock routing, and does not translate Bedrock protocol to Java protocol. Geyser must run on a backend Minecraft server or separate internal service. The first implementation is a single public UDP entrypoint for one default Geyser backend; Java TCP routing remains unchanged.
+In `udp-forward` mode, the Bedrock path maintains one expiring UDP relay session per client UDP address. A backend is selected when the first packet for a client UDP address creates a session. All later packets from that same client address use the same backend until the session expires or closes. Packets received from that backend session socket are written back to the original client address. Idle sessions expire after `bedrock.sessionTimeout`, and the listener and sessions close when the main process context is cancelled.
+
+In `host-proxy` mode, `mc-gateway` terminates the Bedrock/RakNet login using gophertunnel, reads `ClientData.ServerAddress`, normalizes the requested host case-insensitively, and selects a matching backend from `bedrock.routes[].hosts`. If no route matches, it dials `bedrock.defaultBackend`. The selected backend is fixed for that Bedrock connection. Packets are then copied between the client connection and the backend connection at the Bedrock packet layer.
+
+Geyser must run on each backend Minecraft server or separate internal service that should accept Bedrock players. `mc-router` does not run Geyser and does not translate Bedrock protocol to Java protocol itself.
+
+```yaml
+bedrock:
+  enabled: true
+  mode: "host-proxy"
+  listen: ":19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  routes:
+    - name: hub
+      hosts:
+        - "play.example.com"
+        - "hub.play.example.com"
+      backend: "mc-hub.mc-hub.svc.cluster.local:19132"
+    - name: creative
+      hosts:
+        - "creative.play.example.com"
+      backend: "mc-creative.mc-creative.svc.cluster.local:19132"
+    - name: survival
+      hosts:
+        - "survival.play.example.com"
+      backend: "mc-survival.mc-survival.svc.cluster.local:19132"
+```
+
+The pure `udp-forward` path cannot do host-aware routing: the requested hostname is not available in the early RakNet datagrams that an opaque relay sees. It appears later in the Bedrock login client data, after a RakNet/Minecraft session exists. That is why host-aware routing uses a Bedrock protocol library rather than the raw UDP relay.
+
+`host-proxy` has a larger compatibility and maintenance surface than `udp-forward`. It depends on gophertunnel supporting the Bedrock protocol version used by clients and backends, and backend Geyser/Floodgate authentication settings must be compatible with a proxied Bedrock session. Operators should validate this mode against their exact Geyser deployment before production use.
+
+The design goal remains one public UDP `19132` entrypoint rather than exposing public UDP `19133`, `19134`, and so on per backend. Java TCP routing remains separate and unchanged.
 
 ## Fallback Responses
 

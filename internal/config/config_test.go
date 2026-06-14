@@ -78,6 +78,9 @@ routes:
 	if cfg.Bedrock.Listen != "" {
 		t.Fatalf("bedrock listen = %q, want empty", cfg.Bedrock.Listen)
 	}
+	if cfg.Bedrock.Mode != BedrockModeUDPForward {
+		t.Fatalf("bedrock mode = %q, want %q", cfg.Bedrock.Mode, BedrockModeUDPForward)
+	}
 	if cfg.Bedrock.DefaultBackend != "" {
 		t.Fatalf("bedrock default backend = %q, want empty", cfg.Bedrock.DefaultBackend)
 	}
@@ -169,8 +172,55 @@ unknownHostPolicy: "deny"
 	if cfg.Bedrock.DefaultBackend != "mc-hub.mc-hub.svc.cluster.local:19132" {
 		t.Fatalf("bedrock default backend = %q", cfg.Bedrock.DefaultBackend)
 	}
+	if len(cfg.Bedrock.Routes) != 0 {
+		t.Fatalf("bedrock routes length = %d, want 0", len(cfg.Bedrock.Routes))
+	}
 	if cfg.Bedrock.SessionTimeout.Duration.String() != "45s" {
 		t.Fatalf("bedrock session timeout = %s", cfg.Bedrock.SessionTimeout.Duration)
+	}
+}
+
+func TestLoadAcceptsBedrockRoutes(t *testing.T) {
+	cfg, err := Load([]byte(`
+bedrock:
+  enabled: true
+  mode: "host-proxy"
+  listen: "127.0.0.1:19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  sessionTimeout: "45s"
+  routes:
+    - name: hub
+      hosts:
+        - "play.example.com"
+        - "hub.play.example.com:19132"
+      backend: "mc-hub.mc-hub.svc.cluster.local:19132"
+    - name: creative
+      hosts:
+        - "creative.play.example.com"
+      backend: "mc-creative.mc-creative.svc.cluster.local:19132"
+    - name: survival
+      hosts:
+        - "survival.play.example.com"
+      backend: "mc-survival.mc-survival.svc.cluster.local:19132"
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(cfg.Bedrock.Routes) != 3 {
+		t.Fatalf("bedrock routes length = %d, want 3", len(cfg.Bedrock.Routes))
+	}
+	if cfg.Bedrock.Mode != BedrockModeHostProxy {
+		t.Fatalf("bedrock mode = %q, want host-proxy", cfg.Bedrock.Mode)
+	}
+	if cfg.Bedrock.Routes[1].Name != "creative" {
+		t.Fatalf("second bedrock route name = %q", cfg.Bedrock.Routes[1].Name)
+	}
+	if cfg.Bedrock.Routes[1].Backend != "mc-creative.mc-creative.svc.cluster.local:19132" {
+		t.Fatalf("second bedrock route backend = %q", cfg.Bedrock.Routes[1].Backend)
+	}
+	if len(cfg.Bedrock.Routes[0].Hosts) != 2 {
+		t.Fatalf("first bedrock route hosts length = %d, want 2", len(cfg.Bedrock.Routes[0].Hosts))
 	}
 }
 
@@ -197,11 +247,30 @@ func TestLoadRejectsInvalidEnabledBedrockConfig(t *testing.T) {
 	}{
 		{name: "empty listen", body: `listen: ""`},
 		{name: "invalid listen", body: `listen: "bad address"`},
+		{name: "invalid mode", body: `mode: "magic"`},
 		{name: "empty default backend", body: `defaultBackend: ""`},
 		{name: "invalid default backend port", body: `defaultBackend: "hub:not-a-port"`},
 		{name: "unspecified default backend", body: `defaultBackend: "0.0.0.0:19132"`},
 		{name: "multicast default backend", body: `defaultBackend: "224.0.0.1:19132"`},
 		{name: "broadcast default backend", body: `defaultBackend: "255.255.255.255:19132"`},
+		{name: "empty route name", body: `routes: [{ name: "", backend: "hub:19132" }]`},
+		{name: "duplicate route name", body: `
+routes:
+  - name: hub
+    backend: "hub:19132"
+  - name: hub
+    backend: "other:19132"`},
+		{name: "invalid route backend", body: `routes: [{ name: "hub", backend: "hub:not-a-port" }]`},
+		{name: "unspecified route backend", body: `routes: [{ name: "hub", backend: "0.0.0.0:19132" }]`},
+		{name: "invalid route host", body: `routes: [{ name: "hub", hosts: ["bad host.example.com"], backend: "hub:19132" }]`},
+		{name: "duplicate route host", body: `
+routes:
+  - name: hub
+    hosts: ["play.example.com"]
+    backend: "hub:19132"
+  - name: survival
+    hosts: ["PLAY.EXAMPLE.COM:19132"]
+    backend: "survival:19132"`},
 		{name: "zero session timeout", body: `sessionTimeout: "0s"`},
 		{name: "too large session timeout", body: `sessionTimeout: "25h"`},
 	}
