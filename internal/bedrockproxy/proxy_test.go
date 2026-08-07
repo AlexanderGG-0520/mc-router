@@ -63,6 +63,45 @@ func TestProxyFallsBackToDefaultBackendForUnknownHost(t *testing.T) {
 	assertBackendNotAccepted(t, creative)
 }
 
+func TestProxyCloseStopsActiveConnection(t *testing.T) {
+	backend := startTestBedrockBackend(t, "hub")
+	proxy, err := New(Config{
+		Listen:             "127.0.0.1:0",
+		DefaultBackend:     backend.addr(),
+		BackendDialTimeout: 5 * time.Second,
+	}, discardProxyLogger())
+	if err != nil {
+		t.Fatalf("New proxy: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- proxy.Serve(context.Background())
+	}()
+
+	client, err := minecraft.Dialer{}.Dial("raknet", proxy.Addr())
+	if err != nil {
+		t.Fatalf("client dial proxy: %v", err)
+	}
+	defer client.Close()
+	if err := client.DoSpawn(); err != nil {
+		t.Fatalf("client spawn: %v", err)
+	}
+	assertBackendAccepted(t, backend, "hub")
+
+	if err := proxy.Close(); err != nil {
+		t.Fatalf("proxy Close returned error: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("proxy Serve returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy did not stop with an active connection")
+	}
+}
+
 func startTestProxy(t *testing.T, cfg Config) *Proxy {
 	t.Helper()
 	proxy, err := New(cfg, discardProxyLogger())
