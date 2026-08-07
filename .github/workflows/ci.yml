@@ -29,6 +29,12 @@ jobs:
       - name: go test
         run: go test ./...
 
+      - name: Bedrock host proxy regression
+        run: go test ./internal/bedrockproxy -run 'TestProxy(RoutesConnectionByRequestedHost|FallsBackToDefaultBackendForUnknownHost)$' -count=20
+
+      - name: Bedrock host proxy race regression
+        run: go test -race ./internal/bedrockproxy -run 'TestProxy(RoutesConnectionByRequestedHost|FallsBackToDefaultBackendForUnknownHost)$' -count=5
+
       - name: go test race
         run: go test -race ./...
 
