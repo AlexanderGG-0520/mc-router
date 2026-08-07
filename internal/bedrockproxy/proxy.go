@@ -20,11 +20,14 @@ type Config struct {
 	BackendDialTimeout time.Duration
 }
 
+type backendDialFunc func(context.Context, *minecraft.Conn, string) (*minecraft.Conn, error)
+
 type Proxy struct {
-	cfg      Config
-	logger   *slog.Logger
-	router   *bedrockroute.Router
-	listener *minecraft.Listener
+	cfg         Config
+	logger      *slog.Logger
+	router      *bedrockroute.Router
+	listener    *minecraft.Listener
+	dialBackend backendDialFunc
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
@@ -53,14 +56,16 @@ func New(cfg Config, logger *slog.Logger) (*Proxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen Bedrock host proxy %q: %w", cfg.Listen, err)
 	}
-	return &Proxy{
+	proxy := &Proxy{
 		cfg:      cfg,
 		logger:   logger,
 		router:   router,
 		listener: listener,
 		conns:    make(map[*minecraft.Conn]struct{}),
 		closedCh: make(chan struct{}),
-	}, nil
+	}
+	proxy.dialBackend = proxy.dialBackendConn
+	return proxy, nil
 }
 
 func (p *Proxy) Addr() string {
@@ -171,14 +176,7 @@ func (p *Proxy) handleConn(ctx context.Context, clientConn *minecraft.Conn) {
 		}
 	}()
 
-	serverConn, err := minecraft.Dialer{
-		ClientData:                 clientConn.ClientData(),
-		IdentityData:               clientConn.IdentityData(),
-		KeepXBLIdentityData:        true,
-		DisconnectOnInvalidPackets: false,
-		DisconnectOnUnknownPackets: false,
-		ErrorLog:                   p.logger.With("component", "bedrock_host_proxy_dialer"),
-	}.DialContext(dialCtx, "raknet", selection.Backend)
+	serverConn, err := p.dialBackend(dialCtx, clientConn, selection.Backend)
 	if err != nil {
 		if ctx.Err() != nil || p.isClosed() {
 			_ = clientConn.Close()
@@ -202,6 +200,17 @@ func (p *Proxy) handleConn(ctx context.Context, clientConn *minecraft.Conn) {
 		return
 	}
 	p.bridge(clientConn, serverConn)
+}
+
+func (p *Proxy) dialBackendConn(ctx context.Context, clientConn *minecraft.Conn, backend string) (*minecraft.Conn, error) {
+	return minecraft.Dialer{
+		ClientData:                 clientConn.ClientData(),
+		IdentityData:               clientConn.IdentityData(),
+		KeepXBLIdentityData:        true,
+		DisconnectOnInvalidPackets: false,
+		DisconnectOnUnknownPackets: false,
+		ErrorLog:                   p.logger.With("component", "bedrock_host_proxy_dialer"),
+	}.DialContext(ctx, "raknet", backend)
 }
 
 func (p *Proxy) spawn(clientConn *minecraft.Conn, serverConn *minecraft.Conn) error {
