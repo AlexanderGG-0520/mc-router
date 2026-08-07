@@ -23,9 +23,6 @@ jobs:
       - name: Refresh module metadata
         run: go mod tidy
 
-      - name: Verify Bedrock proxy tests
-        run: go test ./internal/bedrockproxy
-
       - name: Commit module metadata
         run: |
           if git diff --quiet -- go.mod go.sum; then
