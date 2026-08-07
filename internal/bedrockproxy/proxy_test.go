@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"net"
 	"testing"
 	"time"
 
@@ -21,11 +20,11 @@ func TestProxyRoutesConnectionByRequestedHost(t *testing.T) {
 		DefaultBackend:     hub.addr(),
 		BackendDialTimeout: 5 * time.Second,
 		Routes: []bedrockroute.Route{
-			{Name: "creative", Hosts: []string{"LOCALHOST"}, Backend: creative.addr()},
+			{Name: "creative", Hosts: []string{"127.0.0.1:19132"}, Backend: creative.addr()},
 		},
 	})
 
-	client, err := minecraft.Dialer{}.Dial("raknet", proxyAddressWithHost(t, proxy, "localhost"))
+	client, err := minecraft.Dialer{}.Dial("raknet", proxy.Addr())
 	if err != nil {
 		t.Fatalf("client dial proxy: %v", err)
 	}
@@ -47,7 +46,7 @@ func TestProxyFallsBackToDefaultBackendForUnknownHost(t *testing.T) {
 		DefaultBackend:     hub.addr(),
 		BackendDialTimeout: 5 * time.Second,
 		Routes: []bedrockroute.Route{
-			{Name: "creative", Hosts: []string{"localhost"}, Backend: creative.addr()},
+			{Name: "creative", Hosts: []string{"creative.play.example.com"}, Backend: creative.addr()},
 		},
 	})
 
@@ -88,15 +87,6 @@ func startTestProxy(t *testing.T, cfg Config) *Proxy {
 		}
 	})
 	return proxy
-}
-
-func proxyAddressWithHost(t *testing.T, proxy *Proxy, host string) string {
-	t.Helper()
-	_, port, err := net.SplitHostPort(proxy.Addr())
-	if err != nil {
-		t.Fatalf("split proxy address %q: %v", proxy.Addr(), err)
-	}
-	return net.JoinHostPort(host, port)
 }
 
 func assertBackendAccepted(t *testing.T, backend *testBedrockBackend, want string) {
