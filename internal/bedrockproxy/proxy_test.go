@@ -29,9 +29,6 @@ func TestProxyRoutesConnectionByRequestedHost(t *testing.T) {
 		t.Fatalf("client dial proxy: %v", err)
 	}
 	defer client.Close()
-	if err := client.DoSpawn(); err != nil {
-		t.Fatalf("client spawn: %v", err)
-	}
 
 	assertBackendAccepted(t, creative, "creative")
 	assertBackendNotAccepted(t, hub)
@@ -55,9 +52,6 @@ func TestProxyFallsBackToDefaultBackendForUnknownHost(t *testing.T) {
 		t.Fatalf("client dial proxy: %v", err)
 	}
 	defer client.Close()
-	if err := client.DoSpawn(); err != nil {
-		t.Fatalf("client spawn: %v", err)
-	}
 
 	assertBackendAccepted(t, hub, "hub")
 	assertBackendNotAccepted(t, creative)
@@ -84,9 +78,6 @@ func TestProxyCloseStopsActiveConnection(t *testing.T) {
 		t.Fatalf("client dial proxy: %v", err)
 	}
 	defer client.Close()
-	if err := client.DoSpawn(); err != nil {
-		t.Fatalf("client spawn: %v", err)
-	}
 	assertBackendAccepted(t, backend, "hub")
 
 	if err := proxy.Close(); err != nil {
@@ -175,9 +166,6 @@ func startTestBedrockBackend(t *testing.T, name string) *testBedrockBackend {
 		}
 		mcConn := conn.(*minecraft.Conn)
 		defer mcConn.Close()
-		if err := mcConn.StartGame(minecraft.GameData{WorldName: name}); err != nil {
-			return
-		}
 		backend.accepted <- name
 		for {
 			if _, err := mcConn.ReadPacket(); err != nil {
