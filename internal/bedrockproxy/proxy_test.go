@@ -2,6 +2,7 @@ package bedrockproxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -11,98 +12,176 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft"
 )
 
-func TestProxyRoutesConnectionByRequestedHost(t *testing.T) {
-	hub := startTestBedrockBackend(t, "hub")
-	creative := startTestBedrockBackend(t, "creative")
+var errTestBackendDial = errors.New("test backend dial stopped")
 
-	proxy, err := New(Config{
+func TestProxyRoutesConnectionByRequestedHost(t *testing.T) {
+	const (
+		hubBackend      = "hub.test:19132"
+		creativeBackend = "creative.test:19132"
+	)
+	proxy := startTestProxy(t, Config{
 		Listen:             "127.0.0.1:0",
-		DefaultBackend:     hub.addr(),
+		DefaultBackend:     hubBackend,
 		BackendDialTimeout: 5 * time.Second,
 		Routes: []bedrockroute.Route{
-			{Name: "creative", Hosts: []string{"127.0.0.1"}, Backend: creative.addr()},
+			{Name: "creative", Hosts: []string{"127.0.0.1:19132"}, Backend: creativeBackend},
 		},
+	})
+	selected := captureBackendDial(proxy)
+
+	dialProxyAsync(t, proxy.Addr())
+	assertSelectedBackend(t, selected, creativeBackend)
+}
+
+func TestProxyFallsBackToDefaultBackendForUnknownHost(t *testing.T) {
+	const (
+		hubBackend      = "hub.test:19132"
+		creativeBackend = "creative.test:19132"
+	)
+	proxy := startTestProxy(t, Config{
+		Listen:             "127.0.0.1:0",
+		DefaultBackend:     hubBackend,
+		BackendDialTimeout: 5 * time.Second,
+		Routes: []bedrockroute.Route{
+			{Name: "creative", Hosts: []string{"creative.play.example.com"}, Backend: creativeBackend},
+		},
+	})
+	selected := captureBackendDial(proxy)
+
+	dialProxyAsync(t, proxy.Addr())
+	assertSelectedBackend(t, selected, hubBackend)
+}
+
+func TestProxyCloseStopsActiveConnection(t *testing.T) {
+	proxy, err := New(Config{
+		Listen:             "127.0.0.1:0",
+		DefaultBackend:     "hub.test:19132",
+		BackendDialTimeout: 30 * time.Second,
 	}, discardProxyLogger())
 	if err != nil {
 		t.Fatalf("New proxy: %v", err)
 	}
+	t.Cleanup(func() { _ = proxy.Close() })
+
+	dialStarted := make(chan struct{}, 1)
+	proxy.dialBackend = func(ctx context.Context, _ *minecraft.Conn, _ string) (*minecraft.Conn, error) {
+		dialStarted <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- proxy.Serve(context.Background())
+	}()
+	clientCtx, cancelClient := context.WithCancel(context.Background())
+	clientDone := dialProxy(clientCtx, proxy.Addr())
+
+	select {
+	case <-dialStarted:
+	case <-time.After(5 * time.Second):
+		cancelClient()
+		t.Fatal("backend dial did not start")
+	}
+
+	if err := proxy.Close(); err != nil {
+		cancelClient()
+		t.Fatalf("proxy Close returned error: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			cancelClient()
+			t.Fatalf("proxy Serve returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		cancelClient()
+		t.Fatal("proxy did not stop with an active connection")
+	}
+
+	cancelClient()
+	select {
+	case <-clientDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("client dial did not stop after cancellation")
+	}
+}
+
+func startTestProxy(t *testing.T, cfg Config) *Proxy {
+	t.Helper()
+	proxy, err := New(cfg, discardProxyLogger())
+	if err != nil {
+		t.Fatalf("New proxy: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		done <- proxy.Serve(ctx)
 	}()
-	defer func() {
+	t.Cleanup(func() {
 		cancel()
 		_ = proxy.Close()
 		select {
 		case err := <-done:
 			if err != nil {
-				t.Fatalf("proxy Serve returned error: %v", err)
+				t.Errorf("proxy Serve returned error: %v", err)
 			}
 		case <-time.After(2 * time.Second):
-			t.Fatal("proxy did not stop")
+			t.Error("proxy did not stop")
 		}
-	}()
+	})
+	return proxy
+}
 
-	client, err := minecraft.Dialer{}.Dial("raknet", proxy.Addr())
-	if err != nil {
-		t.Fatalf("client dial proxy: %v", err)
+func captureBackendDial(proxy *Proxy) <-chan string {
+	selected := make(chan string, 1)
+	proxy.dialBackend = func(ctx context.Context, _ *minecraft.Conn, backend string) (*minecraft.Conn, error) {
+		select {
+		case selected <- backend:
+			return nil, errTestBackendDial
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	defer client.Close()
-	if err := client.DoSpawn(); err != nil {
-		t.Fatalf("client spawn: %v", err)
-	}
+	return selected
+}
 
+func assertSelectedBackend(t *testing.T, selected <-chan string, want string) {
+	t.Helper()
 	select {
-	case got := <-creative.accepted:
-		if got != "creative" {
-			t.Fatalf("accepted backend = %q, want creative", got)
+	case got := <-selected:
+		if got != want {
+			t.Fatalf("selected backend = %q, want %q", got, want)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("creative backend did not receive connection")
-	}
-	select {
-	case got := <-hub.accepted:
-		t.Fatalf("hub backend unexpectedly accepted connection %q", got)
-	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("backend %q was not selected", want)
 	}
 }
 
-type testBedrockBackend struct {
-	listener *minecraft.Listener
-	accepted chan string
-}
-
-func startTestBedrockBackend(t *testing.T, name string) *testBedrockBackend {
+func dialProxyAsync(t *testing.T, address string) {
 	t.Helper()
-	listener, err := minecraft.ListenConfig{
-		AuthenticationDisabled: true,
-		ErrorLog:               discardProxyLogger(),
-	}.Listen("raknet", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen backend %s: %v", name, err)
-	}
-	backend := &testBedrockBackend{
-		listener: listener,
-		accepted: make(chan string, 1),
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
+	ctx, cancel := context.WithCancel(context.Background())
+	done := dialProxy(ctx, address)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("client dial did not stop")
 		}
-		backend.accepted <- name
-		mcConn := conn.(*minecraft.Conn)
-		_ = mcConn.StartGame(minecraft.GameData{WorldName: name})
-		_ = mcConn.Close()
-	}()
-	return backend
+	})
 }
 
-func (b *testBedrockBackend) addr() string {
-	return b.listener.Addr().String()
+func dialProxy(ctx context.Context, address string) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		conn, err := (minecraft.Dialer{}).DialContext(ctx, "raknet", address)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		done <- err
+	}()
+	return done
 }
 
 func discardProxyLogger() *slog.Logger {
