@@ -74,29 +74,36 @@ func TestProxyCloseStopsActiveConnection(t *testing.T) {
 	go func() {
 		done <- proxy.Serve(context.Background())
 	}()
-	clientDone := dialProxy(proxy.Addr())
+	clientCtx, cancelClient := context.WithCancel(context.Background())
+	clientDone := dialProxy(clientCtx, proxy.Addr())
 
 	select {
 	case <-dialStarted:
 	case <-time.After(5 * time.Second):
+		cancelClient()
 		t.Fatal("backend dial did not start")
 	}
 
 	if err := proxy.Close(); err != nil {
+		cancelClient()
 		t.Fatalf("proxy Close returned error: %v", err)
 	}
 	select {
 	case err := <-done:
 		if err != nil {
+			cancelClient()
 			t.Fatalf("proxy Serve returned error: %v", err)
 		}
 	case <-time.After(2 * time.Second):
+		cancelClient()
 		t.Fatal("proxy did not stop with an active connection")
 	}
+
+	cancelClient()
 	select {
 	case <-clientDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("client dial did not stop after proxy close")
+		t.Fatal("client dial did not stop after cancellation")
 	}
 }
 
@@ -153,8 +160,10 @@ func assertSelectedBackend(t *testing.T, selected <-chan string, want string) {
 
 func dialProxyAsync(t *testing.T, address string) {
 	t.Helper()
-	done := dialProxy(address)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := dialProxy(ctx, address)
 	t.Cleanup(func() {
+		cancel()
 		select {
 		case <-done:
 		case <-time.After(2 * time.Second):
@@ -163,10 +172,10 @@ func dialProxyAsync(t *testing.T, address string) {
 	})
 }
 
-func dialProxy(address string) <-chan error {
+func dialProxy(ctx context.Context, address string) <-chan error {
 	done := make(chan error, 1)
 	go func() {
-		conn, err := minecraft.Dialer{}.Dial("raknet", address)
+		conn, err := (minecraft.Dialer{}).DialContext(ctx, "raknet", address)
 		if conn != nil {
 			_ = conn.Close()
 		}
