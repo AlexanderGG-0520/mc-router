@@ -28,6 +28,11 @@ type Proxy struct {
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+
+	connMu   sync.Mutex
+	conns    map[*minecraft.Conn]struct{}
+	closed   bool
+	closedCh chan struct{}
 }
 
 func New(cfg Config, logger *slog.Logger) (*Proxy, error) {
@@ -53,6 +58,8 @@ func New(cfg Config, logger *slog.Logger) (*Proxy, error) {
 		logger:   logger,
 		router:   router,
 		listener: listener,
+		conns:    make(map[*minecraft.Conn]struct{}),
+		closedCh: make(chan struct{}),
 	}, nil
 }
 
@@ -68,14 +75,17 @@ func (p *Proxy) Serve(ctx context.Context) error {
 	defer p.logger.Info("bedrock_host_proxy_stopped")
 
 	go func() {
-		<-ctx.Done()
-		_ = p.Close()
+		select {
+		case <-ctx.Done():
+			_ = p.Close()
+		case <-p.closedCh:
+		}
 	}()
 
 	for {
 		conn, err := p.listener.Accept()
 		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) || p.isClosed() {
 				p.wg.Wait()
 				return nil
 			}
@@ -83,9 +93,14 @@ func (p *Proxy) Serve(ctx context.Context) error {
 			continue
 		}
 		clientConn := conn.(*minecraft.Conn)
+		if !p.registerConn(clientConn) {
+			_ = clientConn.Close()
+			continue
+		}
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
+			defer p.unregisterConn(clientConn)
 			p.handleConn(ctx, clientConn)
 		}()
 	}
@@ -93,9 +108,46 @@ func (p *Proxy) Serve(ctx context.Context) error {
 
 func (p *Proxy) Close() error {
 	p.closeOnce.Do(func() {
+		p.connMu.Lock()
+		p.closed = true
+		close(p.closedCh)
+		conns := make([]*minecraft.Conn, 0, len(p.conns))
+		for conn := range p.conns {
+			conns = append(conns, conn)
+		}
+		p.connMu.Unlock()
+
 		_ = p.listener.Close()
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
 	})
 	return nil
+}
+
+func (p *Proxy) registerConn(conn *minecraft.Conn) bool {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+	if p.closed {
+		return false
+	}
+	p.conns[conn] = struct{}{}
+	return true
+}
+
+func (p *Proxy) unregisterConn(conn *minecraft.Conn) {
+	p.connMu.Lock()
+	delete(p.conns, conn)
+	p.connMu.Unlock()
+}
+
+func (p *Proxy) isClosed() bool {
+	select {
+	case <-p.closedCh:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Proxy) handleConn(ctx context.Context, clientConn *minecraft.Conn) {
@@ -111,6 +163,13 @@ func (p *Proxy) handleConn(ctx context.Context, clientConn *minecraft.Conn) {
 
 	dialCtx, cancel := context.WithTimeout(ctx, p.cfg.BackendDialTimeout)
 	defer cancel()
+	go func() {
+		select {
+		case <-p.closedCh:
+			cancel()
+		case <-dialCtx.Done():
+		}
+	}()
 
 	serverConn, err := minecraft.Dialer{
 		ClientData:                 clientConn.ClientData(),
@@ -121,10 +180,20 @@ func (p *Proxy) handleConn(ctx context.Context, clientConn *minecraft.Conn) {
 		ErrorLog:                   p.logger.With("component", "bedrock_host_proxy_dialer"),
 	}.DialContext(dialCtx, "raknet", selection.Backend)
 	if err != nil {
+		if ctx.Err() != nil || p.isClosed() {
+			_ = clientConn.Close()
+			return
+		}
 		p.logger.Warn("bedrock_host_proxy_backend_dial_failed", "backend", selection.Backend, "error", err)
 		_ = p.listener.Disconnect(clientConn, "Bedrock backend unavailable.")
 		return
 	}
+	if !p.registerConn(serverConn) {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+		return
+	}
+	defer p.unregisterConn(serverConn)
 	defer serverConn.Close()
 	defer p.listener.Disconnect(clientConn, "connection lost")
 
