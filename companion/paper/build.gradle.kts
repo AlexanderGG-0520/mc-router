@@ -1,7 +1,7 @@
 dependencies {
     api(project(":core"))
     compileOnly("io.papermc.paper:paper-api:1.21.8-R0.1-SNAPSHOT")
-    compileOnly("de.maxhenkel.voicechat:voicechat-api:2.6.13")
+    compileOnly("de.maxhenkel.voicechat:voicechat-api:2.6.20")
 }
 
 tasks.jar {
