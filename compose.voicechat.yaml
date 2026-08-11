@@ -196,7 +196,7 @@ services:
     environment:
       EULA: "true"
       TYPE: "fabric"
-      VERSION: "26.1.2"
+      VERSION: "26.2"
 
       ONLINE_MODE: "false"
       ACCEPTS_TRANSFERS: "true"

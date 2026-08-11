@@ -50,13 +50,13 @@ val e2eDependencies = listOf(
     ModrinthDependency(
         project = "simple-voice-chat",
         loader = "fabric",
-        minecraftVersion = "26.1.2",
+        minecraftVersion = "26.2",
         outputFile = "simple-voice-chat-fabric.jar",
     ),
     ModrinthDependency(
         project = "fabric-api",
         loader = "fabric",
-        minecraftVersion = "26.1.2",
+        minecraftVersion = "26.2",
         outputFile = "fabric-api.jar",
     ),
 )

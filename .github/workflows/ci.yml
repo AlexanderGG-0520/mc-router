@@ -41,6 +41,19 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "9.6.1"
+          cache-provider: basic
+
+      - name: Voice chat companion build
+        run: gradle -p companion :core:test :fabric:jar :paper:jar
+
       - name: Voice chat Compose config
         run: docker compose -f compose.voicechat.yaml config
 
