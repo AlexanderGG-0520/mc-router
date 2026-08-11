@@ -1,6 +1,6 @@
 dependencies {
     api(project(":core"))
-    compileOnly("net.fabricmc:fabric-loader:0.18.4")
+    compileOnly("net.fabricmc:fabric-loader:0.19.3")
     compileOnly("de.maxhenkel.voicechat:voicechat-api:2.6.13")
 }
 
