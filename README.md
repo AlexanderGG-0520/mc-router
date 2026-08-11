@@ -143,14 +143,14 @@ The table below describes the versions currently targeted by the source tree. It
 
 | Component                      | Fabric companion | Paper companion                      | Validation status                                                                             |
 | ------------------------------ | ---------------- | ------------------------------------ | --------------------------------------------------------------------------------------------- |
-| Minecraft                      | `26.1.x`         | `1.21.8`                             | Builds successfully; cross-version Transfer environment still requires real-client validation |
+| Minecraft                      | `26.2`           | `1.21.8`                             | Builds successfully; cross-version Transfer environment still requires real-client validation |
 | Java                           | 25               | 21                                   | Compile and JAR packaging verified                                                            |
-| Fabric Loader                  | `>=0.18.4`       | N/A                                  | Matches the Simple Voice Chat 2.6.18 + Minecraft 26.1.2 upstream target                       |
+| Fabric Loader                  | `>=0.19.3`       | N/A                                  | Matches the Simple Voice Chat 2.6.21 + Minecraft 26.2 upstream target                         |
 | Simple Voice Chat runtime      | `>=2.6.18`       | Version compatible with Paper 1.21.8 | API compilation and packaging verified; runtime event behavior still requires validation      |
-| Simple Voice Chat API artifact | `2.6.13`         | `2.6.13`                             | Compile-time dependency only                                                                  |
-| Companion                      | `0.2.0` | `0.2.0`                     | Experimental, unreleased                                                                      |
+| Simple Voice Chat API artifact | `2.6.20`         | `2.6.20`                             | Compile-time dependency only                                                                  |
+| Companion                      | `0.2.0`          | `0.2.0`                              | Experimental, unreleased                                                                      |
 
-The inspected Simple Voice Chat upstream target uses Minecraft `26.1.2`, Java 25, Fabric Loader `0.18.4`, and Simple Voice Chat `2.6.18+26.1.2`. The companion currently compiles against the separately published `voicechat-api:2.6.13` artifact. Runtime compatibility must be validated before the first stable companion release.
+The inspected Simple Voice Chat upstream target uses Minecraft `26.2`, Java 25, Fabric Loader `0.19.3`, and Simple Voice Chat `2.6.21+26.2`. The companion compiles against the separately published `voicechat-api:2.6.20` artifact. Runtime compatibility must be validated before the first stable companion release.
 
 See [docs/voicechat-routing-design.md](docs/voicechat-routing-design.md) for the protocol investigation, threat model, rejected alternatives, and session lifecycle.
 
