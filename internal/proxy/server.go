@@ -311,6 +311,12 @@ func cloneRouteSnapshot(snapshot RouteSnapshot) RouteSnapshot {
 
 func cloneConfig(cfg config.Config) config.Config {
 	cfg.Routes = append([]config.Route(nil), cfg.Routes...)
+	for i := range cfg.Routes {
+		if cfg.Routes[i].StatusOverride != nil {
+			override := *cfg.Routes[i].StatusOverride
+			cfg.Routes[i].StatusOverride = &override
+		}
+	}
 	if cfg.Fallback.Login.RespondOnRouteDenied != nil {
 		value := *cfg.Fallback.Login.RespondOnRouteDenied
 		cfg.Fallback.Login.RespondOnRouteDenied = &value
@@ -446,6 +452,16 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		return
 	}
 	s.metrics.RouteDecision(routeDecisionResult(selection.MatchedBy))
+	if handshake.NextState == mcproto.NextStateStatus && selection.StatusOverride != nil {
+		if err := s.serveStatusOverride(client, state.cfg.HandshakeTimeout.Duration, *selection.StatusOverride); err != nil {
+			s.logger.Warn("route status override response failed", "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend, "error", err)
+			return
+		}
+		connectionResult = gatewaymetrics.ConnectionResultClosed
+		connectionReason = gatewaymetrics.ReasonSuccess
+		s.logger.Info("route status override response sent", "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend)
+		return
+	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, state.cfg.BackendDialTimeout.Duration)
 	defer cancel()
@@ -532,6 +548,54 @@ func loginFallbackForRouteDeniedEnabled(cfg config.Config, handshake mcproto.Han
 
 func loginFallbackEnabled(cfg config.Config, handshake mcproto.Handshake) bool {
 	return cfg.Fallback.Enabled && cfg.Fallback.Login.Enabled && handshake.NextState == mcproto.NextStateLogin
+}
+
+func (s *Server) serveStatusOverride(client net.Conn, handshakeTimeout time.Duration, override config.StatusOverride) error {
+	if err := client.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return err
+	}
+	packetID, payload, err := mcproto.ReadPacket(client, s.limits.MaxPacketLength)
+	if err != nil {
+		return err
+	}
+	if packetID != mcproto.StatusRequestPacketID || len(payload) != 0 {
+		return errors.New("malformed status request")
+	}
+
+	response, err := mcproto.BuildStatusResponsePacket(mcproto.StatusResponse{
+		Version: mcproto.StatusVersion{
+			Name:     override.ProtocolName,
+			Protocol: override.ProtocolVersion,
+		},
+		Players: mcproto.StatusPlayers{
+			Max:    override.MaxPlayers,
+			Online: override.OnlinePlayers,
+		},
+		Description: mcproto.StatusChatComponent{
+			Text: override.MOTD,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if err := writeAll(client, response); err != nil {
+		return err
+	}
+
+	if err := client.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return err
+	}
+	packetID, payload, err = mcproto.ReadPacket(client, s.limits.MaxPacketLength)
+	if err != nil {
+		if errors.Is(err, io.EOF) || isTimeout(err) {
+			return nil
+		}
+		return err
+	}
+	if packetID != mcproto.StatusPingPacketID || len(payload) != 8 {
+		return errors.New("malformed status ping")
+	}
+	return writeAll(client, mcproto.BuildStatusPongPacket(payload))
 }
 
 func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteAddr string, routeAddress string, reason string, backendAddress string) error {
