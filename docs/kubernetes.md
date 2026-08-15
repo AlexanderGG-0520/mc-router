@@ -26,6 +26,8 @@ alec-smp.alec-smp.svc.cluster.local:25565
 alec-smp-lobby.alec-smp-lobby.svc.cluster.local:25565
 ```
 
+Static routes may set `statusBackend` to another Service DNS address when Java status pings should represent a different server. Kubernetes Service annotation discovery does not currently discover `statusBackend`; discovered routes use their annotated backend for all Java connection states.
+
 ## Minimal Deployment
 
 The MVP manifest is in:

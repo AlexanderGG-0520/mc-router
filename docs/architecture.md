@@ -227,6 +227,8 @@ Kubernetes Service annotation discovery includes:
 
 Static routes take precedence over discovered routes. `defaultRoute` remains outside the explicit route list and is evaluated after static and discovered routes. See [Kubernetes Discovery](kubernetes-discovery.md).
 
+`statusBackend` is a static route field. Kubernetes Service annotation discovery intentionally discovers only a host and its normal backend, so discovered routes continue to use that backend for status, login, and Transfer traffic.
+
 Kubernetes watch updates provide a complete replacement discovery `Result`. The runtime converts `Result.Routes` through `SnapshotProvider`, then rebuilds a route snapshot from the latest valid static config plus that route-only provider. It swaps the active snapshot only if the rebuild succeeds. Skipped Services, duplicate host metadata, and skipped reason counts remain discovery result, logging, and metrics concerns rather than route-provider data. Watch controller failures and rebuild failures keep the previous active snapshot. After the first successful sync, watch failures are retried with backoff by relisting Services and opening a new watch.
 
 Kubernetes discovery metrics are updated only after successful startup snapshot rebuilds, successful reload discovery applies, successful runtime syncs, and bounded failure points. Rebuild failures increment a discovery error counter where applicable and keep the previous discovered route and skipped Service gauges unchanged. `mc_gateway_kubernetes_skipped_services{reason}` reflects the latest successfully applied discovery snapshot.
@@ -253,6 +255,8 @@ A successful reload logs `reload_success`. The listener address is still a start
 Metrics server settings are also startup settings. SIGHUP reload updates route snapshots and route-related metrics, but changes to `metrics.enabled`, `metrics.listen`, or `metrics.path` require a process restart.
 
 Fallback settings are part of the route config snapshot and are applied to new connections after a successful reload.
+
+Route fields such as `statusBackend` and `statusOverride` are part of the same immutable snapshot. A successful reload changes their behavior only for new connections; existing proxied connections keep their original backend.
 
 Kubernetes discovery does not reconfigure its namespace, client, or annotation prefix during reload. When discovery was enabled at startup, reload loads the new static route config, performs a fresh Service list using the startup discovery namespace, annotation prefix, and client setup, builds a complete discovery `Result` with `BuildDiscoveredRoutes`, applies routes through the route-only `SnapshotProvider` and `RouteProvider` path, and updates skipped Service metrics only after the reload result is successfully applied.
 

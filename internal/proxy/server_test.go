@@ -63,7 +63,7 @@ func TestProxyRoutesTransferHandshakeToKnownBackend(t *testing.T) {
 		BackendDialTimeout: config.Duration{Duration: time.Second},
 		UnknownHostPolicy:  config.UnknownHostDeny,
 		Routes: []config.Route{
-			{ServerAddress: "transfer.example.com", Backend: backendListener.Addr().String()},
+			{ServerAddress: "transfer.example.com", Backend: backendListener.Addr().String(), StatusBackend: "127.0.0.1:1"},
 		},
 	})
 	defer stop()
@@ -150,6 +150,7 @@ func TestRouteStatusOverrideRespondsWithoutDialingBackend(t *testing.T) {
 		{
 			ServerAddress: "smp.example.com",
 			Backend:       "127.0.0.1:1",
+			StatusBackend: "127.0.0.1:1",
 			StatusOverride: &config.StatusOverride{
 				MOTD:            "Alec SMP",
 				ProtocolName:    "Alec SMP 2",
@@ -1192,6 +1193,60 @@ func TestReloadFileUsesNewRoutesForNewConnections(t *testing.T) {
 	}
 }
 
+func TestReloadFileUsesNewStatusBackendForNewStatusConnections(t *testing.T) {
+	firstBackend := startStatusProtocolBackend(t)
+	defer firstBackend.close()
+	secondBackend := startStatusProtocolBackend(t)
+	defer secondBackend.close()
+
+	configPath := t.TempDir() + "/config.yaml"
+	writeRoutesConfigAt(t, configPath, []config.Route{{
+		ServerAddress: "smp.example.com",
+		Backend:       "127.0.0.1:1",
+		StatusBackend: firstBackend.addr,
+	}})
+	gatewayAddr, server, stop := startReloadableTestServer(t, configPath)
+	defer stop()
+
+	firstClient := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer firstClient.Close()
+	_ = readStatusResponse(t, firstClient)
+
+	writeRoutesConfigAt(t, configPath, []config.Route{{
+		ServerAddress: "smp.example.com",
+		Backend:       "127.0.0.1:1",
+		StatusBackend: secondBackend.addr,
+	}})
+	if err := server.ReloadFile(configPath); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+
+	if err := writeAll(firstClient, mcproto.BuildPacket(mcproto.StatusPingPacketID, mcproto.EncodeLong(1))); err != nil {
+		t.Fatalf("write first ping: %v", err)
+	}
+	if got := readStatusPong(t, firstClient); got != 1 {
+		t.Fatalf("first pong payload = %d, want 1", got)
+	}
+	_ = waitProtocolResult(t, firstBackend.result)
+
+	secondClient := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer secondClient.Close()
+	_ = readStatusResponse(t, secondClient)
+	if err := writeAll(secondClient, mcproto.BuildPacket(mcproto.StatusPingPacketID, mcproto.EncodeLong(2))); err != nil {
+		t.Fatalf("write second ping: %v", err)
+	}
+	if got := readStatusPong(t, secondClient); got != 2 {
+		t.Fatalf("second pong payload = %d, want 2", got)
+	}
+	_ = waitProtocolResult(t, secondBackend.result)
+}
+
 func TestReloadFileKeepsCurrentRoutesWhenConfigIsInvalid(t *testing.T) {
 	backend := listenLocalTCP(t)
 	defer backend.Close()
@@ -2129,6 +2184,9 @@ func writeRoutesConfig(t *testing.T, path string, routes []config.Route, metrics
 	var routeBody string
 	for _, route := range routes {
 		routeBody += fmt.Sprintf("  - serverAddress: %s\n    backend: %q\n", route.ServerAddress, route.Backend)
+		if route.StatusBackend != "" {
+			routeBody += fmt.Sprintf("    statusBackend: %q\n", route.StatusBackend)
+		}
 	}
 	metricsBlock := ""
 	if metricsEnabled {

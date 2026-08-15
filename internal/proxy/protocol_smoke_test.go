@@ -54,6 +54,12 @@ func TestProtocolSmokeStatusFlow(t *testing.T) {
 	if version, ok := status["version"].(map[string]any); !ok || version["name"] != "mc-router-smoke" {
 		t.Fatalf("unexpected status response: %s", statusJSON)
 	}
+	if status["favicon"] != "data:image/png;base64,AA==" || status["enforcesSecureChat"] != true {
+		t.Fatalf("status response was not passed through: %s", statusJSON)
+	}
+	if players, ok := status["players"].(map[string]any); !ok || len(players["sample"].([]any)) != 1 {
+		t.Fatalf("status player sample was not passed through: %s", statusJSON)
+	}
 
 	writeProtocolBytes(t, client, buildPacket(0x01, encodeLong(pingPayload)))
 	pongID, pongPayload := readProtocolPacket(t, clientReader)
@@ -79,6 +85,65 @@ func TestProtocolSmokeStatusFlow(t *testing.T) {
 	}
 }
 
+func TestProtocolSmokeStatusBackendFlow(t *testing.T) {
+	statusBackend := startStatusProtocolBackend(t)
+	defer statusBackend.close()
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "status.example.com", Backend: "127.0.0.1:1", StatusBackend: statusBackend.addr},
+		},
+	})
+	defer stop()
+
+	client := dialProtocolClient(t, gatewayAddr)
+	defer client.Close()
+	clientReader := bufio.NewReader(client)
+	requestedAddress := "STATUS.Example.COM."
+	pingPayload := int64(0x1122334455667788)
+	writeProtocolBytes(t, client,
+		buildHandshakePacket(smokeProtocolVersion, requestedAddress, 25565, mcproto.NextStateStatus),
+		buildPacket(0x00),
+	)
+
+	statusID, statusPayload := readProtocolPacket(t, clientReader)
+	if statusID != 0x00 {
+		t.Fatalf("status response packet id = %d, want 0", statusID)
+	}
+	statusJSON := readProtocolString(t, statusPayload)
+	var status map[string]any
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		t.Fatalf("status response is not JSON: %v", err)
+	}
+	if version, ok := status["version"].(map[string]any); !ok || version["name"] != "mc-router-smoke" {
+		t.Fatalf("unexpected status response: %s", statusJSON)
+	}
+	if status["favicon"] != "data:image/png;base64,AA==" || status["enforcesSecureChat"] != true {
+		t.Fatalf("status response was not passed through: %s", statusJSON)
+	}
+	if players, ok := status["players"].(map[string]any); !ok || len(players["sample"].([]any)) != 1 {
+		t.Fatalf("status player sample was not passed through: %s", statusJSON)
+	}
+
+	writeProtocolBytes(t, client, buildPacket(0x01, encodeLong(pingPayload)))
+	pongID, pongPayload := readProtocolPacket(t, clientReader)
+	if pongID != 0x01 {
+		t.Fatalf("pong packet id = %d, want 1", pongID)
+	}
+	if got := readLong(t, pongPayload); got != pingPayload {
+		t.Fatalf("pong payload = %x, want %x", got, pingPayload)
+	}
+
+	result := waitProtocolResult(t, statusBackend.result)
+	if result.handshake.ServerAddress != requestedAddress || result.handshake.NextState != mcproto.NextStateStatus {
+		t.Fatalf("status backend handshake = %#v", result.handshake)
+	}
+}
+
 func TestProtocolSmokeLoginStartFlow(t *testing.T) {
 	loginBackend := startLoginProtocolBackend(t)
 	defer loginBackend.close()
@@ -89,7 +154,7 @@ func TestProtocolSmokeLoginStartFlow(t *testing.T) {
 		BackendDialTimeout: config.Duration{Duration: time.Second},
 		UnknownHostPolicy:  config.UnknownHostDeny,
 		Routes: []config.Route{
-			{ServerAddress: "login.example.com", Backend: loginBackend.addr},
+			{ServerAddress: "login.example.com", Backend: loginBackend.addr, StatusBackend: "127.0.0.1:1"},
 		},
 	})
 	defer stop()
@@ -172,7 +237,7 @@ func startStatusProtocolBackend(t *testing.T) protocolBackend {
 			result <- protocolResult{err: fmt.Errorf("invalid status request packet id=%d payload=%v", packetID, payload)}
 			return
 		}
-		statusJSON := `{"version":{"name":"mc-router-smoke","protocol":767},"players":{"max":20,"online":0},"description":{"text":"mc-router smoke"}}`
+		statusJSON := `{"version":{"name":"mc-router-smoke","protocol":767},"players":{"max":20,"online":0,"sample":[{"name":"SamplePlayer","id":"00000000-0000-0000-0000-000000000000"}]},"description":{"text":"mc-router smoke"},"favicon":"data:image/png;base64,AA==","enforcesSecureChat":true}`
 		if err := writeProtocolPacket(conn, 0x00, encodeString(statusJSON)); err != nil {
 			result <- protocolResult{err: fmt.Errorf("write status response: %w", err)}
 			return

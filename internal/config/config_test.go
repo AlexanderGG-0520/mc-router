@@ -54,6 +54,51 @@ routes:
 	}
 }
 
+func TestLoadAcceptsRouteStatusBackend(t *testing.T) {
+	cfg, err := Load([]byte(`
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "hub.default.svc.cluster.local:25565"
+    statusBackend: "smp.default.svc.cluster.local:25565"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got := cfg.Routes[0].StatusBackend; got != "smp.default.svc.cluster.local:25565" {
+		t.Fatalf("status backend = %q", got)
+	}
+}
+
+func TestLoadRejectsInvalidRouteStatusBackend(t *testing.T) {
+	_, err := Load([]byte(`
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "hub.default.svc.cluster.local:25565"
+    statusBackend: "not-a-host-port"
+`))
+	if err == nil {
+		t.Fatal("expected invalid route status backend error")
+	}
+}
+
+func TestLoadTreatsEmptyRouteStatusBackendAsUnset(t *testing.T) {
+	cfg, err := Load([]byte(`
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "hub.default.svc.cluster.local:25565"
+    statusBackend: ""
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got := cfg.Routes[0].StatusBackend; got != "" {
+		t.Fatalf("status backend = %q, want empty", got)
+	}
+}
+
 func TestLoadRejectsInvalidRouteStatusOverride(t *testing.T) {
 	tests := []struct {
 		name string

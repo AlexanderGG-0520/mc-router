@@ -21,6 +21,7 @@ type Router struct {
 
 type Selection struct {
 	Backend        string
+	StatusBackend  string
 	MatchedBy      string
 	StatusOverride *config.StatusOverride
 }
@@ -54,6 +55,7 @@ func (r *Router) Select(serverAddress string) (Selection, error) {
 	if route, ok := r.routes[address]; ok {
 		return Selection{
 			Backend:        route.Backend,
+			StatusBackend:  route.StatusBackend,
 			MatchedBy:      "route",
 			StatusOverride: cloneStatusOverride(route.StatusOverride),
 		}, nil

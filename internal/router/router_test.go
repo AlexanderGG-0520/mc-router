@@ -100,6 +100,7 @@ func TestRouterSelectsRouteStatusOverride(t *testing.T) {
 			{
 				ServerAddress: "smp.example.com",
 				Backend:       "smp.default.svc.cluster.local:25565",
+				StatusBackend: "status.default.svc.cluster.local:25565",
 				StatusOverride: &config.StatusOverride{
 					MOTD:            "Alec SMP",
 					ProtocolName:    "Alec SMP 2",
@@ -123,6 +124,9 @@ func TestRouterSelectsRouteStatusOverride(t *testing.T) {
 	}
 	if got.StatusOverride.MOTD != "Alec SMP" {
 		t.Fatalf("status override motd = %q", got.StatusOverride.MOTD)
+	}
+	if got.StatusBackend != "status.default.svc.cluster.local:25565" {
+		t.Fatalf("status backend = %q", got.StatusBackend)
 	}
 
 	got.StatusOverride.MOTD = "mutated"

@@ -253,6 +253,9 @@ defaultRoute:
   backend: "lobby.default.svc.cluster.local:25565"
   mode: "allow"
 routes:
+  - serverAddress: "play.example.com"
+    backend: "hub.default.svc.cluster.local:25565"
+    statusBackend: "smp.default.svc.cluster.local:25565"
   - serverAddress: "smp.example.com"
     backend: "alec-smp.alec-smp.svc.cluster.local:25565"
     # Optional: answer Java status pings directly without contacting the backend.
@@ -271,7 +274,9 @@ routes:
 - `deny`: close connections for hosts that do not match an explicit route.
 - `default`: send unknown hosts to `defaultRoute.backend`.
 
-A route can set `statusOverride` to return a static Java Edition status response for that hostname. It is used only for the status state: login and Transfer handshakes still proxy to the route's backend. The override bypasses the backend entirely, so the response remains available during backend outages and does not show live player counts. Its `motd`, `protocolName`, `protocolVersion`, `maxPlayers`, and `onlinePlayers` fields are all required; protocol and player counts must be non-negative.
+`statusBackend` routes Java Edition status pings to a different backend while login and Transfer traffic continue to use `backend`. The status connection is a plain TCP proxy, so the selected backend's complete Status Response (including MOTD, version, player sample, favicon, and other fields) is passed through unchanged. It is optional; when omitted, status uses `backend` as before.
+
+A route can instead set `statusOverride` to return a static Java Edition status response for that hostname. It is used only for the status state: login and Transfer handshakes still proxy to the route's backend. `statusOverride` takes precedence over `statusBackend`, so removing an override automatically resumes proxying status to `statusBackend`. The override bypasses both backends entirely, so the response remains available during backend outages and does not show live player counts. Its `motd`, `protocolName`, `protocolVersion`, `maxPlayers`, and `onlinePlayers` fields are all required; protocol and player counts must be non-negative.
 
 Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenticated Prometheus text metrics on `metrics.listen` and `metrics.path`. Do not expose this HTTP listener directly to the public internet; it is intended for internal scraping, such as from a Kubernetes cluster Prometheus.
 
