@@ -255,6 +255,13 @@ defaultRoute:
 routes:
   - serverAddress: "smp.example.com"
     backend: "alec-smp.alec-smp.svc.cluster.local:25565"
+    # Optional: answer Java status pings directly without contacting the backend.
+    statusOverride:
+      motd: "Alec SMP"
+      protocolName: "Alec SMP 2"
+      protocolVersion: 767
+      maxPlayers: 100
+      onlinePlayers: 0
   - serverAddress: "lobby.example.com"
     backend: "alec-smp-lobby.alec-smp-lobby.svc.cluster.local:25565"
 ```
@@ -263,6 +270,8 @@ routes:
 
 - `deny`: close connections for hosts that do not match an explicit route.
 - `default`: send unknown hosts to `defaultRoute.backend`.
+
+A route can set `statusOverride` to return a static Java Edition status response for that hostname. It is used only for the status state: login and Transfer handshakes still proxy to the route's backend. The override bypasses the backend entirely, so the response remains available during backend outages and does not show live player counts. Its `motd`, `protocolName`, `protocolVersion`, `maxPlayers`, and `onlinePlayers` fields are all required; protocol and player counts must be non-negative.
 
 Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenticated Prometheus text metrics on `metrics.listen` and `metrics.path`. Do not expose this HTTP listener directly to the public internet; it is intended for internal scraping, such as from a Kubernetes cluster Prometheus.
 
