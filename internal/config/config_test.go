@@ -59,11 +59,11 @@ func TestLoadRejectsInvalidRouteStatusOverride(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "empty motd", body: "motd: \\\"\\\""},
-		{name: "empty protocol name", body: "motd: ok\\n      protocolName: \\\"\\\""},
-		{name: "negative protocol version", body: "motd: ok\\n      protocolName: ok\\n      protocolVersion: -1"},
-		{name: "negative max players", body: "motd: ok\\n      protocolName: ok\\n      maxPlayers: -1"},
-		{name: "negative online players", body: "motd: ok\\n      protocolName: ok\\n      onlinePlayers: -1"},
+		{name: "empty motd", body: "motd: \"\""},
+		{name: "empty protocol name", body: "motd: ok\n      protocolName: \"\""},
+		{name: "negative protocol version", body: "motd: ok\n      protocolName: ok\n      protocolVersion: -1"},
+		{name: "negative max players", body: "motd: ok\n      protocolName: ok\n      maxPlayers: -1"},
+		{name: "negative online players", body: "motd: ok\n      protocolName: ok\n      onlinePlayers: -1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
