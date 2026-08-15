@@ -89,3 +89,48 @@ func TestRouterRejectsInvalidHost(t *testing.T) {
 		t.Fatalf("error = %v, want %v", err, ErrInvalidServerAddress)
 	}
 }
+
+func TestRouterSelectsRouteStatusOverride(t *testing.T) {
+	r, err := New(config.Config{
+		Listen:             ":25565",
+		HandshakeTimeout:   config.Duration{Duration: 1},
+		BackendDialTimeout: config.Duration{Duration: 1},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{
+				ServerAddress: "smp.example.com",
+				Backend:       "smp.default.svc.cluster.local:25565",
+				StatusOverride: &config.StatusOverride{
+					MOTD:            "Alec SMP",
+					ProtocolName:    "Alec SMP 2",
+					ProtocolVersion: 767,
+					MaxPlayers:      100,
+					OnlinePlayers:   12,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	got, err := r.Select("SMP.EXAMPLE.COM.")
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if got.StatusOverride == nil {
+		t.Fatal("status override is nil")
+	}
+	if got.StatusOverride.MOTD != "Alec SMP" {
+		t.Fatalf("status override motd = %q", got.StatusOverride.MOTD)
+	}
+
+	got.StatusOverride.MOTD = "mutated"
+	again, err := r.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if again.StatusOverride.MOTD != "Alec SMP" {
+		t.Fatalf("status override was mutated through selection: %q", again.StatusOverride.MOTD)
+	}
+}
