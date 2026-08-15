@@ -143,6 +143,62 @@ func TestProxyDeniesUnknownTransferHostWithoutConnectingBackend(t *testing.T) {
 	}
 }
 
+func TestRouteStatusOverrideRespondsWithoutDialingBackend(t *testing.T) {
+	dialed := make(chan struct{}, 1)
+	cfg := validProxyConfig()
+	cfg.Routes = []config.Route{
+		{
+			ServerAddress: "smp.example.com",
+			Backend:       "127.0.0.1:1",
+			StatusOverride: &config.StatusOverride{
+				MOTD:            "Alec SMP",
+				ProtocolName:    "Alec SMP 2",
+				ProtocolVersion: 767,
+				MaxPlayers:      100,
+				OnlinePlayers:   12,
+			},
+		},
+	}
+	gatewayAddr, _, stop := startTestServerWithServer(t, cfg, func(server *Server) {
+		server.dialContext = func(context.Context, string, string) (net.Conn, error) {
+			dialed <- struct{}{}
+			return nil, errors.New("dial should not be called")
+		}
+	})
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer conn.Close()
+
+	status := readStatusResponse(t, conn)
+	if status.Version.Name != "Alec SMP 2" || status.Version.Protocol != 767 {
+		t.Fatalf("status version = %#v", status.Version)
+	}
+	if status.Players.Max != 100 || status.Players.Online != 12 {
+		t.Fatalf("status players = %#v", status.Players)
+	}
+	if status.Description.Text != "Alec SMP" {
+		t.Fatalf("status motd = %q", status.Description.Text)
+	}
+
+	const pingPayload int64 = 0x1122334455667788
+	if err := writeAll(conn, mcproto.BuildPacket(mcproto.StatusPingPacketID, mcproto.EncodeLong(pingPayload))); err != nil {
+		t.Fatalf("write ping: %v", err)
+	}
+	if got := readStatusPong(t, conn); got != pingPayload {
+		t.Fatalf("pong payload = %x, want %x", got, pingPayload)
+	}
+
+	select {
+	case <-dialed:
+		t.Fatal("dialer was called for a route status override")
+	default:
+	}
+}
+
 func TestStatusFallbackDisabledDeniesUnknownHostWithClose(t *testing.T) {
 	gatewayAddr, server, stop := startTestServerWithServer(t, config.Config{
 		Listen:             ":0",
