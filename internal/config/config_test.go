@@ -29,6 +29,59 @@ routes:
 	}
 }
 
+func TestLoadAcceptsRouteStatusOverride(t *testing.T) {
+	cfg, err := Load([]byte(`
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "smp.default.svc.cluster.local:25565"
+    statusOverride:
+      motd: "Alec SMP"
+      protocolName: "Alec SMP 2"
+      protocolVersion: 767
+      maxPlayers: 100
+      onlinePlayers: 12
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	override := cfg.Routes[0].StatusOverride
+	if override == nil {
+		t.Fatal("status override is nil")
+	}
+	if override.MOTD != "Alec SMP" || override.ProtocolName != "Alec SMP 2" || override.ProtocolVersion != 767 || override.MaxPlayers != 100 || override.OnlinePlayers != 12 {
+		t.Fatalf("status override = %#v", override)
+	}
+}
+
+func TestLoadRejectsInvalidRouteStatusOverride(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "empty motd", body: "motd: \\\"\\\""},
+		{name: "empty protocol name", body: "motd: ok\\n      protocolName: \\\"\\\""},
+		{name: "negative protocol version", body: "motd: ok\\n      protocolName: ok\\n      protocolVersion: -1"},
+		{name: "negative max players", body: "motd: ok\\n      protocolName: ok\\n      maxPlayers: -1"},
+		{name: "negative online players", body: "motd: ok\\n      protocolName: ok\\n      onlinePlayers: -1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Load([]byte(`
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    backend: "smp.default.svc.cluster.local:25565"
+    statusOverride:
+      ` + tt.body + `
+`))
+			if err == nil {
+				t.Fatal("expected invalid route status override error")
+			}
+		})
+	}
+}
+
 func TestLoadUsesDefaultListenWhenOmitted(t *testing.T) {
 	cfg, err := Load([]byte(`
 unknownHostPolicy: "deny"
