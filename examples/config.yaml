@@ -54,6 +54,9 @@ defaultRoute:
 routes:
   - serverAddress: "hub.example.com"
     backend: "mc-hub.mc-hub.svc.cluster.local:25565"
+    # Status pings normally use this backend, while Login and Transfer use backend.
+    # statusOverride below takes precedence when it is configured.
+    statusBackend: "alec-smp.alec-smp.svc.cluster.local:25565"
     # When present, this static response is returned for Java status pings
     # without contacting the backend. Login and Transfer still use backend.
     statusOverride:

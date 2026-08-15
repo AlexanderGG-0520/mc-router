@@ -178,6 +178,7 @@ type StatusOverride struct {
 type Route struct {
 	ServerAddress  string          `yaml:"serverAddress"`
 	Backend        string          `yaml:"backend"`
+	StatusBackend  string          `yaml:"statusBackend"`
 	StatusOverride *StatusOverride `yaml:"statusOverride"`
 }
 
@@ -366,6 +367,11 @@ func (c Config) Validate() error {
 		seen[addr] = struct{}{}
 		if err := validateBackend(route.Backend); err != nil {
 			errs = append(errs, fmt.Errorf("routes[%d].backend: %w", i, err))
+		}
+		if route.StatusBackend != "" {
+			if err := validateBackend(route.StatusBackend); err != nil {
+				errs = append(errs, fmt.Errorf("routes[%d].statusBackend: %w", i, err))
+			}
 		}
 		if err := validateStatusOverride(route.StatusOverride); err != nil {
 			errs = append(errs, fmt.Errorf("routes[%d].statusOverride: %w", i, err))

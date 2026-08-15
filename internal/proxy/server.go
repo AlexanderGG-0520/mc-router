@@ -462,23 +462,27 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		s.logger.Info("route status override response sent", "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend)
 		return
 	}
+	backendAddress := selection.Backend
+	if handshake.NextState == mcproto.NextStateStatus && selection.StatusBackend != "" {
+		backendAddress = selection.StatusBackend
+	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, state.cfg.BackendDialTimeout.Duration)
 	defer cancel()
 	dialStart := time.Now()
-	backend, err := s.dialContext(dialCtx, "tcp", selection.Backend)
+	backend, err := s.dialContext(dialCtx, "tcp", backendAddress)
 	if err != nil {
 		reason := classifyDialError(err)
 		s.metrics.BackendDialFinished(gatewaymetrics.ConnectionResultFailed, reason, time.Since(dialStart))
 		connectionResult = gatewaymetrics.ConnectionResultFailed
 		connectionReason = reason
 		if statusFallbackForBackendFailureEnabled(state.cfg, handshake, reason) {
-			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reason, selection.Backend); err != nil {
-				s.logger.Warn("fallback status response failed", "reason", reason, "state", "status", "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend, "error", err)
+			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reason, backendAddress); err != nil {
+				s.logger.Warn("fallback status response failed", "reason", reason, "state", "status", "remote", remoteAddr, "server_address", routeAddress, "backend", backendAddress, "error", err)
 			}
 			return
 		}
-		s.logger.Warn("connection rejected", "reason", reason, "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend, "error", err)
+		s.logger.Warn("connection rejected", "reason", reason, "remote", remoteAddr, "server_address", routeAddress, "backend", backendAddress, "error", err)
 		return
 	}
 	s.metrics.BackendDialFinished(gatewaymetrics.ReasonSuccess, gatewaymetrics.ReasonSuccess, time.Since(dialStart))
@@ -487,7 +491,7 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 	if err := writeAll(backend, rawHandshake); err != nil {
 		connectionResult = gatewaymetrics.ConnectionResultFailed
 		connectionReason = reasonInitialWriteFailed
-		s.logger.Warn("connection rejected", "reason", reasonInitialWriteFailed, "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend, "error", err)
+		s.logger.Warn("connection rejected", "reason", reasonInitialWriteFailed, "remote", remoteAddr, "server_address", routeAddress, "backend", backendAddress, "error", err)
 		return
 	}
 
@@ -497,7 +501,7 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		"server_address", routeAddress,
 		"server_port", handshake.ServerPort,
 		"next_state", handshake.NextState,
-		"backend", selection.Backend,
+		"backend", backendAddress,
 		"matched_by", selection.MatchedBy,
 	)
 	result := s.proxy(ctx, client, backend)
@@ -508,7 +512,7 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		"reason", result.reason,
 		"remote", remoteAddr,
 		"server_address", routeAddress,
-		"backend", selection.Backend,
+		"backend", backendAddress,
 		"direction", result.direction,
 		"bytes_copied", result.bytesCopied,
 	)
