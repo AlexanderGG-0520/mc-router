@@ -19,6 +19,7 @@ func TestProxyRoutesConnectionByRequestedHost(t *testing.T) {
 		hubBackend      = "hub.test:19132"
 		creativeBackend = "creative.test:19132"
 	)
+	selected, configureDial := captureBackendDial()
 	proxy := startTestProxy(t, Config{
 		Listen:             "127.0.0.1:0",
 		DefaultBackend:     hubBackend,
@@ -26,8 +27,7 @@ func TestProxyRoutesConnectionByRequestedHost(t *testing.T) {
 		Routes: []bedrockroute.Route{
 			{Name: "creative", Hosts: []string{"127.0.0.1:19132"}, Backend: creativeBackend},
 		},
-	})
-	selected := captureBackendDial(proxy)
+	}, configureDial)
 
 	dialProxyAsync(t, proxy.Addr())
 	assertSelectedBackend(t, selected, creativeBackend)
@@ -38,6 +38,7 @@ func TestProxyFallsBackToDefaultBackendForUnknownHost(t *testing.T) {
 		hubBackend      = "hub.test:19132"
 		creativeBackend = "creative.test:19132"
 	)
+	selected, configureDial := captureBackendDial()
 	proxy := startTestProxy(t, Config{
 		Listen:             "127.0.0.1:0",
 		DefaultBackend:     hubBackend,
@@ -45,8 +46,7 @@ func TestProxyFallsBackToDefaultBackendForUnknownHost(t *testing.T) {
 		Routes: []bedrockroute.Route{
 			{Name: "creative", Hosts: []string{"creative.play.example.com"}, Backend: creativeBackend},
 		},
-	})
-	selected := captureBackendDial(proxy)
+	}, configureDial)
 
 	dialProxyAsync(t, proxy.Addr())
 	assertSelectedBackend(t, selected, hubBackend)
@@ -107,11 +107,14 @@ func TestProxyCloseStopsActiveConnection(t *testing.T) {
 	}
 }
 
-func startTestProxy(t *testing.T, cfg Config) *Proxy {
+func startTestProxy(t *testing.T, cfg Config, configure ...func(*Proxy)) *Proxy {
 	t.Helper()
 	proxy, err := New(cfg, discardProxyLogger())
 	if err != nil {
 		t.Fatalf("New proxy: %v", err)
+	}
+	for _, configureProxy := range configure {
+		configureProxy(proxy)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -133,17 +136,18 @@ func startTestProxy(t *testing.T, cfg Config) *Proxy {
 	return proxy
 }
 
-func captureBackendDial(proxy *Proxy) <-chan string {
+func captureBackendDial() (<-chan string, func(*Proxy)) {
 	selected := make(chan string, 1)
-	proxy.dialBackend = func(ctx context.Context, _ *minecraft.Conn, backend string) (*minecraft.Conn, error) {
-		select {
-		case selected <- backend:
-			return nil, errTestBackendDial
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	return selected, func(proxy *Proxy) {
+		proxy.dialBackend = func(ctx context.Context, _ *minecraft.Conn, backend string) (*minecraft.Conn, error) {
+			select {
+			case selected <- backend:
+				return nil, errTestBackendDial
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 	}
-	return selected
 }
 
 func assertSelectedBackend(t *testing.T, selected <-chan string, want string) {
