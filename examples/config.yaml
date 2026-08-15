@@ -54,6 +54,14 @@ defaultRoute:
 routes:
   - serverAddress: "hub.example.com"
     backend: "mc-hub.mc-hub.svc.cluster.local:25565"
+    # When present, this static response is returned for Java status pings
+    # without contacting the backend. Login and Transfer still use backend.
+    statusOverride:
+      motd: "Alec SMP 2"
+      protocolName: "Alec SMP 2"
+      protocolVersion: 767
+      maxPlayers: 100
+      onlinePlayers: 0
   - serverAddress: "smp.example.com"
     backend: "alec-smp.alec-smp.svc.cluster.local:25565"
   - serverAddress: "lobby.example.com"

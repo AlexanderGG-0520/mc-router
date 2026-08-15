@@ -14,14 +14,15 @@ var (
 )
 
 type Router struct {
-	routes            map[string]string
+	routes            map[string]config.Route
 	defaultBackend    string
 	unknownHostPolicy string
 }
 
 type Selection struct {
-	Backend   string
-	MatchedBy string
+	Backend        string
+	MatchedBy      string
+	StatusOverride *config.StatusOverride
 }
 
 func New(cfg config.Config) (*Router, error) {
@@ -29,7 +30,7 @@ func New(cfg config.Config) (*Router, error) {
 		return nil, err
 	}
 	r := &Router{
-		routes:            make(map[string]string, len(cfg.Routes)),
+		routes:            make(map[string]config.Route, len(cfg.Routes)),
 		defaultBackend:    cfg.DefaultRoute.Backend,
 		unknownHostPolicy: cfg.UnknownHostPolicy,
 	}
@@ -38,7 +39,9 @@ func New(cfg config.Config) (*Router, error) {
 		if err != nil {
 			return nil, err
 		}
-		r.routes[normalized] = route.Backend
+		route.ServerAddress = normalized
+		route.StatusOverride = cloneStatusOverride(route.StatusOverride)
+		r.routes[normalized] = route
 	}
 	return r, nil
 }
@@ -48,11 +51,23 @@ func (r *Router) Select(serverAddress string) (Selection, error) {
 	if err != nil {
 		return Selection{}, fmt.Errorf("%w: %w", ErrInvalidServerAddress, err)
 	}
-	if backend, ok := r.routes[address]; ok {
-		return Selection{Backend: backend, MatchedBy: "route"}, nil
+	if route, ok := r.routes[address]; ok {
+		return Selection{
+			Backend:        route.Backend,
+			MatchedBy:      "route",
+			StatusOverride: cloneStatusOverride(route.StatusOverride),
+		}, nil
 	}
 	if r.unknownHostPolicy == config.UnknownHostDefault && r.defaultBackend != "" {
 		return Selection{Backend: r.defaultBackend, MatchedBy: "default"}, nil
 	}
 	return Selection{}, fmt.Errorf("%w: %q", ErrNoRoute, address)
+}
+
+func cloneStatusOverride(override *config.StatusOverride) *config.StatusOverride {
+	if override == nil {
+		return nil
+	}
+	cloned := *override
+	return &cloned
 }
