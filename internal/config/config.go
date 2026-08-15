@@ -167,9 +167,18 @@ type DefaultRoute struct {
 	Mode    string `yaml:"mode"`
 }
 
+type StatusOverride struct {
+	MOTD            string `yaml:"motd"`
+	ProtocolName    string `yaml:"protocolName"`
+	ProtocolVersion int    `yaml:"protocolVersion"`
+	MaxPlayers      int    `yaml:"maxPlayers"`
+	OnlinePlayers   int    `yaml:"onlinePlayers"`
+}
+
 type Route struct {
-	ServerAddress string `yaml:"serverAddress"`
-	Backend       string `yaml:"backend"`
+	ServerAddress  string          `yaml:"serverAddress"`
+	Backend        string          `yaml:"backend"`
+	StatusOverride *StatusOverride `yaml:"statusOverride"`
 }
 
 func LoadFile(path string) (Config, error) {
@@ -358,6 +367,32 @@ func (c Config) Validate() error {
 		if err := validateBackend(route.Backend); err != nil {
 			errs = append(errs, fmt.Errorf("routes[%d].backend: %w", i, err))
 		}
+		if err := validateStatusOverride(route.StatusOverride); err != nil {
+			errs = append(errs, fmt.Errorf("routes[%d].statusOverride: %w", i, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func validateStatusOverride(override *StatusOverride) error {
+	if override == nil {
+		return nil
+	}
+	var errs []error
+	if strings.TrimSpace(override.MOTD) == "" {
+		errs = append(errs, errors.New("motd must not be empty"))
+	}
+	if strings.TrimSpace(override.ProtocolName) == "" {
+		errs = append(errs, errors.New("protocolName must not be empty"))
+	}
+	if override.ProtocolVersion < 0 {
+		errs = append(errs, errors.New("protocolVersion must not be negative"))
+	}
+	if override.MaxPlayers < 0 {
+		errs = append(errs, errors.New("maxPlayers must not be negative"))
+	}
+	if override.OnlinePlayers < 0 {
+		errs = append(errs, errors.New("onlinePlayers must not be negative"))
 	}
 	return errors.Join(errs...)
 }
