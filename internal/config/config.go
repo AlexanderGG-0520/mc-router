@@ -61,7 +61,7 @@ type Config struct {
 	BackendDialTimeout Duration        `yaml:"backendDialTimeout"`
 	ClientPolicy       ClientPolicy    `yaml:"clientPolicy"`
 	ClientRateLimit    ClientRateLimit `yaml:"clientRateLimit"`
-	ProxyProtocol      ProxyProtocol    `yaml:"proxyProtocol"`
+	ProxyProtocol      ProxyProtocol   `yaml:"proxyProtocol"`
 	Metrics            Metrics         `yaml:"metrics"`
 	UDPRelay           UDPRelay        `yaml:"udpRelay"`
 	Bedrock            Bedrock         `yaml:"bedrock"`
