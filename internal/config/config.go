@@ -55,20 +55,20 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type Config struct {
-	Listen             string       `yaml:"listen"`
-	HandshakeTimeout   Duration     `yaml:"handshakeTimeout"`
-	BackendDialTimeout Duration     `yaml:"backendDialTimeout"`
-	ClientPolicy       ClientPolicy `yaml:"clientPolicy"`
+	Listen             string          `yaml:"listen"`
+	HandshakeTimeout   Duration        `yaml:"handshakeTimeout"`
+	BackendDialTimeout Duration        `yaml:"backendDialTimeout"`
+	ClientPolicy       ClientPolicy    `yaml:"clientPolicy"`
 	ClientRateLimit    ClientRateLimit `yaml:"clientRateLimit"`
-	Metrics            Metrics      `yaml:"metrics"`
-	UDPRelay           UDPRelay     `yaml:"udpRelay"`
-	Bedrock            Bedrock      `yaml:"bedrock"`
-	VoiceChat          VoiceChat    `yaml:"voiceChat"`
-	Fallback           Fallback     `yaml:"fallback"`
-	Discovery          Discovery    `yaml:"discovery"`
-	DefaultRoute       DefaultRoute `yaml:"defaultRoute"`
-	Routes             []Route      `yaml:"routes"`
-	UnknownHostPolicy  string       `yaml:"unknownHostPolicy"`
+	Metrics            Metrics         `yaml:"metrics"`
+	UDPRelay           UDPRelay        `yaml:"udpRelay"`
+	Bedrock            Bedrock         `yaml:"bedrock"`
+	VoiceChat          VoiceChat       `yaml:"voiceChat"`
+	Fallback           Fallback        `yaml:"fallback"`
+	Discovery          Discovery       `yaml:"discovery"`
+	DefaultRoute       DefaultRoute    `yaml:"defaultRoute"`
+	Routes             []Route         `yaml:"routes"`
+	UnknownHostPolicy  string          `yaml:"unknownHostPolicy"`
 }
 
 // ClientPolicy controls which source IP addresses may establish Java Edition

@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadValidConfig(t *testing.T) {
 	cfg, err := Load([]byte(`

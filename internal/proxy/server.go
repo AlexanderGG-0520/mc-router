@@ -341,10 +341,10 @@ func newServerState(staticConfig, cfg config.Config, routeTable *router.Router, 
 		panic("proxy: invalid validated client policy: " + err.Error())
 	}
 	return &serverState{
-		staticConfig:     cloneConfig(staticConfig),
-		cfg:              cfg,
-		router:           routeTable,
-		clientPolicy:     policy,
+		staticConfig: cloneConfig(staticConfig),
+		cfg:          cfg,
+		router:       routeTable,
+		clientPolicy: policy,
 		clientRateLimit: ratelimit.New(ratelimit.Config{
 			Enabled:              cfg.ClientRateLimit.Enabled,
 			ConnectionsPerSecond: cfg.ClientRateLimit.ConnectionsPerSecond,
