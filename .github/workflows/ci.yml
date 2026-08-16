@@ -10,6 +10,17 @@ permissions:
   contents: read
 
 jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
   test:
     runs-on: ubuntu-latest
     steps:
