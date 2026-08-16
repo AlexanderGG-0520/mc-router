@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	neturl "net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -62,6 +63,7 @@ type Config struct {
 	ClientPolicy       ClientPolicy    `yaml:"clientPolicy"`
 	ClientRateLimit    ClientRateLimit `yaml:"clientRateLimit"`
 	ProxyProtocol      ProxyProtocol   `yaml:"proxyProtocol"`
+	ScalerWebhook      ScalerWebhook   `yaml:"scalerWebhook"`
 	Metrics            Metrics         `yaml:"metrics"`
 	UDPRelay           UDPRelay        `yaml:"udpRelay"`
 	Bedrock            Bedrock         `yaml:"bedrock"`
@@ -93,6 +95,14 @@ type ClientRateLimit struct {
 // ProxyProtocol accepts PROXY protocol headers only from explicitly trusted peers.
 type ProxyProtocol struct {
 	TrustedProxies []string `yaml:"trustedProxies"`
+}
+
+// ScalerWebhook optionally notifies an external scaler before dialing a backend.
+type ScalerWebhook struct {
+	Enabled bool              `yaml:"enabled"`
+	URL     string            `yaml:"url"`
+	Timeout Duration          `yaml:"timeout"`
+	Headers map[string]string `yaml:"headers"`
 }
 
 type Fallback struct {
@@ -249,6 +259,7 @@ func Defaults() Config {
 			IdleTimeout:          Duration{Duration: 10 * time.Minute},
 			MaxEntries:           4096,
 		},
+		ScalerWebhook: ScalerWebhook{Timeout: Duration{Duration: 2 * time.Second}},
 		Metrics: Metrics{
 			Listen: ":9090",
 			Path:   "/metrics",
@@ -327,6 +338,9 @@ func (c Config) Validate() error {
 	}
 	if _, err := proxyprotocol.ParseCIDRs(c.ProxyProtocol.TrustedProxies); err != nil {
 		errs = append(errs, fmt.Errorf("proxyProtocol.trustedProxies: %w", err))
+	}
+	if err := validateScalerWebhook(c.ScalerWebhook); err != nil {
+		errs = append(errs, err)
 	}
 	if c.Metrics.Enabled {
 		if strings.TrimSpace(c.Metrics.Listen) == "" {
@@ -762,5 +776,15 @@ func validateBackend(backend string) error {
 	if _, err := hostaddr.Normalize(host); err != nil {
 		return fmt.Errorf("host: %w", err)
 	}
+	return nil
+}
+
+func validateScalerWebhook(webhook ScalerWebhook) error {
+	if !webhook.Enabled { return nil }
+	parsed, err := neturl.ParseRequestURI(webhook.URL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" { return errors.New("scalerWebhook.url must be an absolute http or https URL when enabled") }
+	if webhook.Timeout.Duration <= 0 { return errors.New("scalerWebhook.timeout must be positive when enabled") }
+	if webhook.Timeout.Duration > 30*time.Second { return errors.New("scalerWebhook.timeout must be no greater than 30s") }
+	for name := range webhook.Headers { if strings.TrimSpace(name) == "" || strings.ContainsAny(name, "\r\n") { return errors.New("scalerWebhook.headers contains an invalid header name") } }
 	return nil
 }
