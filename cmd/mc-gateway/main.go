@@ -14,6 +14,7 @@ import (
 	"github.com/AlexanderGG-0520/mc-router/internal/bedrockproxy"
 	"github.com/AlexanderGG-0520/mc-router/internal/bedrockroute"
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
+	"github.com/AlexanderGG-0520/mc-router/internal/configwatch"
 	"github.com/AlexanderGG-0520/mc-router/internal/logging"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxy"
@@ -82,14 +83,24 @@ func run(configPath string, logger *slog.Logger) error {
 		return err
 	}
 
+	reloader := newKubernetesReloadReloader(ctx, server, logger, defaultDiscoveryStartupDeps(), snapshot.StaticConfig.Discovery.Kubernetes)
 	reloadCh := make(chan os.Signal, 1)
 	if signals := reloadSignals(); len(signals) > 0 {
 		signal.Notify(reloadCh, signals...)
 		defer signal.Stop(reloadCh)
-		reloader := newKubernetesReloadReloader(ctx, server, logger, defaultDiscoveryStartupDeps(), snapshot.StaticConfig.Discovery.Kubernetes)
 		go serveReloadSignals(ctx, reloadCh, configPath, reloader)
 	} else {
 		logger.Info("config reload signal unavailable", "platform", runtime.GOOS)
+	}
+	if cfg.ConfigReload.Watch {
+		if _, err := configwatch.Start(ctx, configPath, cfg.ConfigReload.Debounce.Duration, reloader.ReloadFile, logger); err != nil {
+			cancel()
+			waitVoiceChatShutdown(voiceRuntime)
+			waitBedrockShutdown(bedrockRuntime)
+			waitUDPRelayShutdown(udpRuntime)
+			waitMetricsShutdown(ctx, metricsServer)
+			return err
+		}
 	}
 	proxyErrCh := make(chan error, 1)
 	go func() {

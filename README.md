@@ -221,6 +221,10 @@ scalerWebhook:
   url: "http://scaler.default.svc.cluster.local/wake"
   timeout: "2s"
   headers: {}
+configReload:
+  # Disabled by default. Detects direct-file writes and Kubernetes ConfigMap updates.
+  watch: false
+  debounce: "1s"
 metrics:
   enabled: true
   listen: ":9090"

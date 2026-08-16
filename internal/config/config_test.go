@@ -32,6 +32,34 @@ routes:
 	}
 }
 
+func TestLoadAcceptsConfigReloadWatch(t *testing.T) {
+	cfg, err := Load([]byte(`
+configReload:
+  watch: true
+  debounce: "750ms"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.ConfigReload.Watch {
+		t.Fatal("config reload watch disabled")
+	}
+	if got := cfg.ConfigReload.Debounce.Duration; got != 750*time.Millisecond {
+		t.Fatalf("config reload debounce = %s, want 750ms", got)
+	}
+}
+
+func TestLoadRejectsInvalidConfigReloadDebounce(t *testing.T) {
+	_, err := Load([]byte(`
+configReload:
+  watch: true
+  debounce: "50ms"
+`))
+	if err == nil {
+		t.Fatal("Load succeeded with a too-short config reload debounce")
+	}
+}
+
 func TestLoadAcceptsRouteStatusOverride(t *testing.T) {
 	cfg, err := Load([]byte(`
 unknownHostPolicy: "deny"
