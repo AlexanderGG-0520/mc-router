@@ -215,6 +215,12 @@ clientRateLimit:
 proxyProtocol:
   # Accept headers only from an explicitly trusted TCP peer. Empty by default.
   trustedProxies: []
+scalerWebhook:
+  # Disabled by default. Notification failure does not block backend dialing.
+  enabled: false
+  url: "http://scaler.default.svc.cluster.local/wake"
+  timeout: "2s"
+  headers: {}
 metrics:
   enabled: true
   listen: ":9090"
