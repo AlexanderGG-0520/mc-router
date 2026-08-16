@@ -780,11 +780,23 @@ func validateBackend(backend string) error {
 }
 
 func validateScalerWebhook(webhook ScalerWebhook) error {
-	if !webhook.Enabled { return nil }
+	if !webhook.Enabled {
+		return nil
+	}
 	parsed, err := neturl.ParseRequestURI(webhook.URL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" { return errors.New("scalerWebhook.url must be an absolute http or https URL when enabled") }
-	if webhook.Timeout.Duration <= 0 { return errors.New("scalerWebhook.timeout must be positive when enabled") }
-	if webhook.Timeout.Duration > 30*time.Second { return errors.New("scalerWebhook.timeout must be no greater than 30s") }
-	for name := range webhook.Headers { if strings.TrimSpace(name) == "" || strings.ContainsAny(name, "\r\n") { return errors.New("scalerWebhook.headers contains an invalid header name") } }
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return errors.New("scalerWebhook.url must be an absolute http or https URL when enabled")
+	}
+	if webhook.Timeout.Duration <= 0 {
+		return errors.New("scalerWebhook.timeout must be positive when enabled")
+	}
+	if webhook.Timeout.Duration > 30*time.Second {
+		return errors.New("scalerWebhook.timeout must be no greater than 30s")
+	}
+	for name := range webhook.Headers {
+		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, "\r\n") {
+			return errors.New("scalerWebhook.headers contains an invalid header name")
+		}
+	}
 	return nil
 }
