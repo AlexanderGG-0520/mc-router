@@ -18,8 +18,8 @@ import (
 	"github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	"github.com/AlexanderGG-0520/mc-router/internal/mcproto"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
-	"github.com/AlexanderGG-0520/mc-router/internal/ratelimit"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxyprotocol"
+	"github.com/AlexanderGG-0520/mc-router/internal/ratelimit"
 	"github.com/AlexanderGG-0520/mc-router/internal/router"
 )
 
@@ -347,9 +347,9 @@ func newServerState(staticConfig, cfg config.Config, routeTable *router.Router, 
 		panic("proxy: invalid validated trusted proxies: " + err.Error())
 	}
 	return &serverState{
-		staticConfig: cloneConfig(staticConfig),
-		cfg:          cfg,
-		router:       routeTable,
+		staticConfig:   cloneConfig(staticConfig),
+		cfg:            cfg,
+		router:         routeTable,
 		clientPolicy:   policy,
 		trustedProxies: trustedProxies,
 		clientRateLimit: ratelimit.New(ratelimit.Config{
