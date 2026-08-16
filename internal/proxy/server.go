@@ -18,6 +18,7 @@ import (
 	"github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	"github.com/AlexanderGG-0520/mc-router/internal/mcproto"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
+	"github.com/AlexanderGG-0520/mc-router/internal/proxyprotocol"
 	"github.com/AlexanderGG-0520/mc-router/internal/ratelimit"
 	"github.com/AlexanderGG-0520/mc-router/internal/router"
 )
@@ -45,6 +46,7 @@ type serverState struct {
 	router           *router.Router
 	clientPolicy     *clientpolicy.Policy
 	clientRateLimit  *ratelimit.Limiter
+	trustedProxies   []netip.Prefix
 	discoveryMerge   discovery.MergeResult
 	discoveredRoutes []kubernetes.DiscoveredRoute
 }
@@ -340,11 +342,16 @@ func newServerState(staticConfig, cfg config.Config, routeTable *router.Router, 
 	if err != nil {
 		panic("proxy: invalid validated client policy: " + err.Error())
 	}
+	trustedProxies, err := proxyprotocol.ParseCIDRs(cfg.ProxyProtocol.TrustedProxies)
+	if err != nil {
+		panic("proxy: invalid validated trusted proxies: " + err.Error())
+	}
 	return &serverState{
-		staticConfig: cloneConfig(staticConfig),
-		cfg:          cfg,
-		router:       routeTable,
-		clientPolicy: policy,
+		staticConfig:   cloneConfig(staticConfig),
+		cfg:            cfg,
+		router:         routeTable,
+		clientPolicy:   policy,
+		trustedProxies: trustedProxies,
 		clientRateLimit: ratelimit.New(ratelimit.Config{
 			Enabled:              cfg.ClientRateLimit.Enabled,
 			ConnectionsPerSecond: cfg.ClientRateLimit.ConnectionsPerSecond,
@@ -429,6 +436,16 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 	state := s.currentState()
 	remoteAddr := client.RemoteAddr().String()
 	clientAddr, err := addressFromAddr(client.RemoteAddr())
+	if err == nil && proxyprotocol.Trusted(state.trustedProxies, clientAddr) {
+		clientAddr, err = proxyprotocol.Read(client)
+		if err != nil {
+			connectionResult = gatewaymetrics.ConnectionResultDenied
+			connectionReason = reasonHandshakeMalformed
+			s.logger.Warn("connection rejected", "reason", "proxy_protocol_invalid", "remote", remoteAddr)
+			return
+		}
+		remoteAddr = clientAddr.String()
+	}
 	if err != nil || !state.clientPolicy.Allows(clientAddr) {
 		connectionResult = gatewaymetrics.ConnectionResultDenied
 		connectionReason = gatewaymetrics.ReasonClientDenied

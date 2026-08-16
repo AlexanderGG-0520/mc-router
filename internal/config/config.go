@@ -14,6 +14,7 @@ import (
 	"github.com/AlexanderGG-0520/mc-router/internal/bedrockroute"
 	"github.com/AlexanderGG-0520/mc-router/internal/clientpolicy"
 	"github.com/AlexanderGG-0520/mc-router/internal/hostaddr"
+	"github.com/AlexanderGG-0520/mc-router/internal/proxyprotocol"
 	"gopkg.in/yaml.v3"
 )
 
@@ -60,6 +61,7 @@ type Config struct {
 	BackendDialTimeout Duration        `yaml:"backendDialTimeout"`
 	ClientPolicy       ClientPolicy    `yaml:"clientPolicy"`
 	ClientRateLimit    ClientRateLimit `yaml:"clientRateLimit"`
+	ProxyProtocol      ProxyProtocol   `yaml:"proxyProtocol"`
 	Metrics            Metrics         `yaml:"metrics"`
 	UDPRelay           UDPRelay        `yaml:"udpRelay"`
 	Bedrock            Bedrock         `yaml:"bedrock"`
@@ -86,6 +88,11 @@ type ClientRateLimit struct {
 	Burst                int      `yaml:"burst"`
 	IdleTimeout          Duration `yaml:"idleTimeout"`
 	MaxEntries           int      `yaml:"maxEntries"`
+}
+
+// ProxyProtocol accepts PROXY protocol headers only from explicitly trusted peers.
+type ProxyProtocol struct {
+	TrustedProxies []string `yaml:"trustedProxies"`
 }
 
 type Fallback struct {
@@ -317,6 +324,9 @@ func (c Config) Validate() error {
 	}
 	if err := validateClientRateLimit(c.ClientRateLimit); err != nil {
 		errs = append(errs, err)
+	}
+	if _, err := proxyprotocol.ParseCIDRs(c.ProxyProtocol.TrustedProxies); err != nil {
+		errs = append(errs, fmt.Errorf("proxyProtocol.trustedProxies: %w", err))
 	}
 	if c.Metrics.Enabled {
 		if strings.TrimSpace(c.Metrics.Listen) == "" {

@@ -212,6 +212,9 @@ clientRateLimit:
   burst: 3
   idleTimeout: "10m"
   maxEntries: 4096
+proxyProtocol:
+  # Accept headers only from an explicitly trusted TCP peer. Empty by default.
+  trustedProxies: []
 metrics:
   enabled: true
   listen: ":9090"
