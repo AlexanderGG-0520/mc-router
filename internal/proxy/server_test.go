@@ -172,6 +172,36 @@ func TestProxyClientAllowListTakesPrecedenceOverDenyList(t *testing.T) {
 	}
 }
 
+func TestProxyRateLimitsRepeatedConnectionsFromOneClient(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	backendBytes := acceptAndReadOnce(t, backendListener)
+
+	cfg := validProxyConfig()
+	cfg.ClientRateLimit = config.ClientRateLimit{
+		Enabled:              true,
+		ConnectionsPerSecond: 1,
+		Burst:                1,
+		IdleTimeout:          config.Duration{Duration: time.Minute},
+		MaxEntries:           2,
+	}
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()}}
+	gatewayAddr, stop := startTestServer(t, cfg)
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin)
+	first := dialAndWrite(t, gatewayAddr, handshake)
+	defer first.Close()
+	closeClientWrite(t, first)
+	if got := waitBytes(t, backendBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("first backend bytes = %v, want %v", got, handshake)
+	}
+
+	second := dialAndWrite(t, gatewayAddr, handshake)
+	defer second.Close()
+	readClosed(t, second)
+}
+
 func TestProxyDeniesUnknownTransferHostWithoutConnectingBackend(t *testing.T) {
 	dialed := make(chan struct{}, 1)
 

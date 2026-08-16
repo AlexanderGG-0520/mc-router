@@ -6,6 +6,13 @@ backendDialTimeout: "5s"
 clientPolicy:
   allow: []
   deny: []
+# Disabled by default. A separate token bucket is maintained per source IP.
+clientRateLimit:
+  enabled: false
+  connectionsPerSecond: 1
+  burst: 3
+  idleTimeout: "10m"
+  maxEntries: 4096
 metrics:
   enabled: true
   listen: ":9090"

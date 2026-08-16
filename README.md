@@ -205,6 +205,13 @@ clientPolicy:
   # Disabled when both lists are empty. allow takes precedence over deny.
   allow: []
   deny: []
+clientRateLimit:
+  # Disabled by default. Limits each source IP independently.
+  enabled: false
+  connectionsPerSecond: 1
+  burst: 3
+  idleTimeout: "10m"
+  maxEntries: 4096
 metrics:
   enabled: true
   listen: ":9090"
