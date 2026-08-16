@@ -354,7 +354,7 @@ func newServerState(staticConfig, cfg config.Config, routeTable *router.Router, 
 		router:         routeTable,
 		clientPolicy:   policy,
 		trustedProxies: trustedProxies,
-		scalerWebhook: scaler.New(scaler.Config{Enabled: cfg.ScalerWebhook.Enabled, URL: cfg.ScalerWebhook.URL, Timeout: cfg.ScalerWebhook.Timeout.Duration, Headers: cfg.ScalerWebhook.Headers}),
+		scalerWebhook:  scaler.New(scaler.Config{Enabled: cfg.ScalerWebhook.Enabled, URL: cfg.ScalerWebhook.URL, Timeout: cfg.ScalerWebhook.Timeout.Duration, Headers: cfg.ScalerWebhook.Headers}),
 		clientRateLimit: ratelimit.New(ratelimit.Config{
 			Enabled:              cfg.ClientRateLimit.Enabled,
 			ConnectionsPerSecond: cfg.ClientRateLimit.ConnectionsPerSecond,
