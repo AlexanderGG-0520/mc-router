@@ -21,6 +21,7 @@ import (
 	"github.com/AlexanderGG-0520/mc-router/internal/proxyprotocol"
 	"github.com/AlexanderGG-0520/mc-router/internal/ratelimit"
 	"github.com/AlexanderGG-0520/mc-router/internal/router"
+	"github.com/AlexanderGG-0520/mc-router/internal/scaler"
 )
 
 type Server struct {
@@ -47,6 +48,7 @@ type serverState struct {
 	clientPolicy     *clientpolicy.Policy
 	clientRateLimit  *ratelimit.Limiter
 	trustedProxies   []netip.Prefix
+	scalerWebhook    *scaler.Client
 	discoveryMerge   discovery.MergeResult
 	discoveredRoutes []kubernetes.DiscoveredRoute
 }
@@ -352,6 +354,7 @@ func newServerState(staticConfig, cfg config.Config, routeTable *router.Router, 
 		router:         routeTable,
 		clientPolicy:   policy,
 		trustedProxies: trustedProxies,
+		scalerWebhook: scaler.New(scaler.Config{Enabled: cfg.ScalerWebhook.Enabled, URL: cfg.ScalerWebhook.URL, Timeout: cfg.ScalerWebhook.Timeout.Duration, Headers: cfg.ScalerWebhook.Headers}),
 		clientRateLimit: ratelimit.New(ratelimit.Config{
 			Enabled:              cfg.ClientRateLimit.Enabled,
 			ConnectionsPerSecond: cfg.ClientRateLimit.ConnectionsPerSecond,
@@ -517,6 +520,10 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 	backendAddress := selection.Backend
 	if handshake.NextState == mcproto.NextStateStatus && selection.StatusBackend != "" {
 		backendAddress = selection.StatusBackend
+	}
+
+	if err := state.scalerWebhook.Notify(ctx, scaler.Event{Backend: backendAddress, ServerAddress: routeAddress, NextState: handshake.NextState}); err != nil {
+		s.logger.Warn("scaler webhook failed", "backend", backendAddress, "server_address", routeAddress, "error", err)
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, state.cfg.BackendDialTimeout.Duration)
