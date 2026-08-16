@@ -781,6 +781,38 @@ unknownHostPolicy: "deny"
 	}
 }
 
+func TestLoadAcceptsClientPolicy(t *testing.T) {
+	cfg, err := Load([]byte(`
+clientPolicy:
+  allow:
+    - "203.0.113.0/24"
+  deny:
+    - "198.51.100.10"
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(cfg.ClientPolicy.Allow) != 1 || cfg.ClientPolicy.Allow[0] != "203.0.113.0/24" {
+		t.Fatalf("clientPolicy.allow = %#v", cfg.ClientPolicy.Allow)
+	}
+	if len(cfg.ClientPolicy.Deny) != 1 || cfg.ClientPolicy.Deny[0] != "198.51.100.10" {
+		t.Fatalf("clientPolicy.deny = %#v", cfg.ClientPolicy.Deny)
+	}
+}
+
+func TestLoadRejectsInvalidClientPolicyEntry(t *testing.T) {
+	_, err := Load([]byte(`
+clientPolicy:
+  deny:
+    - "not-an-address"
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected invalid client policy entry error")
+	}
+}
+
 func TestLoadAcceptsFallbackStatusConfig(t *testing.T) {
 	cfg, err := Load([]byte(`
 fallback:

@@ -3,13 +3,16 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/AlexanderGG-0520/mc-router/internal/clientpolicy"
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
 	"github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
@@ -39,6 +42,7 @@ type serverState struct {
 	staticConfig     config.Config
 	cfg              config.Config
 	router           *router.Router
+	clientPolicy     *clientpolicy.Policy
 	discoveryMerge   discovery.MergeResult
 	discoveredRoutes []kubernetes.DiscoveredRoute
 }
@@ -134,13 +138,7 @@ func newServer(snapshot RouteSnapshot, logger *slog.Logger) *Server {
 		dialContext:   dialer.DialContext,
 	}
 	s.generation.Store(1)
-	s.state.Store(&serverState{
-		staticConfig:     cloneConfig(staticConfig),
-		cfg:              cfg,
-		router:           routeTable,
-		discoveryMerge:   snapshot.DiscoveryMerge,
-		discoveredRoutes: snapshot.DiscoveredRoutes,
-	})
+	s.state.Store(newServerState(staticConfig, cfg, routeTable, snapshot.DiscoveryMerge, snapshot.DiscoveredRoutes))
 	recorder.SetConfig(1, cfg)
 	if staticConfig.Discovery.Kubernetes.Enabled {
 		recorder.KubernetesDiscoverySync(len(snapshot.DiscoveredRoutes))
@@ -288,13 +286,7 @@ func (s *Server) updateRouteSnapshotLocked(snapshot RouteSnapshot) {
 	if routeTable == nil {
 		panic("proxy: nil router")
 	}
-	s.state.Store(&serverState{
-		staticConfig:     cloneConfig(staticConfig),
-		cfg:              cfg,
-		router:           routeTable,
-		discoveryMerge:   snapshot.DiscoveryMerge,
-		discoveredRoutes: snapshot.DiscoveredRoutes,
-	})
+	s.state.Store(newServerState(staticConfig, cfg, routeTable, snapshot.DiscoveryMerge, snapshot.DiscoveredRoutes))
 	generation := s.generation.Add(1)
 	s.metrics.SetConfig(generation, cfg)
 }
@@ -310,6 +302,8 @@ func cloneRouteSnapshot(snapshot RouteSnapshot) RouteSnapshot {
 }
 
 func cloneConfig(cfg config.Config) config.Config {
+	cfg.ClientPolicy.Allow = append([]string(nil), cfg.ClientPolicy.Allow...)
+	cfg.ClientPolicy.Deny = append([]string(nil), cfg.ClientPolicy.Deny...)
 	cfg.Routes = append([]config.Route(nil), cfg.Routes...)
 	for i := range cfg.Routes {
 		if cfg.Routes[i].StatusOverride != nil {
@@ -337,6 +331,21 @@ func cloneStringIntMap(values map[string]int) map[string]int {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func newServerState(staticConfig, cfg config.Config, routeTable *router.Router, merge discovery.MergeResult, discoveredRoutes []kubernetes.DiscoveredRoute) *serverState {
+	policy, err := clientpolicy.New(cfg.ClientPolicy.Allow, cfg.ClientPolicy.Deny)
+	if err != nil {
+		panic("proxy: invalid validated client policy: " + err.Error())
+	}
+	return &serverState{
+		staticConfig:     cloneConfig(staticConfig),
+		cfg:              cfg,
+		router:           routeTable,
+		clientPolicy:     policy,
+		discoveryMerge:   merge,
+		discoveredRoutes: discoveredRoutes,
+	}
 }
 
 func (s *Server) currentState() *serverState {
@@ -410,6 +419,17 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 
 	state := s.currentState()
 	remoteAddr := client.RemoteAddr().String()
+	clientAddr, err := addressFromAddr(client.RemoteAddr())
+	if err != nil || !state.clientPolicy.Allows(clientAddr) {
+		connectionResult = gatewaymetrics.ConnectionResultDenied
+		connectionReason = gatewaymetrics.ReasonClientDenied
+		if err != nil {
+			s.logger.Warn("connection rejected", "reason", connectionReason, "remote", remoteAddr, "error", err)
+			return
+		}
+		s.logger.Info("connection rejected", "reason", connectionReason, "remote", remoteAddr)
+		return
+	}
 	if err := client.SetReadDeadline(time.Now().Add(state.cfg.HandshakeTimeout.Duration)); err != nil {
 		s.logger.Warn("failed to set handshake deadline", "remote", remoteAddr, "error", err)
 		return
@@ -516,6 +536,25 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		"direction", result.direction,
 		"bytes_copied", result.bytesCopied,
 	)
+}
+
+func addressFromAddr(addr net.Addr) (netip.Addr, error) {
+	if tcpAddr, ok := addr.(*net.TCPAddr); ok {
+		parsed, ok := netip.AddrFromSlice(tcpAddr.IP)
+		if !ok {
+			return netip.Addr{}, fmt.Errorf("parse client TCP address %q", addr)
+		}
+		return parsed.Unmap(), nil
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("split client address %q: %w", addr, err)
+	}
+	parsed, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("parse client address %q: %w", host, err)
+	}
+	return parsed.Unmap(), nil
 }
 
 func routeDecisionResult(matchedBy string) string {

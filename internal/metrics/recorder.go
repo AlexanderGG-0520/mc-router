@@ -18,6 +18,7 @@ const (
 	ReasonBackendDialFailed  = "backend_dial_failed"
 	ReasonBackendDialTimeout = "backend_dial_timeout"
 	ReasonClientClose        = "client_close"
+	ReasonClientDenied       = "client_denied"
 	ReasonContextCancelled   = "context_cancelled"
 	ReasonHandshakeMalformed = "handshake_malformed"
 	ReasonHandshakeTimeout   = "handshake_timeout"

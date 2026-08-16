@@ -10,6 +10,7 @@
 - Trailing bytes in the handshake packet are rejected.
 - Handshake read timeout limits slow scanners.
 - Backend dial timeout limits stuck outbound connections.
+- Optional client IP allow/deny CIDR policy rejects disallowed connections before parsing a Minecraft handshake.
 - Unknown hosts are denied by default.
 - Structured logs avoid raw packet payloads.
 - Runtime container runs as non-root.
@@ -45,7 +46,6 @@ The default `unknownHostPolicy` is `deny`. This is safer for a public Minecraft 
 ## Known Gaps
 
 - No per-IP rate limit.
-- No allow/deny CIDR lists.
 - No PROXY protocol support.
 - No Minecraft status response for denied hosts.
 - No dynamic reload.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/bedrockroute"
+	"github.com/AlexanderGG-0520/mc-router/internal/clientpolicy"
 	"github.com/AlexanderGG-0520/mc-router/internal/hostaddr"
 	"gopkg.in/yaml.v3"
 )
@@ -54,6 +55,7 @@ type Config struct {
 	Listen             string       `yaml:"listen"`
 	HandshakeTimeout   Duration     `yaml:"handshakeTimeout"`
 	BackendDialTimeout Duration     `yaml:"backendDialTimeout"`
+	ClientPolicy       ClientPolicy `yaml:"clientPolicy"`
 	Metrics            Metrics      `yaml:"metrics"`
 	UDPRelay           UDPRelay     `yaml:"udpRelay"`
 	Bedrock            Bedrock      `yaml:"bedrock"`
@@ -63,6 +65,13 @@ type Config struct {
 	DefaultRoute       DefaultRoute `yaml:"defaultRoute"`
 	Routes             []Route      `yaml:"routes"`
 	UnknownHostPolicy  string       `yaml:"unknownHostPolicy"`
+}
+
+// ClientPolicy controls which source IP addresses may establish Java Edition
+// TCP connections. When allow is non-empty, it takes precedence over deny.
+type ClientPolicy struct {
+	Allow []string `yaml:"allow"`
+	Deny  []string `yaml:"deny"`
 }
 
 type Fallback struct {
@@ -283,6 +292,9 @@ func (c Config) Validate() error {
 	if c.BackendDialTimeout.Duration <= 0 {
 		errs = append(errs, errors.New("backendDialTimeout must be positive"))
 	}
+	if err := validateClientPolicy(c.ClientPolicy); err != nil {
+		errs = append(errs, err)
+	}
 	if c.Metrics.Enabled {
 		if strings.TrimSpace(c.Metrics.Listen) == "" {
 			errs = append(errs, errors.New("metrics.listen must not be empty when metrics.enabled is true"))
@@ -378,6 +390,13 @@ func (c Config) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func validateClientPolicy(policy ClientPolicy) error {
+	if _, err := clientpolicy.New(policy.Allow, policy.Deny); err != nil {
+		return fmt.Errorf("clientPolicy: %w", err)
+	}
+	return nil
 }
 
 func validateStatusOverride(override *StatusOverride) error {

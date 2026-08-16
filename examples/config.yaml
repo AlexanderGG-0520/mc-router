@@ -1,6 +1,11 @@
 listen: ":25565"
 handshakeTimeout: "5s"
 backendDialTimeout: "5s"
+# Disabled when both lists are empty. If allow has entries, only matching
+# source IP addresses or CIDRs can connect and allow takes precedence over deny.
+clientPolicy:
+  allow: []
+  deny: []
 metrics:
   enabled: true
   listen: ":9090"
