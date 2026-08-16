@@ -33,6 +33,8 @@ const (
 	MaxVoiceChatRegistrations          = 65536
 	MaxClientRateLimitEntries          = 65536
 	MaxClientRateLimitIdleTimeout      = 24 * time.Hour
+	MinConfigReloadDebounce            = 100 * time.Millisecond
+	MaxConfigReloadDebounce            = time.Minute
 	DefaultBedrockSessionTimeout       = 30 * time.Second
 )
 
@@ -64,6 +66,7 @@ type Config struct {
 	ClientRateLimit    ClientRateLimit `yaml:"clientRateLimit"`
 	ProxyProtocol      ProxyProtocol   `yaml:"proxyProtocol"`
 	ScalerWebhook      ScalerWebhook   `yaml:"scalerWebhook"`
+	ConfigReload       ConfigReload    `yaml:"configReload"`
 	Metrics            Metrics         `yaml:"metrics"`
 	UDPRelay           UDPRelay        `yaml:"udpRelay"`
 	Bedrock            Bedrock         `yaml:"bedrock"`
@@ -103,6 +106,15 @@ type ScalerWebhook struct {
 	URL     string            `yaml:"url"`
 	Timeout Duration          `yaml:"timeout"`
 	Headers map[string]string `yaml:"headers"`
+}
+
+// ConfigReload controls automatic reloads when the config file changes.
+// It is disabled by default. When enabled, the gateway watches the parent
+// directory so Kubernetes ConfigMap symlink swaps are detected without
+// requiring a Pod restart or SIGHUP.
+type ConfigReload struct {
+	Watch    bool     `yaml:"watch"`
+	Debounce Duration `yaml:"debounce"`
 }
 
 type Fallback struct {
@@ -260,6 +272,9 @@ func Defaults() Config {
 			MaxEntries:           4096,
 		},
 		ScalerWebhook: ScalerWebhook{Timeout: Duration{Duration: 2 * time.Second}},
+		ConfigReload: ConfigReload{
+			Debounce: Duration{Duration: time.Second},
+		},
 		Metrics: Metrics{
 			Listen: ":9090",
 			Path:   "/metrics",
@@ -340,6 +355,9 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("proxyProtocol.trustedProxies: %w", err))
 	}
 	if err := validateScalerWebhook(c.ScalerWebhook); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateConfigReload(c.ConfigReload); err != nil {
 		errs = append(errs, err)
 	}
 	if c.Metrics.Enabled {
@@ -468,6 +486,19 @@ func validateClientRateLimit(limit ClientRateLimit) error {
 		errs = append(errs, fmt.Errorf("clientRateLimit.maxEntries must be no greater than %d", MaxClientRateLimitEntries))
 	}
 	return errors.Join(errs...)
+}
+
+func validateConfigReload(reload ConfigReload) error {
+	if !reload.Watch {
+		return nil
+	}
+	if reload.Debounce.Duration < MinConfigReloadDebounce {
+		return fmt.Errorf("configReload.debounce must be at least %s when configReload.watch is true", MinConfigReloadDebounce)
+	}
+	if reload.Debounce.Duration > MaxConfigReloadDebounce {
+		return fmt.Errorf("configReload.debounce must be no greater than %s", MaxConfigReloadDebounce)
+	}
+	return nil
 }
 
 func validateStatusOverride(override *StatusOverride) error {

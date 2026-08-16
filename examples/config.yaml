@@ -13,6 +13,10 @@ clientRateLimit:
   burst: 3
   idleTimeout: "10m"
   maxEntries: 4096
+# Disabled by default. Watches the config file, including Kubernetes ConfigMap updates.
+configReload:
+  watch: false
+  debounce: "1s"
 metrics:
   enabled: true
   listen: ":9090"

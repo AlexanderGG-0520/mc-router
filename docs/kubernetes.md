@@ -177,18 +177,27 @@ If your cluster uses the Prometheus Operator, add a `ServiceMonitor` or `PodMoni
 
 ## ConfigMap Updates And Reload
 
-The gateway supports `SIGHUP` config reload on supported Unix platforms, including Linux, macOS, BSD, and Solaris. In Kubernetes, this gives operators a choice after updating the ConfigMap-backed route config:
+The gateway supports `SIGHUP` config reload on supported Unix platforms, including Linux, macOS, BSD, and Solaris. It can also watch ConfigMap-backed configuration automatically on every supported platform. In Kubernetes, this gives operators a choice after updating the ConfigMap-backed route config:
 
+- Enable `configReload.watch: true` to detect mounted config changes automatically. The gateway watches the parent directory, so Kubernetes projected-volume `..data` symlink swaps are detected. It debounces the events for `configReload.debounce`, which defaults to `1s`.
 - Send `SIGHUP` to the running gateway process so new connections use the updated routes without restarting the Pod.
 - Use a rolling restart when changing startup-only settings, such as the listener address, or when your platform makes signal delivery operationally awkward.
 
-Reload is atomic from the gateway's point of view. If the updated config is invalid, the running route snapshot stays active. Active connections are not disconnected by reload; new connections use the new route snapshot after a successful reload.
+Reload is atomic from the gateway's point of view. If the updated config is invalid, the running route snapshot stays active. Active connections are not disconnected by reload; new connections use the new route snapshot after a successful reload. The watch only reloads the Java TCP proxy snapshot; changing listener addresses, metrics, UDP relay, Bedrock, voice chat, or other startup-managed runtimes still requires a restart.
 
 Kubernetes discovery is not reconfigured during `SIGHUP` reload. If discovery was enabled at startup, reload performs a fresh Service list using the startup discovery namespace, annotation prefix, and client setup, rebuilds discovered routes through the same `BuildDiscoveredRoutes` and route-only provider boundaries used by startup/runtime discovery, and swaps the active route snapshot only after the static config and reload discovery result both apply successfully. The static route config is loaded from the updated file, but changes to discovery config values still require a process restart.
 
 The runtime Service watch controller is not restarted or mutated by reload. Its next complete watch `Result` may overwrite the reload-applied discovered route set normally. If config loading, the reload Service list, discovery result construction, or route snapshot apply fails, the previous active route snapshot and previous skipped Service metric values remain in place.
 
-Kubernetes ConfigMap projected volumes are updated asynchronously. Do not send `SIGHUP` until the mounted file has the expected content in the Pod. If you need deterministic rollout behavior across replicas, use a rolling restart instead of relying on manual signal timing.
+Kubernetes ConfigMap projected volumes are updated asynchronously. When automatic watching is enabled, the gateway reloads after the projection changes; do not also send `SIGHUP` for the same update. The watcher is configured only at startup, so changing `configReload.watch` or `configReload.debounce` itself still requires a restart. If you need deterministic rollout behavior across replicas, use a rolling restart instead of relying on file-update timing.
+
+Example ConfigMap settings:
+
+```yaml
+configReload:
+  watch: true
+  debounce: "1s"
+```
 
 Example command shape:
 
@@ -196,7 +205,7 @@ Example command shape:
 kubectl exec -n mc-gateway deploy/mc-gateway -- kill -HUP 1
 ```
 
-This assumes PID 1 inside the container is `mc-gateway` and that the container image includes a compatible `kill` command. Some restricted images or runtime policies may make `kubectl exec` or signal delivery unavailable. In those environments, prefer a rolling restart and verify logs for `reload_success` or `reload_failed`.
+This assumes PID 1 inside the container is `mc-gateway` and that the container image includes a compatible `kill` command. Some restricted images or runtime policies may make `kubectl exec` or signal delivery unavailable. In those environments, enable automatic watching or prefer a rolling restart and verify logs for `reload_success` or `reload_failed`.
 
 ## NodePort Option
 
