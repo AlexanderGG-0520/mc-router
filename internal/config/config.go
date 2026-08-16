@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -28,6 +29,8 @@ const (
 	MaxUDPRelaySessions                = 65536
 	MaxUDPRelayPacketSize              = 65535
 	MaxVoiceChatRegistrations          = 65536
+	MaxClientRateLimitEntries          = 65536
+	MaxClientRateLimitIdleTimeout      = 24 * time.Hour
 	DefaultBedrockSessionTimeout       = 30 * time.Second
 )
 
@@ -56,6 +59,7 @@ type Config struct {
 	HandshakeTimeout   Duration     `yaml:"handshakeTimeout"`
 	BackendDialTimeout Duration     `yaml:"backendDialTimeout"`
 	ClientPolicy       ClientPolicy `yaml:"clientPolicy"`
+	ClientRateLimit    ClientRateLimit `yaml:"clientRateLimit"`
 	Metrics            Metrics      `yaml:"metrics"`
 	UDPRelay           UDPRelay     `yaml:"udpRelay"`
 	Bedrock            Bedrock      `yaml:"bedrock"`
@@ -72,6 +76,16 @@ type Config struct {
 type ClientPolicy struct {
 	Allow []string `yaml:"allow"`
 	Deny  []string `yaml:"deny"`
+}
+
+// ClientRateLimit controls per-source-IP connection attempts for Java Edition
+// TCP connections. It is disabled by default.
+type ClientRateLimit struct {
+	Enabled              bool     `yaml:"enabled"`
+	ConnectionsPerSecond float64  `yaml:"connectionsPerSecond"`
+	Burst                int      `yaml:"burst"`
+	IdleTimeout          Duration `yaml:"idleTimeout"`
+	MaxEntries           int      `yaml:"maxEntries"`
 }
 
 type Fallback struct {
@@ -222,6 +236,12 @@ func Defaults() Config {
 		HandshakeTimeout:   Duration{Duration: 5 * time.Second},
 		BackendDialTimeout: Duration{Duration: 5 * time.Second},
 		UnknownHostPolicy:  UnknownHostDeny,
+		ClientRateLimit: ClientRateLimit{
+			ConnectionsPerSecond: 1,
+			Burst:                3,
+			IdleTimeout:          Duration{Duration: 10 * time.Minute},
+			MaxEntries:           4096,
+		},
 		Metrics: Metrics{
 			Listen: ":9090",
 			Path:   "/metrics",
@@ -293,6 +313,9 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("backendDialTimeout must be positive"))
 	}
 	if err := validateClientPolicy(c.ClientPolicy); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateClientRateLimit(c.ClientRateLimit); err != nil {
 		errs = append(errs, err)
 	}
 	if c.Metrics.Enabled {
@@ -397,6 +420,30 @@ func validateClientPolicy(policy ClientPolicy) error {
 		return fmt.Errorf("clientPolicy: %w", err)
 	}
 	return nil
+}
+
+func validateClientRateLimit(limit ClientRateLimit) error {
+	if !limit.Enabled {
+		return nil
+	}
+	var errs []error
+	if limit.ConnectionsPerSecond <= 0 || math.IsNaN(limit.ConnectionsPerSecond) || math.IsInf(limit.ConnectionsPerSecond, 0) {
+		errs = append(errs, errors.New("clientRateLimit.connectionsPerSecond must be positive when enabled"))
+	}
+	if limit.Burst < 1 {
+		errs = append(errs, errors.New("clientRateLimit.burst must be at least 1 when enabled"))
+	}
+	if limit.IdleTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("clientRateLimit.idleTimeout must be positive when enabled"))
+	} else if limit.IdleTimeout.Duration > MaxClientRateLimitIdleTimeout {
+		errs = append(errs, fmt.Errorf("clientRateLimit.idleTimeout must be no greater than %s", MaxClientRateLimitIdleTimeout))
+	}
+	if limit.MaxEntries < 1 {
+		errs = append(errs, errors.New("clientRateLimit.maxEntries must be at least 1 when enabled"))
+	} else if limit.MaxEntries > MaxClientRateLimitEntries {
+		errs = append(errs, fmt.Errorf("clientRateLimit.maxEntries must be no greater than %d", MaxClientRateLimitEntries))
+	}
+	return errors.Join(errs...)
 }
 
 func validateStatusOverride(override *StatusOverride) error {

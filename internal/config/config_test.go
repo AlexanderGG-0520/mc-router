@@ -813,6 +813,39 @@ unknownHostPolicy: "deny"
 	}
 }
 
+func TestLoadAcceptsClientRateLimit(t *testing.T) {
+	cfg, err := Load([]byte(`
+clientRateLimit:
+  enabled: true
+  connectionsPerSecond: 2.5
+  burst: 4
+  idleTimeout: "3m"
+  maxEntries: 1000
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.ClientRateLimit.Enabled || cfg.ClientRateLimit.ConnectionsPerSecond != 2.5 || cfg.ClientRateLimit.Burst != 4 || cfg.ClientRateLimit.IdleTimeout.Duration != 3*time.Minute || cfg.ClientRateLimit.MaxEntries != 1000 {
+		t.Fatalf("client rate limit = %#v", cfg.ClientRateLimit)
+	}
+}
+
+func TestLoadRejectsInvalidEnabledClientRateLimit(t *testing.T) {
+	_, err := Load([]byte(`
+clientRateLimit:
+  enabled: true
+  connectionsPerSecond: 0
+  burst: 0
+  idleTimeout: "0s"
+  maxEntries: 0
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected invalid client rate limit error")
+	}
+}
+
 func TestLoadAcceptsFallbackStatusConfig(t *testing.T) {
 	cfg, err := Load([]byte(`
 fallback:

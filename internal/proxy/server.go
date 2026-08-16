@@ -18,6 +18,7 @@ import (
 	"github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
 	"github.com/AlexanderGG-0520/mc-router/internal/mcproto"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
+	"github.com/AlexanderGG-0520/mc-router/internal/ratelimit"
 	"github.com/AlexanderGG-0520/mc-router/internal/router"
 )
 
@@ -43,6 +44,7 @@ type serverState struct {
 	cfg              config.Config
 	router           *router.Router
 	clientPolicy     *clientpolicy.Policy
+	clientRateLimit  *ratelimit.Limiter
 	discoveryMerge   discovery.MergeResult
 	discoveredRoutes []kubernetes.DiscoveredRoute
 }
@@ -343,6 +345,13 @@ func newServerState(staticConfig, cfg config.Config, routeTable *router.Router, 
 		cfg:              cfg,
 		router:           routeTable,
 		clientPolicy:     policy,
+		clientRateLimit: ratelimit.New(ratelimit.Config{
+			Enabled:              cfg.ClientRateLimit.Enabled,
+			ConnectionsPerSecond: cfg.ClientRateLimit.ConnectionsPerSecond,
+			Burst:                cfg.ClientRateLimit.Burst,
+			IdleTimeout:          cfg.ClientRateLimit.IdleTimeout.Duration,
+			MaxEntries:           cfg.ClientRateLimit.MaxEntries,
+		}),
 		discoveryMerge:   merge,
 		discoveredRoutes: discoveredRoutes,
 	}
@@ -427,6 +436,12 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 			s.logger.Warn("connection rejected", "reason", connectionReason, "remote", remoteAddr, "error", err)
 			return
 		}
+		s.logger.Info("connection rejected", "reason", connectionReason, "remote", remoteAddr)
+		return
+	}
+	if !state.clientRateLimit.Allow(clientAddr) {
+		connectionResult = gatewaymetrics.ConnectionResultDenied
+		connectionReason = gatewaymetrics.ReasonRateLimited
 		s.logger.Info("connection rejected", "reason", connectionReason, "remote", remoteAddr)
 		return
 	}

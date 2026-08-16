@@ -24,6 +24,7 @@ const (
 	ReasonHandshakeTimeout   = "handshake_timeout"
 	ReasonInitialWriteFailed = "initial_write_failed"
 	ReasonRouteDenied        = "route_denied"
+	ReasonRateLimited        = "rate_limited"
 	ReasonSuccess            = "success"
 	ReasonUnknown            = "unknown"
 
