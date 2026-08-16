@@ -112,6 +112,66 @@ func TestProxyDeniesUnknownHostWithoutConnectingBackend(t *testing.T) {
 	}
 }
 
+func TestProxyDeniesClientByCIDRBeforeHandshake(t *testing.T) {
+	dialed := make(chan struct{}, 1)
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		ClientPolicy:       config.ClientPolicy{Deny: []string{"127.0.0.1/32"}},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"},
+		},
+	}, func(server *Server) {
+		server.dialContext = func(context.Context, string, string) (net.Conn, error) {
+			dialed <- struct{}{}
+			return nil, errors.New("dial should not be called")
+		}
+	})
+	defer stop()
+
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin))
+	defer client.Close()
+	readClosed(t, client)
+
+	select {
+	case <-dialed:
+		t.Fatal("dialer was called for a denied client")
+	default:
+	}
+}
+
+func TestProxyClientAllowListTakesPrecedenceOverDenyList(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	backendBytes := acceptAndReadOnce(t, backendListener)
+
+	gatewayAddr, stop := startTestServer(t, config.Config{
+		Listen:             ":0",
+		HandshakeTimeout:   config.Duration{Duration: time.Second},
+		BackendDialTimeout: config.Duration{Duration: time.Second},
+		ClientPolicy: config.ClientPolicy{
+			Allow: []string{"127.0.0.1"},
+			Deny:  []string{"127.0.0.1"},
+		},
+		UnknownHostPolicy: config.UnknownHostDeny,
+		Routes: []config.Route{
+			{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()},
+		},
+	})
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin)
+	client := dialAndWrite(t, gatewayAddr, handshake)
+	defer client.Close()
+	closeClientWrite(t, client)
+	if got := waitBytes(t, backendBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("backend bytes = %v, want %v", got, handshake)
+	}
+}
+
 func TestProxyDeniesUnknownTransferHostWithoutConnectingBackend(t *testing.T) {
 	dialed := make(chan struct{}, 1)
 

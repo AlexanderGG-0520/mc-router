@@ -201,6 +201,10 @@ Static YAML is the first supported route source:
 listen: ":25565"
 handshakeTimeout: "5s"
 backendDialTimeout: "5s"
+clientPolicy:
+  # Disabled when both lists are empty. allow takes precedence over deny.
+  allow: []
+  deny: []
 metrics:
   enabled: true
   listen: ":9090"
