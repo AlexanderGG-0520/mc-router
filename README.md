@@ -340,6 +340,10 @@ docker run --rm -p 25565:25565 -p 19132:19132/udp -p 127.0.0.1:9090:9090 -v ${PW
 
 The Dockerfile uses a multi-stage build and `gcr.io/distroless/static-debian12:nonroot` for the runtime image. Distroless keeps the image small and removes shell/package-manager attack surface while retaining a minimal base with non-root support. Alpine is easier to debug interactively, but the runtime container should not require a shell for the MVP. If operational debugging becomes painful, a separate debug image target can be added later.
 
+## Standalone binaries
+
+Version tags publish `mc-gateway` archives for Linux, macOS, and Windows to the corresponding GitHub Release. Each release includes `checksums.txt`. Container images continue to be published separately by the Docker workflow.
+
 Health checks are intentionally left to Kubernetes TCP probes in the MVP. A richer health endpoint can be added after a metrics or admin listener exists.
 
 ## Kubernetes
