@@ -63,7 +63,7 @@ jobs:
           cache-provider: basic
 
       - name: Voice chat companion build
-        run: gradle -p companion :core:test :fabric:jar :paper:jar
+        run: gradle -p companion :core:test :fabric:jar :paper:jar :control-paper:test :control-paper:jar
 
       - name: Voice chat Compose config
         run: docker compose -f compose.voicechat.yaml config
