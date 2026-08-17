@@ -9,9 +9,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class BackendAvailabilityStoreTest {
     @Test
-    void emitsOnlyOnAvailabilityTransition() {
+    void emitsOnlyOnAvailabilityTransitionAfterInitialObservation() {
         BackendAvailabilityStore store = new BackendAvailabilityStore();
-        assertTrue(store.update("survival", BackendAvailability.ONLINE, Instant.now()).isPresent());
+        assertFalse(store.update("survival", BackendAvailability.ONLINE, Instant.now()).isPresent());
         assertFalse(store.update("survival", BackendAvailability.ONLINE, Instant.now()).isPresent());
         assertTrue(store.update("survival", BackendAvailability.OFFLINE, Instant.now()).isPresent());
     }
