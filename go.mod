@@ -3,10 +3,10 @@ module github.com/AlexanderGG-0520/mc-router
 go 1.26.0
 
 require (
-	github.com/fsnotify/fsnotify v1.9.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
-	github.com/sandertv/gophertunnel v1.58.0
+	github.com/sandertv/gophertunnel v1.58.1
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.36.3
 	k8s.io/apimachinery v0.36.3
