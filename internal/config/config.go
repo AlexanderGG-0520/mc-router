@@ -67,6 +67,7 @@ type Config struct {
 	ProxyProtocol      ProxyProtocol   `yaml:"proxyProtocol"`
 	ScalerWebhook      ScalerWebhook   `yaml:"scalerWebhook"`
 	ConfigReload       ConfigReload    `yaml:"configReload"`
+	Availability       Availability    `yaml:"availability"`
 	Metrics            Metrics         `yaml:"metrics"`
 	UDPRelay           UDPRelay        `yaml:"udpRelay"`
 	Bedrock            Bedrock         `yaml:"bedrock"`
@@ -115,6 +116,22 @@ type ScalerWebhook struct {
 type ConfigReload struct {
 	Watch    bool     `yaml:"watch"`
 	Debounce Duration `yaml:"debounce"`
+}
+
+// Availability controls opt-in Java status monitoring and Hub notifications.
+type Availability struct {
+	Enabled    bool                  `yaml:"enabled"`
+	Interval   Duration              `yaml:"interval"`
+	Timeout    Duration              `yaml:"timeout"`
+	ControlURL string                `yaml:"controlURL"`
+	TokenEnv   string                `yaml:"tokenEnv"`
+	Backends   []AvailabilityBackend `yaml:"backends"`
+}
+
+type AvailabilityBackend struct {
+	ID            string `yaml:"id"`
+	Address       string `yaml:"address"`
+	ServerAddress string `yaml:"serverAddress"`
 }
 
 type Fallback struct {
@@ -275,6 +292,10 @@ func Defaults() Config {
 		ConfigReload: ConfigReload{
 			Debounce: Duration{Duration: time.Second},
 		},
+		Availability: Availability{
+			Interval: Duration{Duration: 10 * time.Second},
+			Timeout:  Duration{Duration: 3 * time.Second},
+		},
 		Metrics: Metrics{
 			Listen: ":9090",
 			Path:   "/metrics",
@@ -358,6 +379,9 @@ func (c Config) Validate() error {
 		errs = append(errs, err)
 	}
 	if err := validateConfigReload(c.ConfigReload); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateAvailability(c.Availability); err != nil {
 		errs = append(errs, err)
 	}
 	if c.Metrics.Enabled {
@@ -827,6 +851,45 @@ func validateScalerWebhook(webhook ScalerWebhook) error {
 	for name := range webhook.Headers {
 		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, "\r\n") {
 			return errors.New("scalerWebhook.headers contains an invalid header name")
+		}
+	}
+	return nil
+}
+
+func validateAvailability(availability Availability) error {
+	if !availability.Enabled {
+		return nil
+	}
+	if availability.Interval.Duration < time.Second {
+		return errors.New("availability.interval must be at least 1s when enabled")
+	}
+	if availability.Timeout.Duration <= 0 || availability.Timeout.Duration > availability.Interval.Duration {
+		return errors.New("availability.timeout must be positive and no greater than availability.interval when enabled")
+	}
+	parsed, err := neturl.ParseRequestURI(availability.ControlURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return errors.New("availability.controlURL must be an absolute http or https URL when enabled")
+	}
+	if strings.TrimSpace(availability.TokenEnv) == "" {
+		return errors.New("availability.tokenEnv must not be empty when enabled")
+	}
+	if len(availability.Backends) == 0 {
+		return errors.New("availability.backends must not be empty when enabled")
+	}
+	seen := make(map[string]struct{}, len(availability.Backends))
+	for _, backend := range availability.Backends {
+		if !isDNSLabel(backend.ID) {
+			return fmt.Errorf("availability.backends id %q must be a DNS label", backend.ID)
+		}
+		if _, exists := seen[backend.ID]; exists {
+			return fmt.Errorf("availability.backends contains duplicate id %q", backend.ID)
+		}
+		seen[backend.ID] = struct{}{}
+		if err := validateBackend(backend.Address); err != nil {
+			return fmt.Errorf("availability.backends[%q].address: %w", backend.ID, err)
+		}
+		if _, err := hostaddr.Normalize(backend.ServerAddress); err != nil {
+			return fmt.Errorf("availability.backends[%q].serverAddress: %w", backend.ID, err)
 		}
 	}
 	return nil

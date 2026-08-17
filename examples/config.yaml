@@ -17,6 +17,14 @@ clientRateLimit:
 configReload:
   watch: false
   debounce: "1s"
+availability:
+  # Disabled by default. Performs Java STATUS probes and notifies the Hub control companion.
+  enabled: false
+  interval: "10s"
+  timeout: "3s"
+  controlURL: "http://mc-router-control.mc-hub.svc.cluster.local:8082"
+  tokenEnv: "MC_ROUTER_CONTROL_TOKEN"
+  backends: []
 metrics:
   enabled: true
   listen: ":9090"
