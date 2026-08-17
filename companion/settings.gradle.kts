@@ -19,4 +19,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "mc-router-voicechat-companion"
-include("core", "paper", "fabric")
+include("core", "paper", "fabric", "control-paper")
