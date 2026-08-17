@@ -1,0 +1,8 @@
+name: mc-router-control-companion
+main: com.alecofc.mcrouter.control.paper.McRouterControlPaperPlugin
+version: ${version}
+description: Receives authenticated backend availability updates from mc-router.
+api-version: "1.21.8"
+load: POSTWORLD
+authors:
+  - AlexanderGG-0520
