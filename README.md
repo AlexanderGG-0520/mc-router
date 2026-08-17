@@ -72,6 +72,12 @@ The companion registers a player's UUID with `mc-router` before the Simple Voice
 
 Unknown, expired, malformed, or ambiguous sessions fail closed. `mc-router` does not decrypt, inspect, or log voice payloads or Simple Voice Chat secrets.
 
+## Hub Control Companion
+
+`mc-router-control-companion-paper` is a separate Paper plugin for a Hub. It listens only on a configured internal address and accepts authenticated `PUT /v1/backends/{backendId}/availability` requests with `{"availability":"online"}` or `{"availability":"offline"}`. Backend IDs are an explicit allow-list, request bodies are bounded, and an update emits a Paper `BackendAvailabilityChangeEvent` only when the availability state changes. It does not require Simple Voice Chat.
+
+Set `MC_ROUTER_CONTROL_LISTEN`, `MC_ROUTER_CONTROL_TOKEN`, and a comma-separated `MC_ROUTER_CONTROL_BACKENDS` allow-list. Do not expose its listener outside the Kubernetes cluster. The forthcoming mc-router notifier and any Hub GUI/NPC plugin use this API and event.
+
 ### Current status
 
 Dynamic Simple Voice Chat routing is experimental and has not yet been declared production-ready.
