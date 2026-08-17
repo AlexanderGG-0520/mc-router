@@ -617,7 +617,6 @@ func TestProxyRejectsMalformedHandshakeWithoutConnectingBackend(t *testing.T) {
 
 	client := dialAndWrite(t, gatewayAddr, []byte{0x80, 0x80, 0x80, 0x80, 0x80, 0x00})
 	defer client.Close()
-	closeClientWrite(t, client)
 
 	tcpListener := backendListener.(*net.TCPListener)
 	if err := tcpListener.SetDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
