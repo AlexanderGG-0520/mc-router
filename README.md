@@ -76,7 +76,24 @@ Unknown, expired, malformed, or ambiguous sessions fail closed. `mc-router` does
 
 `mc-router-control-companion-paper` is a separate Paper plugin for a Hub. It listens only on a configured internal address and accepts authenticated `PUT /v1/backends/{backendId}/availability` requests with `{"availability":"online"}` or `{"availability":"offline"}`. Backend IDs are an explicit allow-list, request bodies are bounded, and an update emits a Paper `BackendAvailabilityChangeEvent` only when the availability state changes. It does not require Simple Voice Chat.
 
-Set `MC_ROUTER_CONTROL_LISTEN`, `MC_ROUTER_CONTROL_TOKEN`, and a comma-separated `MC_ROUTER_CONTROL_BACKENDS` allow-list. Do not expose its listener outside the Kubernetes cluster. The forthcoming mc-router notifier and any Hub GUI/NPC plugin use this API and event.
+Set `MC_ROUTER_CONTROL_LISTEN`, `MC_ROUTER_CONTROL_TOKEN`, and a comma-separated `MC_ROUTER_CONTROL_BACKENDS` allow-list. Do not expose its listener outside the Kubernetes cluster. The mc-router availability notifier and any Hub GUI/NPC plugin use this API and event.
+
+## Backend Availability Notifications
+
+Set `availability.enabled: true` to have `mc-gateway` send state changes to the Hub control companion. The gateway performs a Java STATUS handshake and status request for each explicit `availability.backends` entry; a bare successful TCP connection does not count as online. The initial observed state is sent, then only changes are sent. Failed notifications are retried on the next interval. Keep `tokenEnv` in a Kubernetes Secret rather than putting the token in the ConfigMap.
+
+```yaml
+availability:
+  enabled: true
+  interval: "10s"
+  timeout: "3s"
+  controlURL: "http://mc-router-control.mc-hub.svc.cluster.local:8082"
+  tokenEnv: "MC_ROUTER_CONTROL_TOKEN"
+  backends:
+    - id: "alec-smp-2"
+      address: "fabric-c2me-gpu-not-true-crafter-mode.fabric-c2me-gpu-not-true-crafter-mode.svc.cluster.local:25565"
+      serverAddress: "c2me.alec-ofc.com"
+```
 
 ### Current status
 

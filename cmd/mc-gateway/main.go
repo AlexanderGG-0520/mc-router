@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/AlexanderGG-0520/mc-router/internal/availability"
 	"github.com/AlexanderGG-0520/mc-router/internal/bedrockproxy"
 	"github.com/AlexanderGG-0520/mc-router/internal/bedrockroute"
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
@@ -77,6 +78,14 @@ func run(configPath string, logger *slog.Logger) error {
 	voiceRuntime, err := startVoiceChat(ctx, cfg, logger, server.Metrics())
 	if err != nil {
 		cancel()
+		waitBedrockShutdown(bedrockRuntime)
+		waitUDPRelayShutdown(udpRuntime)
+		waitMetricsShutdown(ctx, metricsServer)
+		return err
+	}
+	if err := availability.Start(ctx, cfg.Availability, logger); err != nil {
+		cancel()
+		waitVoiceChatShutdown(voiceRuntime)
 		waitBedrockShutdown(bedrockRuntime)
 		waitUDPRelayShutdown(udpRuntime)
 		waitMetricsShutdown(ctx, metricsServer)
