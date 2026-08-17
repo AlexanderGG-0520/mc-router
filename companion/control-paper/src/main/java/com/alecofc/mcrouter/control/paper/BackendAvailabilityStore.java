@@ -11,7 +11,7 @@ final class BackendAvailabilityStore {
     Optional<Change> update(String backendId, BackendAvailability availability, Instant observedAt) {
         BackendStatus next = new BackendStatus(backendId, availability, observedAt);
         BackendStatus previous = statuses.put(backendId, next);
-        if (previous != null && previous.availability() == availability) {
+        if (previous == null || previous.availability() == availability) {
             return Optional.empty();
         }
         return Optional.of(new Change(previous, next));
