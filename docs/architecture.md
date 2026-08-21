@@ -37,19 +37,24 @@ The design is intentionally smaller than a Kubernetes controller. Static routes 
 
 For STATUS, `statusOverride` remains the first priority. Otherwise the selected
 route's `statusBackend` (or its normal `backend` when `statusBackend` is unset)
-is an observation source, not a per-client TCP proxy destination. The first
-STATUS request activates a source worker. It repeatedly sends a Java handshake
-and STATUS request independently of later public requests.
+is an observation source, not a per-client TCP proxy destination. A worker is
+started for each configured source and repeatedly sends a Java handshake and
+STATUS request independently of public requests.
 
-The worker retains a response only when it receives packet `0x00` containing
-exactly one valid UTF-8 JSON object. It records the completion time. Public
-STATUS reads this state and handles ping/pong locally; it never waits for a
-source request.
+The worker accepts a response only when it receives packet `0x00` containing
+exactly one valid UTF-8 JSON object. Each completed probe is an observation,
+not immediately a public verdict. The worker maintains `UNKNOWN`, `NORMAL`, or
+`DEGRADED`: it needs `status.recoveryThreshold` consecutive successes to enter
+or recover `NORMAL`, and `status.failureThreshold` consecutive failures to
+leave it. Public STATUS reads that state and handles ping/pong locally; it
+never waits for a source request.
 
 `normal` has a precise meaning:
 
-> A valid STATUS response was completely observed by this router no more than
-> `status.maxObservationAge` ago, and no later source probe has failed.
+> This router has a completed probe sequence satisfying the configured recovery
+> rule, has not since completed a sequence satisfying the configured failure
+> rule, and has completed some source probe within
+> `status.maxObservationAge`.
 
 Every other state—initially unknown, source TCP failure, source timeout,
 invalid response, or a response older than that bound—returns the explicit
@@ -60,6 +65,8 @@ response rather than serving a stale normal MOTD.
 status:
   probeInterval: "10s"
   probeTimeout: "3s"
+  failureThreshold: 3
+  recoveryThreshold: 2
   maxObservationAge: "15s" # must be at least interval + timeout
 ```
 

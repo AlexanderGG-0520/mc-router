@@ -34,9 +34,9 @@ Implemented in this skeleton:
 - Minecraft handshake parser with VarInt support, including Minecraft Java 1.20.5+ transfer intent.
 - Requested `serverAddress` based static route matching.
 - TCP proxying to selected backend `host:port` for Login and Transfer traffic.
-- Router-terminated STATUS backed only by fresh, independently refreshed
-  backend observations; unavailable, invalid, or stale observations produce a
-  degraded STATUS response.
+- Router-terminated STATUS backed by an independently maintained health state:
+  configurable consecutive probe outcomes determine NORMAL or DEGRADED, and a
+  stopped observation loop fails closed.
 - Unknown host deny policy, with optional default route policy.
 - Optional fallback responses for denied status pings and denied login starts.
 - Structured JSON logging through Go `log/slog`.
@@ -301,6 +301,8 @@ unknownHostPolicy: "deny"
 status:
   probeInterval: "10s"
   probeTimeout: "3s"
+  failureThreshold: 3
+  recoveryThreshold: 2
   maxObservationAge: "15s"
 defaultRoute:
   backend: "lobby.default.svc.cluster.local:25565"
@@ -329,10 +331,11 @@ routes:
 
 `statusBackend` selects the Java Edition STATUS observation source while Login
 and Transfer traffic continue to use `backend`. The router terminates public
-STATUS connections, probes the source independently, validates its complete
-response (including extension fields such as favicon and player samples), and
-returns only a fresh completed observation. It is optional; when omitted,
-`backend` is the source.
+STATUS connections, probes the source independently, and validates its complete
+response (including extension fields such as favicon and player samples). Probe
+results are not public state changes by themselves: the router applies the
+configured consecutive-failure and consecutive-success thresholds to maintain a
+health state. It is optional; when omitted, `backend` is the source.
 
 A route can instead set `statusOverride` to return a static Java Edition status response for that hostname. It is used only for the status state: login and Transfer handshakes still proxy to the route's backend. `statusOverride` takes precedence over `statusBackend`; it never starts a source probe. Its `motd`, `protocolName`, `protocolVersion`, `maxPlayers`, and `onlinePlayers` fields are all required; protocol and player counts must be non-negative.
 
@@ -344,10 +347,13 @@ Bedrock support is disabled by default. Set `bedrock.enabled: true` to bind one 
 
 Fallback responses are counted with `mc_gateway_fallback_responses_total{state,reason}` after a fallback response packet is successfully written. Labels are intentionally bounded: `state` is `status` or `login`, and `reason` is one of the documented low-cardinality lifecycle reasons.
 
-For a selected STATUS route, `normal` means: router completed a valid source
-STATUS response no more than `status.maxObservationAge` ago, with no later
-failed observation. All other states are returned as the configured degraded
-`fallback.status` response. Use an explicit unavailable/degraded MOTD; never
+For a selected STATUS route, `normal` means: the router's health state is
+`NORMAL`, established after `status.recoveryThreshold` consecutive valid source
+responses and not subsequently withdrawn by `status.failureThreshold`
+consecutive failed source observations. `status.maxObservationAge` forces the
+state to be unavailable if the observation loop stops completing probes. All
+other states are returned as the configured degraded `fallback.status` response.
+Use an explicit unavailable/degraded MOTD; never
 reuse the normal MOTD. `fallback.enabled` and `fallback.status.enabled` still
 control the optional denied-route response. Set `fallback.login.enabled: true`
 to return a protocol 767 login-state disconnect packet for denied login starts.

@@ -13,9 +13,9 @@ import (
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 )
 
-// statusMonitor separates source observation from public STATUS handling. Its
-// workers run regardless of client traffic; public requests only read a dated
-// completed observation.
+// statusMonitor separates source observations from public STATUS handling.
+// Workers maintain a health state from an observation sequence; public
+// requests only read that state and never wait for a source request.
 type statusMonitor struct {
 	server *Server
 
@@ -37,11 +37,22 @@ type statusSource struct {
 	cancel context.CancelFunc
 	poke   chan struct{}
 
-	response   []byte
-	observedAt time.Time
-	reason     string
-	timing     config.Status
+	response             []byte
+	observedAt           time.Time
+	reason               string
+	health               statusHealth
+	consecutiveFailures  int
+	consecutiveSuccesses int
+	timing               config.Status
 }
+
+type statusHealth string
+
+const (
+	statusHealthUnknown  statusHealth = "unknown"
+	statusHealthNormal   statusHealth = "normal"
+	statusHealthDegraded statusHealth = "degraded"
+)
 
 func newStatusMonitor(server *Server) *statusMonitor {
 	return &statusMonitor{server: server, entries: make(map[statusSourceKey]*statusSource)}
@@ -55,9 +66,10 @@ func (m *statusMonitor) Start(ctx context.Context, cfg config.Config) {
 	}
 	m.ctx = ctx
 	m.started = true
-	// Sources are activated by STATUS routing, never by Login/Transfer startup.
-	// Once activated, their probe loop is independent of later client requests.
-	_ = cfg
+	// A configured source has a router-owned state from process start. Login and
+	// Transfer never use those states, but public STATUS is not responsible for
+	// initiating the observation that it reports.
+	m.reconcileExistingLocked(cfg)
 	m.mu.Unlock()
 }
 
@@ -85,6 +97,9 @@ func (m *statusMonitor) reconcileExistingLocked(cfg config.Config) {
 		source.cancel()
 		delete(m.entries, key)
 	}
+	for key := range desired {
+		m.startSourceLocked(key, cfg.Status)
+	}
 }
 
 func statusSourceDefinitions(cfg config.Config) map[statusSourceKey]struct{} {
@@ -110,12 +125,12 @@ func (m *statusMonitor) sourceFor(key statusSourceKey, timing config.Status) *st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	source := m.entries[key]
-	if source != nil {
+	if source != nil || !m.started {
 		return source
 	}
-	if !m.started {
-		return nil
-	}
+	// defaultRoute and routes published concurrently with a snapshot reload can
+	// reach here before reconciliation has created their worker. Starting one
+	// still creates an UNKNOWN state first; the public request never probes.
 	m.startSourceLocked(key, timing)
 	return m.entries[key]
 }
@@ -127,6 +142,7 @@ func (m *statusMonitor) startSourceLocked(key statusSourceKey, timing config.Sta
 		cancel: cancel,
 		poke:   make(chan struct{}, 1),
 		reason: gatewaymetrics.ReasonBackendStatusUnknown,
+		health: statusHealthUnknown,
 		timing: timing,
 	}
 	m.entries[key] = source
@@ -138,7 +154,7 @@ func (m *statusMonitor) runSource(ctx context.Context, source *statusSource) {
 	defer m.wg.Done()
 	for {
 		m.probe(ctx, source)
-		interval, _, _ := effectiveStatusTiming(m.timing(source))
+		interval, _, _, _, _ := effectiveStatusPolicy(m.timing(source))
 		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
@@ -156,7 +172,7 @@ func (m *statusMonitor) runSource(ctx context.Context, source *statusSource) {
 }
 
 func (m *statusMonitor) probe(parent context.Context, source *statusSource) {
-	_, timeout, _ := effectiveStatusTiming(m.timing(source))
+	_, timeout, _, _, _ := effectiveStatusPolicy(m.timing(source))
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	response, reason := m.fetch(ctx, source.key)
@@ -167,18 +183,31 @@ func (m *statusMonitor) probe(parent context.Context, source *statusSource) {
 	m.mu.Lock()
 	current := m.entries[source.key]
 	if current == source {
-		current.reason = reason
-		if reason == gatewaymetrics.ReasonSuccess {
-			current.response = response
-			current.observedAt = time.Now()
-		} else {
-			// A completed failure invalidates the prior normal assertion.
-			current.response = nil
-			current.observedAt = time.Time{}
-		}
+		current.applyObservation(response, reason, time.Now())
 	}
 	m.mu.Unlock()
 	m.server.metrics.StatusSourceProbe(statusProbeResult(reason), reason)
+}
+
+func (source *statusSource) applyObservation(response []byte, reason string, observedAt time.Time) {
+	source.observedAt = observedAt
+	source.reason = reason
+	if reason == gatewaymetrics.ReasonSuccess {
+		source.response = response
+		source.consecutiveSuccesses++
+		source.consecutiveFailures = 0
+		_, _, _, _, recoveryThreshold := effectiveStatusPolicy(source.timing)
+		if source.health != statusHealthNormal && source.consecutiveSuccesses >= recoveryThreshold {
+			source.health = statusHealthNormal
+		}
+		return
+	}
+	source.consecutiveFailures++
+	source.consecutiveSuccesses = 0
+	_, _, _, failureThreshold, _ := effectiveStatusPolicy(source.timing)
+	if source.health == statusHealthNormal && source.consecutiveFailures >= failureThreshold {
+		source.health = statusHealthDegraded
+	}
 }
 
 func (m *statusMonitor) fetch(ctx context.Context, key statusSourceKey) ([]byte, string) {
@@ -213,15 +242,23 @@ func (m *statusMonitor) response(key statusSourceKey, timing config.Status) ([]b
 	if source == nil {
 		return nil, gatewaymetrics.ReasonBackendStatusUnknown
 	}
-	_, _, maxAge := effectiveStatusTiming(m.timing(source))
+	_, _, maxAge, _, _ := effectiveStatusPolicy(m.timing(source))
 	now := time.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if source.reason != gatewaymetrics.ReasonSuccess {
-		return nil, source.reason
-	}
 	if source.observedAt.IsZero() || now.Sub(source.observedAt) > maxAge {
+		// The observation loop has exceeded its own liveness bound. Its prior
+		// sequence cannot be used to recover NORMAL after it resumes.
+		source.health = statusHealthUnknown
+		source.consecutiveFailures = 0
+		source.consecutiveSuccesses = 0
 		return nil, gatewaymetrics.ReasonBackendStatusStale
+	}
+	if source.health != statusHealthNormal || len(source.response) == 0 {
+		if source.health == statusHealthUnknown && source.reason == gatewaymetrics.ReasonSuccess {
+			return nil, gatewaymetrics.ReasonBackendStatusRecovering
+		}
+		return nil, source.reason
 	}
 	return append([]byte(nil), source.response...), gatewaymetrics.ReasonSuccess
 }
@@ -236,7 +273,7 @@ func (m *statusMonitor) Wait() {
 	m.wg.Wait()
 }
 
-func effectiveStatusTiming(status config.Status) (time.Duration, time.Duration, time.Duration) {
+func effectiveStatusPolicy(status config.Status) (time.Duration, time.Duration, time.Duration, int, int) {
 	defaults := config.Defaults().Status
 	if status.ProbeInterval.Duration <= 0 {
 		status.ProbeInterval = defaults.ProbeInterval
@@ -244,10 +281,16 @@ func effectiveStatusTiming(status config.Status) (time.Duration, time.Duration, 
 	if status.ProbeTimeout.Duration <= 0 {
 		status.ProbeTimeout = defaults.ProbeTimeout
 	}
+	if status.FailureThreshold <= 0 {
+		status.FailureThreshold = defaults.FailureThreshold
+	}
+	if status.RecoveryThreshold <= 0 {
+		status.RecoveryThreshold = defaults.RecoveryThreshold
+	}
 	if status.MaxObservationAge.Duration <= 0 {
 		status.MaxObservationAge = defaults.MaxObservationAge
 	}
-	return status.ProbeInterval.Duration, status.ProbeTimeout.Duration, status.MaxObservationAge.Duration
+	return status.ProbeInterval.Duration, status.ProbeTimeout.Duration, status.MaxObservationAge.Duration, status.FailureThreshold, status.RecoveryThreshold
 }
 
 func buildStatusProbeHandshake(key statusSourceKey) []byte {
@@ -276,12 +319,12 @@ func statusProbeResult(reason string) string {
 	return gatewaymetrics.ConnectionResultFailed
 }
 
-func (m *statusMonitor) snapshot(key statusSourceKey) (response []byte, observedAt time.Time, reason string, ok bool) {
+func (m *statusMonitor) snapshot(key statusSourceKey) (response []byte, observedAt time.Time, reason string, health statusHealth, consecutiveFailures, consecutiveSuccesses int, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	source := m.entries[key]
 	if source == nil {
-		return nil, time.Time{}, "", false
+		return nil, time.Time{}, "", statusHealthUnknown, 0, 0, false
 	}
-	return append([]byte(nil), source.response...), source.observedAt, source.reason, true
+	return append([]byte(nil), source.response...), source.observedAt, source.reason, source.health, source.consecutiveFailures, source.consecutiveSuccesses, true
 }

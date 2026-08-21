@@ -135,12 +135,15 @@ type AvailabilityBackend struct {
 	ServerAddress string `yaml:"serverAddress"`
 }
 
-// Status controls router-owned observations of Java STATUS sources. A normal
-// public STATUS response is only a claim about a completed observation within
-// MaxObservationAge; it is never a live backend round trip.
+// Status controls router-owned health state for Java STATUS sources. Probe
+// results are observations; the thresholds decide when those observations are
+// allowed to change the public health state. MaxObservationAge is a watchdog
+// for the observation loop itself, not a freshness bound for one success.
 type Status struct {
 	ProbeInterval     Duration `yaml:"probeInterval"`
 	ProbeTimeout      Duration `yaml:"probeTimeout"`
+	FailureThreshold  int      `yaml:"failureThreshold"`
+	RecoveryThreshold int      `yaml:"recoveryThreshold"`
 	MaxObservationAge Duration `yaml:"maxObservationAge"`
 }
 
@@ -311,6 +314,8 @@ func Defaults() Config {
 		Status: Status{
 			ProbeInterval:     Duration{Duration: 10 * time.Second},
 			ProbeTimeout:      Duration{Duration: 3 * time.Second},
+			FailureThreshold:  3,
+			RecoveryThreshold: 2,
 			MaxObservationAge: Duration{Duration: 15 * time.Second},
 		},
 		Metrics: Metrics{
@@ -576,6 +581,12 @@ func validateStatus(status Status) error {
 	if status.ProbeTimeout.Duration == 0 {
 		status.ProbeTimeout = defaults.ProbeTimeout
 	}
+	if status.FailureThreshold == 0 {
+		status.FailureThreshold = defaults.FailureThreshold
+	}
+	if status.RecoveryThreshold == 0 {
+		status.RecoveryThreshold = defaults.RecoveryThreshold
+	}
 	if status.MaxObservationAge.Duration == 0 {
 		status.MaxObservationAge = defaults.MaxObservationAge
 	}
@@ -585,6 +596,12 @@ func validateStatus(status Status) error {
 	}
 	if status.ProbeTimeout.Duration <= 0 {
 		errs = append(errs, errors.New("status.probeTimeout must be positive"))
+	}
+	if status.FailureThreshold <= 0 {
+		errs = append(errs, errors.New("status.failureThreshold must be at least 1"))
+	}
+	if status.RecoveryThreshold <= 0 {
+		errs = append(errs, errors.New("status.recoveryThreshold must be at least 1"))
 	}
 	if status.MaxObservationAge.Duration <= 0 {
 		errs = append(errs, errors.New("status.maxObservationAge must be positive"))

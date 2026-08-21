@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The normal CI suite uses unit tests, fake TCP backends, and lightweight Minecraft protocol smoke tests. Those tests are fast and deterministic, and they verify that `mc-gateway` preserves original Login handshakes while serving router-terminated STATUS data from fresh validated observations.
+The normal CI suite uses unit tests, fake TCP backends, and lightweight Minecraft protocol smoke tests. Those tests are fast and deterministic, and they verify that `mc-gateway` preserves original Login handshakes while serving router-terminated STATUS data from a validated, thresholded health state.
 
 The optional real-server E2E smoke test adds one more check: a real Minecraft Java Edition server accepts traffic through the gateway and answers the first protocol flows that real clients use.
 

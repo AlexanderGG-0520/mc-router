@@ -26,6 +26,7 @@ func TestProtocolSmokeStatusFlow(t *testing.T) {
 		HandshakeTimeout:   config.Duration{Duration: time.Second},
 		BackendDialTimeout: config.Duration{Duration: time.Second},
 		UnknownHostPolicy:  config.UnknownHostDeny,
+		Status:             config.Status{RecoveryThreshold: 1},
 		Routes: []config.Route{
 			{ServerAddress: "status.example.com", Backend: statusBackend.addr},
 		},
@@ -92,6 +93,7 @@ func TestProtocolSmokeStatusBackendFlow(t *testing.T) {
 		HandshakeTimeout:   config.Duration{Duration: time.Second},
 		BackendDialTimeout: config.Duration{Duration: time.Second},
 		UnknownHostPolicy:  config.UnknownHostDeny,
+		Status:             config.Status{RecoveryThreshold: 1},
 		Routes: []config.Route{
 			{ServerAddress: "status.example.com", Backend: "127.0.0.1:1", StatusBackend: statusBackend.addr},
 		},

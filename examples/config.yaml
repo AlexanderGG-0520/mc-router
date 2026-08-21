@@ -72,9 +72,12 @@ fallback:
     onlinePlayers: 0
 unknownHostPolicy: "deny"
 status:
-  # Normal STATUS means a valid source observation younger than this bound.
+  # Probe outcomes update a router-owned health state, not a per-client proxy.
   probeInterval: "10s"
   probeTimeout: "3s"
+  failureThreshold: 3
+  recoveryThreshold: 2
+  # Fail closed if the observation loop itself stops completing probes.
   maxObservationAge: "15s"
 defaultRoute:
   backend: "mc-hub.mc-hub.svc.cluster.local:25565"
