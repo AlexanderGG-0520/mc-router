@@ -105,18 +105,17 @@ func (m *statusMonitor) reconcileExistingLocked(cfg config.Config) {
 func statusSourceDefinitions(cfg config.Config) map[statusSourceKey]struct{} {
 	result := make(map[statusSourceKey]struct{}, len(cfg.Routes))
 	for _, route := range cfg.Routes {
-		if route.StatusOverride != nil {
+		// statusBackend is the explicit opt-in to router-owned STATUS
+		// observations. Routes without it retain their established transparent
+		// STATUS proxy behaviour and must not acquire background probes.
+		if route.StatusOverride != nil || route.StatusBackend == "" {
 			continue
 		}
 		routeAddress, err := hostaddr.Normalize(route.ServerAddress)
 		if err != nil {
 			continue // Config was validated before reaching runtime.
 		}
-		backend := route.Backend
-		if route.StatusBackend != "" {
-			backend = route.StatusBackend
-		}
-		result[statusSourceKey{backend: backend, routeAddress: routeAddress}] = struct{}{}
+		result[statusSourceKey{backend: route.StatusBackend, routeAddress: routeAddress}] = struct{}{}
 	}
 	return result
 }

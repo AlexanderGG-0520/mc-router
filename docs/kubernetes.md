@@ -30,8 +30,9 @@ Static routes may set `statusBackend` to another Service DNS address when Java
 STATUS information should come from a different server. The router probes that
 source independently and terminates public STATUS connections; it does not
 proxy each client STATUS connection. Kubernetes Service annotation discovery
-does not currently discover `statusBackend`; discovered routes use their
-annotated backend as their STATUS source and for Login and Transfer traffic.
+does not currently discover `statusBackend`; discovered routes retain
+transparent STATUS proxying to their annotated backend, as well as using it for
+Login and Transfer traffic.
 
 ## Minimal Deployment
 

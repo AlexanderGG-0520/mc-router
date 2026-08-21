@@ -34,7 +34,7 @@ Implemented in this skeleton:
 - Minecraft handshake parser with VarInt support, including Minecraft Java 1.20.5+ transfer intent.
 - Requested `serverAddress` based static route matching.
 - TCP proxying to selected backend `host:port` for Login and Transfer traffic.
-- Router-terminated STATUS backed by an independently maintained health state:
+- `statusBackend` routes use router-terminated STATUS backed by an independently maintained health state:
   configurable consecutive probe outcomes determine NORMAL or DEGRADED, and a
   stopped observation loop fails closed.
 - Unknown host deny policy, with optional default route policy.
@@ -330,12 +330,13 @@ routes:
 - `default`: send unknown hosts to `defaultRoute.backend`.
 
 `statusBackend` selects the Java Edition STATUS observation source while Login
-and Transfer traffic continue to use `backend`. The router terminates public
-STATUS connections, probes the source independently, and validates its complete
-response (including extension fields such as favicon and player samples). Probe
-results are not public state changes by themselves: the router applies the
-configured consecutive-failure and consecutive-success thresholds to maintain a
-health state. It is optional; when omitted, `backend` is the source.
+and Transfer traffic continue to use `backend`. On routes that set it, the
+router terminates public STATUS connections, probes the source independently,
+and validates its complete response (including extension fields such as favicon
+and player samples). Probe results are not public state changes by themselves:
+the router applies the configured consecutive-failure and consecutive-success
+thresholds to maintain a health state. It is optional; when omitted, STATUS
+retains the established transparent proxy behavior through `backend`.
 
 A route can instead set `statusOverride` to return a static Java Edition status response for that hostname. It is used only for the status state: login and Transfer handshakes still proxy to the route's backend. `statusOverride` takes precedence over `statusBackend`; it never starts a source probe. Its `motd`, `protocolName`, `protocolVersion`, `maxPlayers`, and `onlinePlayers` fields are all required; protocol and player counts must be non-negative.
 

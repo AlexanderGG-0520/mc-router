@@ -233,6 +233,23 @@ func TestStatusSourceContinuesProbingWithoutFurtherPublicRequests(t *testing.T) 
 	waitClosed(t, probed, "source did not probe again without another public STATUS request")
 }
 
+func TestStatusSourceDefinitionsRequireExplicitStatusBackend(t *testing.T) {
+	cfg := config.Config{Routes: []config.Route{
+		{ServerAddress: "transparent.example.com", Backend: "127.0.0.1:25565"},
+		{ServerAddress: "observed.example.com", Backend: "127.0.0.1:25565", StatusBackend: "127.0.0.1:25566"},
+		{ServerAddress: "override.example.com", Backend: "127.0.0.1:25565", StatusBackend: "127.0.0.1:25567", StatusOverride: &config.StatusOverride{}},
+	}}
+
+	definitions := statusSourceDefinitions(cfg)
+	key := statusSourceKey{backend: "127.0.0.1:25566", routeAddress: "observed.example.com"}
+	if len(definitions) != 1 {
+		t.Fatalf("status source definitions = %#v, want only the explicit status backend", definitions)
+	}
+	if _, ok := definitions[key]; !ok {
+		t.Fatalf("status source definitions = %#v, missing %#v", definitions, key)
+	}
+}
+
 func observedStatusTestConfig(backend string) config.Config {
 	cfg := validProxyConfig()
 	cfg.Fallback.Status.MOTD = "Backend degraded"

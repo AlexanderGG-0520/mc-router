@@ -26,14 +26,11 @@ func TestProtocolSmokeStatusFlow(t *testing.T) {
 		HandshakeTimeout:   config.Duration{Duration: time.Second},
 		BackendDialTimeout: config.Duration{Duration: time.Second},
 		UnknownHostPolicy:  config.UnknownHostDeny,
-		Status:             config.Status{RecoveryThreshold: 1},
 		Routes: []config.Route{
 			{ServerAddress: "status.example.com", Backend: statusBackend.addr},
 		},
 	})
 	defer stop()
-	triggerObservedStatus(t, gatewayAddr, "STATUS.Example.COM.")
-	result := waitProtocolResult(t, statusBackend.result)
 
 	client := dialProtocolClient(t, gatewayAddr)
 	defer client.Close()
@@ -73,14 +70,18 @@ func TestProtocolSmokeStatusFlow(t *testing.T) {
 		t.Fatalf("pong payload = %x, want %x", got, pingPayload)
 	}
 
-	if result.handshake.ServerAddress != "status.example.com" {
-		t.Fatalf("backend handshake server address = %q, want canonical route address", result.handshake.ServerAddress)
+	result := waitProtocolResult(t, statusBackend.result)
+	if result.handshake.ServerAddress != requestedAddress {
+		t.Fatalf("backend handshake server address = %q, want %q", result.handshake.ServerAddress, requestedAddress)
 	}
 	if result.handshake.RouteAddress() != "status.example.com" {
 		t.Fatalf("backend route address = %q", result.handshake.RouteAddress())
 	}
 	if result.handshake.NextState != mcproto.NextStateStatus {
 		t.Fatalf("backend next state = %d, want status", result.handshake.NextState)
+	}
+	if result.pingPayload != pingPayload {
+		t.Fatalf("backend ping payload = %x, want %x", result.pingPayload, pingPayload)
 	}
 }
 
@@ -243,7 +244,32 @@ func startStatusProtocolBackend(t *testing.T) protocolBackend {
 			result <- protocolResult{err: fmt.Errorf("write status response: %w", err)}
 			return
 		}
-		result <- protocolResult{handshake: handshake}
+		packetID, payload, err = readFramedPacket(br)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				// Router-owned source probes intentionally stop after the
+				// Status Response. A transparent client STATUS flow continues
+				// with a Ping and is handled below.
+				result <- protocolResult{handshake: handshake}
+				return
+			}
+			result <- protocolResult{err: fmt.Errorf("read ping request: %w", err)}
+			return
+		}
+		if packetID != 0x01 {
+			result <- protocolResult{err: fmt.Errorf("invalid ping packet id=%d", packetID)}
+			return
+		}
+		pingPayload, err := parseLong(payload)
+		if err != nil {
+			result <- protocolResult{err: fmt.Errorf("parse ping payload: %w", err)}
+			return
+		}
+		if err := writeProtocolPacket(conn, 0x01, encodeLong(pingPayload)); err != nil {
+			result <- protocolResult{err: fmt.Errorf("write pong response: %w", err)}
+			return
+		}
+		result <- protocolResult{handshake: handshake, pingPayload: pingPayload}
 	}()
 	return protocolBackend{
 		addr:     listener.Addr().String(),

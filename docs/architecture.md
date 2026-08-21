@@ -2,7 +2,7 @@
 
 ## Goal
 
-`mc-router` is a standalone Minecraft Java Edition gateway. It accepts TCP connections on one public listener and parses the first Minecraft handshake packet. Login and Transfer connections are forwarded unchanged to the selected backend. STATUS is terminated by the gateway and answered from a bounded-age source observation.
+`mc-router` is a standalone Minecraft Java Edition gateway. It accepts TCP connections on one public listener and parses the first Minecraft handshake packet. Login and Transfer connections are forwarded unchanged to the selected backend. A route that explicitly sets `statusBackend` has its STATUS terminated by the gateway and answered from a bounded-age source observation; other STATUS traffic retains transparent proxy behavior.
 
 The design is intentionally smaller than a Kubernetes controller. Static routes come first. Kubernetes discovery feeds the same route snapshot model through route providers, while wake-up and policy control can be added as separate admission components later.
 
@@ -35,11 +35,12 @@ The design is intentionally smaller than a Kubernetes controller. Static routes 
 8. Gateway writes the exact original handshake bytes to the backend.
 9. Gateway proxies the remaining TCP stream both ways.
 
-For STATUS, `statusOverride` remains the first priority. Otherwise the selected
-route's `statusBackend` (or its normal `backend` when `statusBackend` is unset)
-is an observation source, not a per-client TCP proxy destination. A worker is
-started for each configured source and repeatedly sends a Java handshake and
-STATUS request independently of public requests.
+For STATUS, `statusOverride` remains the first priority. Otherwise, only a
+selected route with `statusBackend` treats that field as an observation source,
+not a per-client TCP proxy destination. A worker is started for each such
+configured source and repeatedly sends a Java handshake and STATUS request
+independently of public requests. A route without `statusBackend` retains its
+existing transparent STATUS proxy through `backend`.
 
 The worker accepts a response only when it receives packet `0x00` containing
 exactly one valid UTF-8 JSON object. Each completed probe is an observation,
@@ -148,8 +149,9 @@ The design goal remains one public UDP `19132` entrypoint rather than exposing p
 The gateway can return Minecraft Java Edition fallback responses for selected failures. This is intentionally narrow:
 
 - Route denied decisions are eligible when `respondOnRouteDenied` is enabled.
-- A selected STATUS route always returns a router-owned degraded response when
-  its source observation is unknown, failed, invalid, or stale.
+- A selected STATUS route with `statusBackend` always returns a router-owned
+  degraded response when its source observation is unknown, failed, invalid,
+  or stale.
 - Status fallback only handles handshakes with `next_state=status`.
 - Login fallback only handles route denied handshakes with `next_state=login`.
 - Malformed handshakes, malformed status requests, oversized packets, invalid VarInts, and unsupported next states are still closed without a friendly response.
@@ -292,8 +294,9 @@ Static routes take precedence over discovered routes. `defaultRoute` remains out
 `statusBackend` is a static route field. It selects the source from which the
 gateway observes STATUS information; it is never a transparent public STATUS
 proxy destination. Kubernetes Service annotation discovery intentionally
-discovers only a host and its normal backend, so discovered routes use that
-backend as their STATUS source and for Login and Transfer traffic.
+discovers only a host and its normal backend, so discovered routes do not opt
+into router-owned STATUS observation and retain transparent STATUS proxying to
+their backend.
 
 Kubernetes watch updates provide a complete replacement discovery `Result`. The runtime converts `Result.Routes` through `SnapshotProvider`, then rebuilds a route snapshot from the latest valid static config plus that route-only provider. It swaps the active snapshot only if the rebuild succeeds. Skipped Services, duplicate host metadata, and skipped reason counts remain discovery result, logging, and metrics concerns rather than route-provider data. Watch controller failures and rebuild failures keep the previous active snapshot. After the first successful sync, watch failures are retried with backoff by relisting Services and opening a new watch.
 

@@ -523,7 +523,7 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		s.logger.Info("route status override response sent", "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend)
 		return
 	}
-	if handshake.NextState == mcproto.NextStateStatus {
+	if handshake.NextState == mcproto.NextStateStatus && selection.StatusBackend != "" {
 		if err := s.serveObservedStatus(client, state.cfg, selection, routeAddress, remoteAddr); err != nil {
 			s.logger.Warn("router status response failed", "remote", remoteAddr, "server_address", routeAddress, "error", err)
 			return
