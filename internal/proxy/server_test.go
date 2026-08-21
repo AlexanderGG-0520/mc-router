@@ -532,13 +532,14 @@ func TestLoginFallbackDoesNotOverrideDefaultRoute(t *testing.T) {
 }
 
 func TestStatusFallbackDoesNotOverrideDefaultRoute(t *testing.T) {
-	defaultBackend := startStatusProtocolBackend(t)
-	defer defaultBackend.close()
+	defaultBackend := listenLocalTCP(t)
+	defer defaultBackend.Close()
+	backendBytes := acceptAndReadOnce(t, defaultBackend)
 
 	cfg := statusFallbackConfig()
 	cfg.UnknownHostPolicy = config.UnknownHostDefault
 	cfg.DefaultRoute = config.DefaultRoute{
-		Backend: defaultBackend.addr,
+		Backend: defaultBackend.Addr().String(),
 		Mode:    config.RouteModeAllow,
 	}
 	cfg.Routes = nil
@@ -549,11 +550,10 @@ func TestStatusFallbackDoesNotOverrideDefaultRoute(t *testing.T) {
 	statusRequest := mcproto.BuildPacket(mcproto.StatusRequestPacketID)
 	client := dialAndWrite(t, gatewayAddr, append(append([]byte{}, handshake...), statusRequest...))
 	defer client.Close()
-	_ = readStatusResponse(t, client)
+	closeClientWrite(t, client)
 
-	result := waitProtocolResult(t, defaultBackend.result)
-	if result.handshake.ServerAddress != "unknown.example.com" || result.handshake.NextState != mcproto.NextStateStatus {
-		t.Fatalf("default status source handshake = %#v", result.handshake)
+	if got := waitBytes(t, backendBytes); !bytes.Equal(got, append(append([]byte{}, handshake...), statusRequest...)) {
+		t.Fatalf("default backend bytes = %v, want handshake plus status request", got)
 	}
 }
 
@@ -804,9 +804,9 @@ func TestStatusFallbackRespondsForBackendDialFailure(t *testing.T) {
 	if got, ok := metricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "denied"}); ok && got != 0 {
 		t.Fatalf("route denied metric = %v, want absent or 0", got)
 	}
-	waitMetricValue(t, server, "mc_gateway_status_source_probes_total", map[string]string{"result": "failed", "reason": "backend_status_failed"}, 1)
-	waitMetricValue(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "status", "reason": "backend_status_unknown"}, 1)
-	waitMetricValue(t, server, "mc_gateway_connections_total", map[string]string{"result": "closed", "reason": "success"}, 1)
+	waitMetricValue(t, server, "mc_gateway_backend_dials_total", map[string]string{"result": "failed", "reason": "backend_dial_failed"}, 1)
+	waitMetricValue(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "status", "reason": "backend_dial_failed"}, 1)
+	waitMetricValue(t, server, "mc_gateway_connections_total", map[string]string{"result": "failed", "reason": "backend_dial_failed"}, 1)
 }
 
 func TestStatusFallbackRespondsForDefaultBackendDialFailure(t *testing.T) {
@@ -835,14 +835,14 @@ func TestStatusFallbackRespondsForDefaultBackendDialFailure(t *testing.T) {
 	if got, ok := metricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "denied"}); ok && got != 0 {
 		t.Fatalf("route denied metric = %v, want absent or 0", got)
 	}
-	waitMetricValue(t, server, "mc_gateway_status_source_probes_total", map[string]string{"result": "failed", "reason": "backend_status_failed"}, 1)
+	waitMetricValue(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "status", "reason": "backend_dial_failed"}, 1)
 }
 
 func TestStatusFallbackRespondsForBackendDialTimeout(t *testing.T) {
 	dialStarted := make(chan struct{})
 	cfg := backendFailureStatusFallbackConfig()
 	cfg.Metrics = testMetricsConfig()
-	cfg.Status.ProbeTimeout = config.Duration{Duration: 40 * time.Millisecond}
+	cfg.BackendDialTimeout = config.Duration{Duration: 40 * time.Millisecond}
 	gatewayAddr, server, stop := startTestServerWithServer(t, cfg, func(server *Server) {
 		server.dialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
 			close(dialStarted)
@@ -864,10 +864,11 @@ func TestStatusFallbackRespondsForBackendDialTimeout(t *testing.T) {
 		t.Fatalf("status protocol = %d", status.Version.Protocol)
 	}
 	waitMetricValue(t, server, "mc_gateway_route_decisions_total", map[string]string{"result": "matched"}, 1)
-	waitMetricValue(t, server, "mc_gateway_status_source_probes_total", map[string]string{"result": "failed", "reason": "backend_status_timeout"}, 1)
+	waitMetricValue(t, server, "mc_gateway_backend_dials_total", map[string]string{"result": "failed", "reason": "backend_dial_timeout"}, 1)
+	waitMetricValue(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "status", "reason": "backend_dial_timeout"}, 1)
 }
 
-func TestStatusBackendFailureStillReturnsDegradedStatusClient(t *testing.T) {
+func TestStatusFallbackBackendFailureDisabledClosesStatusClient(t *testing.T) {
 	backendListener := listenLocalTCP(t)
 	backendAddr := backendListener.Addr().String()
 	if err := backendListener.Close(); err != nil {
@@ -885,11 +886,8 @@ func TestStatusBackendFailureStillReturnsDegradedStatusClient(t *testing.T) {
 		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
 	))
 	defer client.Close()
-	status := readStatusResponse(t, client)
-	if status.Description.Text != `Server "unavailable"` {
-		t.Fatalf("degraded status motd = %q", status.Description.Text)
-	}
-	waitMetricValue(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "status", "reason": "backend_status_unknown"}, 1)
+	readClosed(t, client)
+	assertMetricAbsentOrZero(t, server, "mc_gateway_fallback_responses_total", map[string]string{"state": "status", "reason": "backend_dial_failed"})
 }
 
 func TestStatusFallbackDoesNotHandleLoginBackendDialFailure(t *testing.T) {

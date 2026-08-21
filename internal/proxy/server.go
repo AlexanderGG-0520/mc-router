@@ -547,6 +547,12 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		s.metrics.BackendDialFinished(gatewaymetrics.ConnectionResultFailed, reason, time.Since(dialStart))
 		connectionResult = gatewaymetrics.ConnectionResultFailed
 		connectionReason = reason
+		if statusFallbackForBackendFailureEnabled(state.cfg, handshake, reason) {
+			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reason, backendAddress); err != nil {
+				s.logger.Warn("fallback status response failed", "reason", reason, "state", "status", "remote", remoteAddr, "server_address", routeAddress, "backend", backendAddress, "error", err)
+			}
+			return
+		}
 		s.logger.Warn("connection rejected", "reason", reason, "remote", remoteAddr, "server_address", routeAddress, "backend", backendAddress, "error", err)
 		return
 	}
@@ -614,6 +620,13 @@ func statusFallbackForRouteDeniedEnabled(cfg config.Config, handshake mcproto.Ha
 		return false
 	}
 	return cfg.Fallback.Status.RespondOnRouteDenied == nil || *cfg.Fallback.Status.RespondOnRouteDenied
+}
+
+func statusFallbackForBackendFailureEnabled(cfg config.Config, handshake mcproto.Handshake, reason string) bool {
+	if !statusFallbackEnabled(cfg, handshake) || !cfg.Fallback.Status.RespondOnBackendFailure {
+		return false
+	}
+	return reason == reasonBackendDialFailed || reason == reasonBackendDialTimeout
 }
 
 func statusFallbackEnabled(cfg config.Config, handshake mcproto.Handshake) bool {
