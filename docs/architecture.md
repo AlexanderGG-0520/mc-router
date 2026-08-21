@@ -2,7 +2,7 @@
 
 ## Goal
 
-`mc-router` is a standalone Minecraft Java Edition gateway. It accepts TCP connections on one public listener, parses the first Minecraft handshake packet, reads the requested server address, selects a backend, forwards the original handshake bytes, then proxies TCP in both directions.
+`mc-router` is a standalone Minecraft Java Edition gateway. It accepts TCP connections on one public listener and parses the first Minecraft handshake packet. Login and Transfer connections are forwarded unchanged to the selected backend. A route that explicitly sets `statusBackend` has its STATUS terminated by the gateway and answered from a bounded-age source observation; other STATUS traffic retains transparent proxy behavior.
 
 The design is intentionally smaller than a Kubernetes controller. Static routes come first. Kubernetes discovery feeds the same route snapshot model through route providers, while wake-up and policy control can be added as separate admission components later.
 
@@ -31,9 +31,45 @@ The design is intentionally smaller than a Kubernetes controller. Static routes 
    - next state
 5. Gateway normalizes the route address to lowercase and trims a trailing dot.
 6. Gateway selects a backend from static config.
-7. Gateway dials the backend with a timeout.
+7. For Login and Transfer, gateway dials the backend with a timeout.
 8. Gateway writes the exact original handshake bytes to the backend.
 9. Gateway proxies the remaining TCP stream both ways.
+
+For STATUS, `statusOverride` remains the first priority. Otherwise, only a
+selected route with `statusBackend` treats that field as an observation source,
+not a per-client TCP proxy destination. A worker is started for each such
+configured source and repeatedly sends a Java handshake and STATUS request
+independently of public requests. A route without `statusBackend` retains its
+existing transparent STATUS proxy through `backend`.
+
+The worker accepts a response only when it receives packet `0x00` containing
+exactly one valid UTF-8 JSON object. Each completed probe is an observation,
+not immediately a public verdict. The worker maintains `UNKNOWN`, `NORMAL`, or
+`DEGRADED`: it needs `status.recoveryThreshold` consecutive successes to enter
+or recover `NORMAL`, and `status.failureThreshold` consecutive failures to
+leave it. Public STATUS reads that state and handles ping/pong locally; it
+never waits for a source request.
+
+`normal` has a precise meaning:
+
+> This router has a completed probe sequence satisfying the configured recovery
+> rule, has not since completed a sequence satisfying the configured failure
+> rule, and has completed some source probe within
+> `status.maxObservationAge`.
+
+Every other state—initially unknown, source TCP failure, source timeout,
+invalid response, or a response older than that bound—returns the explicit
+degraded fallback response. A failed observation clears the formerly normal
+response rather than serving a stale normal MOTD.
+
+```yaml
+status:
+  probeInterval: "10s"
+  probeTimeout: "3s"
+  failureThreshold: 3
+  recoveryThreshold: 2
+  maxObservationAge: "15s" # must be at least interval + timeout
+```
 
 ## Proxy Lifecycle
 
@@ -110,17 +146,23 @@ The design goal remains one public UDP `19132` entrypoint rather than exposing p
 
 ## Fallback Responses
 
-The gateway can optionally return Minecraft Java Edition fallback responses for selected failures. This is intentionally narrow:
+The gateway can return Minecraft Java Edition fallback responses for selected failures. This is intentionally narrow:
 
 - Route denied decisions are eligible when `respondOnRouteDenied` is enabled.
-- Backend dial failures and backend dial timeouts are eligible only for status fallback when `respondOnBackendFailure` is enabled.
+- A selected STATUS route with `statusBackend` always returns a router-owned
+  degraded response when its source observation is unknown, failed, invalid,
+  or stale.
 - Status fallback only handles handshakes with `next_state=status`.
 - Login fallback only handles route denied handshakes with `next_state=login`.
 - Malformed handshakes, malformed status requests, oversized packets, invalid VarInts, and unsupported next states are still closed without a friendly response.
 - Malformed login start packets are closed without a friendly response.
 - Backend failure login fallback, maintenance mode, initial backend write failure fallback, context cancellation fallback, and play-state handling are not implemented yet.
 
-Fallback is disabled by default because answering unknown hosts can give scanners more information than a TCP close. Operators must opt in. Once a specific fallback state is enabled, route denied responses default to enabled for backward compatibility with the first fallback implementation. Backend failure status responses remain separately opt-in because they can reveal that a route exists but its backend is unavailable:
+Unknown-host fallback is disabled by default because answering unknown hosts can
+give scanners more information than a TCP close. Operators must opt in. A
+selected STATUS route is different: it always receives an explicit degraded
+response if it cannot make the bounded normal claim. Configure that response as
+an unavailable/degraded message:
 
 ```yaml
 fallback:
@@ -132,7 +174,6 @@ fallback:
   status:
     enabled: true
     respondOnRouteDenied: true
-    respondOnBackendFailure: false
     motd: "Server unavailable"
     protocolName: "mc-gateway"
     protocolVersion: 767
@@ -140,15 +181,30 @@ fallback:
     onlinePlayers: 0
 ```
 
-When enabled for an eligible status failure, the status fallback path reads exactly one status request packet `0x00`, writes a minimal status response JSON, and if the client sends a ping packet `0x01`, echoes its 8-byte payload in a pong packet `0x01`. Reads remain bounded by packet limits and `handshakeTimeout`. The status JSON includes `version.name`, `version.protocol`, `players.max`, `players.online`, and `description` as a JSON chat component. Favicon and player samples are intentionally omitted.
+The degraded status path reads exactly one status request packet `0x00`, writes
+a minimal status response JSON, and if the client sends a ping packet `0x01`,
+echoes its 8-byte payload in a pong packet `0x01`. Reads remain bounded by
+packet limits and `handshakeTimeout`. The status JSON includes `version.name`,
+`version.protocol`, `players.max`, `players.online`, and `description` as a
+JSON chat component. Favicon and player samples are intentionally omitted.
 
 When enabled for an eligible login route denial, the login fallback path reads exactly one login start packet before writing a disconnect. For protocol 767, this implementation expects serverbound login start packet `0x00` with username string plus 16 UUID bytes, and it writes clientbound login disconnect packet `0x00` with a JSON chat component reason. Unsupported protocol versions, malformed login start packets, missing login start packets, and scanner-like input are closed without a friendly response. The username is not logged and is not used as a metric label.
 
-`defaultRoute` still takes precedence over route denied fallback. If `unknownHostPolicy=default` selects a backend and the dial succeeds, the connection is proxied normally. If that selected default backend cannot be dialed and backend failure fallback is enabled, the status fallback response can be returned for status-state clients.
+`defaultRoute` still takes precedence over route denied fallback. If
+`unknownHostPolicy=default` selects a backend, Login and Transfer are proxied
+normally; STATUS activates an observation source for that selected route.
 
-Backend failure fallback happens only for status clients after route selection has matched an explicit route or the default route and the backend dial fails or times out. It does not run for route denied, context cancellation, malformed input, login state, or failed initial writes after a backend connection was established.
+Source observation failure applies only after STATUS route selection. It does
+not apply to route denied, malformed input, Login, Transfer, or their backend
+connection paths.
 
-Existing route decision and backend dial metrics keep their original meanings. A route denied fallback still records `mc_gateway_route_decisions_total{result="denied"}`. A backend failure fallback records the route decision as `matched` or `default` and records the backend dial failure reason. A successful fallback response increments `mc_gateway_fallback_responses_total{state="<state>",reason="<reason>"}` after the response packet is written. If the required request packet is malformed, the client closes before the response is written, or fallback is disabled, the fallback response counter is not incremented.
+Existing route decision and backend dial metrics keep their original meanings.
+A route denied fallback still records
+`mc_gateway_route_decisions_total{result="denied"}`. Source probe completions
+are recorded separately. A successful degraded response increments
+`mc_gateway_fallback_responses_total{state="status",reason="<reason>"}` after
+the response packet is written. If the required request packet is malformed or
+the client closes before the response is written, the counter is not incremented.
 
 ## Metrics
 
@@ -167,6 +223,7 @@ Current metrics are intentionally low-cardinality:
 
 - `mc_gateway_connections_total{result,reason}`
 - `mc_gateway_backend_dials_total{result,reason}`
+- `mc_gateway_status_source_probes_total{result,reason}`
 - `mc_gateway_fallback_responses_total{state,reason}`
 - `mc_gateway_reload_total{result}`
 - `mc_gateway_route_decisions_total{result}`
@@ -189,7 +246,9 @@ Kubernetes discovery metrics follow the same rule. They use bounded `reason` val
 Fallback response metric labels are deliberately bounded:
 
 - `state`: `status` or `login`.
-- `reason`: `route_denied`, `backend_dial_failed`, or `backend_dial_timeout`.
+- `reason`: `route_denied`, `backend_status_unknown`,
+  `backend_status_failed`, `backend_status_timeout`,
+  `backend_status_invalid`, or `backend_status_stale`.
 
 The fallback response counter tracks responses that were actually written, not fallback handling attempts. Ping/pong completion is not required for status fallback because the status response is already visible to the client at that point.
 
@@ -201,6 +260,11 @@ Lifecycle `reason` values used by logs and metrics are kept aligned:
 - `backend_close`
 - `backend_dial_failed`
 - `backend_dial_timeout`
+- `backend_status_unknown`
+- `backend_status_failed`
+- `backend_status_timeout`
+- `backend_status_invalid`
+- `backend_status_stale`
 - `handshake_malformed`
 - `handshake_timeout`
 - `initial_write_failed`
@@ -227,7 +291,12 @@ Kubernetes Service annotation discovery includes:
 
 Static routes take precedence over discovered routes. `defaultRoute` remains outside the explicit route list and is evaluated after static and discovered routes. See [Kubernetes Discovery](kubernetes-discovery.md).
 
-`statusBackend` is a static route field. Kubernetes Service annotation discovery intentionally discovers only a host and its normal backend, so discovered routes continue to use that backend for status, login, and Transfer traffic.
+`statusBackend` is a static route field. It selects the source from which the
+gateway observes STATUS information; it is never a transparent public STATUS
+proxy destination. Kubernetes Service annotation discovery intentionally
+discovers only a host and its normal backend, so discovered routes do not opt
+into router-owned STATUS observation and retain transparent STATUS proxying to
+their backend.
 
 Kubernetes watch updates provide a complete replacement discovery `Result`. The runtime converts `Result.Routes` through `SnapshotProvider`, then rebuilds a route snapshot from the latest valid static config plus that route-only provider. It swaps the active snapshot only if the rebuild succeeds. Skipped Services, duplicate host metadata, and skipped reason counts remain discovery result, logging, and metrics concerns rather than route-provider data. Watch controller failures and rebuild failures keep the previous active snapshot. After the first successful sync, watch failures are retried with backoff by relisting Services and opening a new watch.
 

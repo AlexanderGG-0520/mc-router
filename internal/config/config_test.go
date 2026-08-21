@@ -877,6 +877,36 @@ unknownHostPolicy: "deny"
 	}
 }
 
+func TestLoadAcceptsStatusHealthThresholds(t *testing.T) {
+	cfg, err := Load([]byte(`
+status:
+  probeInterval: "5s"
+  probeTimeout: "2s"
+  failureThreshold: 4
+  recoveryThreshold: 3
+  maxObservationAge: "7s"
+unknownHostPolicy: "deny"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Status.FailureThreshold != 4 || cfg.Status.RecoveryThreshold != 3 {
+		t.Fatalf("status thresholds = %#v", cfg.Status)
+	}
+}
+
+func TestLoadRejectsInvalidStatusHealthThresholds(t *testing.T) {
+	_, err := Load([]byte(`
+status:
+  failureThreshold: -1
+  recoveryThreshold: -1
+unknownHostPolicy: "deny"
+`))
+	if err == nil {
+		t.Fatal("expected invalid status threshold error")
+	}
+}
+
 func TestLoadAcceptsFallbackStatusConfig(t *testing.T) {
 	cfg, err := Load([]byte(`
 fallback:

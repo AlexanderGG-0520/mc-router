@@ -33,9 +33,12 @@ Implemented in this skeleton:
 - TCP listener for Minecraft Java Edition connections.
 - Minecraft handshake parser with VarInt support, including Minecraft Java 1.20.5+ transfer intent.
 - Requested `serverAddress` based static route matching.
-- TCP proxying to selected backend `host:port`.
+- TCP proxying to selected backend `host:port` for Login and Transfer traffic.
+- `statusBackend` routes use router-terminated STATUS backed by an independently maintained health state:
+  configurable consecutive probe outcomes determine NORMAL or DEGRADED, and a
+  stopped observation loop fails closed.
 - Unknown host deny policy, with optional default route policy.
-- Optional fallback responses for denied status pings, backend status dial failures, and denied login starts.
+- Optional fallback responses for denied status pings and denied login starts.
 - Structured JSON logging through Go `log/slog`.
 - Prometheus metrics endpoint when explicitly enabled, including low-cardinality fallback response counters.
 - Optional fixed-backend UDP relay foundation for local transport validation.
@@ -289,13 +292,18 @@ fallback:
   status:
     enabled: true
     respondOnRouteDenied: true
-    respondOnBackendFailure: false
     motd: "Server unavailable"
     protocolName: "mc-gateway"
     protocolVersion: 767
     maxPlayers: 0
     onlinePlayers: 0
 unknownHostPolicy: "deny"
+status:
+  probeInterval: "10s"
+  probeTimeout: "3s"
+  failureThreshold: 3
+  recoveryThreshold: 2
+  maxObservationAge: "15s"
 defaultRoute:
   backend: "lobby.default.svc.cluster.local:25565"
   mode: "allow"
@@ -321,9 +329,16 @@ routes:
 - `deny`: close connections for hosts that do not match an explicit route.
 - `default`: send unknown hosts to `defaultRoute.backend`.
 
-`statusBackend` routes Java Edition status pings to a different backend while login and Transfer traffic continue to use `backend`. The status connection is a plain TCP proxy, so the selected backend's complete Status Response (including MOTD, version, player sample, favicon, and other fields) is passed through unchanged. It is optional; when omitted, status uses `backend` as before.
+`statusBackend` selects the Java Edition STATUS observation source while Login
+and Transfer traffic continue to use `backend`. On routes that set it, the
+router terminates public STATUS connections, probes the source independently,
+and validates its complete response (including extension fields such as favicon
+and player samples). Probe results are not public state changes by themselves:
+the router applies the configured consecutive-failure and consecutive-success
+thresholds to maintain a health state. It is optional; when omitted, STATUS
+retains the established transparent proxy behavior through `backend`.
 
-A route can instead set `statusOverride` to return a static Java Edition status response for that hostname. It is used only for the status state: login and Transfer handshakes still proxy to the route's backend. `statusOverride` takes precedence over `statusBackend`, so removing an override automatically resumes proxying status to `statusBackend`. The override bypasses both backends entirely, so the response remains available during backend outages and does not show live player counts. Its `motd`, `protocolName`, `protocolVersion`, `maxPlayers`, and `onlinePlayers` fields are all required; protocol and player counts must be non-negative.
+A route can instead set `statusOverride` to return a static Java Edition status response for that hostname. It is used only for the status state: login and Transfer handshakes still proxy to the route's backend. `statusOverride` takes precedence over `statusBackend`; it never starts a source probe. Its `motd`, `protocolName`, `protocolVersion`, `maxPlayers`, and `onlinePlayers` fields are all required; protocol and player counts must be non-negative.
 
 Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenticated Prometheus text metrics on `metrics.listen` and `metrics.path`. Do not expose this HTTP listener directly to the public internet; it is intended for internal scraping, such as from a Kubernetes cluster Prometheus.
 
@@ -333,7 +348,16 @@ Bedrock support is disabled by default. Set `bedrock.enabled: true` to bind one 
 
 Fallback responses are counted with `mc_gateway_fallback_responses_total{state,reason}` after a fallback response packet is successfully written. Labels are intentionally bounded: `state` is `status` or `login`, and `reason` is one of the documented low-cardinality lifecycle reasons.
 
-Fallback responses are disabled by default. Set `fallback.enabled: true` and `fallback.status.enabled: true` to answer selected status pings with a minimal Minecraft status response. Route denied status responses default to enabled once status fallback is enabled; backend failure status responses require `fallback.status.respondOnBackendFailure: true` because they can reveal that a configured route exists. Set `fallback.login.enabled: true` to return a protocol 767 login-state disconnect packet for denied login starts.
+For a selected STATUS route, `normal` means: the router's health state is
+`NORMAL`, established after `status.recoveryThreshold` consecutive valid source
+responses and not subsequently withdrawn by `status.failureThreshold`
+consecutive failed source observations. `status.maxObservationAge` forces the
+state to be unavailable if the observation loop stops completing probes. All
+other states are returned as the configured degraded `fallback.status` response.
+Use an explicit unavailable/degraded MOTD; never
+reuse the normal MOTD. `fallback.enabled` and `fallback.status.enabled` still
+control the optional denied-route response. Set `fallback.login.enabled: true`
+to return a protocol 767 login-state disconnect packet for denied login starts.
 
 ## Run Locally
 
