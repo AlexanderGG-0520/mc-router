@@ -34,7 +34,6 @@ fallback:
   status:
     enabled: true
     respondOnRouteDenied: true
-    respondOnBackendFailure: false
     motd: "Server unavailable"
     protocolName: "mc-gateway"
     protocolVersion: 767

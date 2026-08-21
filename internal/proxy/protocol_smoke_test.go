@@ -31,6 +31,8 @@ func TestProtocolSmokeStatusFlow(t *testing.T) {
 		},
 	})
 	defer stop()
+	triggerObservedStatus(t, gatewayAddr, "STATUS.Example.COM.")
+	result := waitProtocolResult(t, statusBackend.result)
 
 	client := dialProtocolClient(t, gatewayAddr)
 	defer client.Close()
@@ -70,18 +72,14 @@ func TestProtocolSmokeStatusFlow(t *testing.T) {
 		t.Fatalf("pong payload = %x, want %x", got, pingPayload)
 	}
 
-	result := waitProtocolResult(t, statusBackend.result)
-	if result.handshake.ServerAddress != requestedAddress {
-		t.Fatalf("backend handshake server address = %q, want %q", result.handshake.ServerAddress, requestedAddress)
+	if result.handshake.ServerAddress != "status.example.com" {
+		t.Fatalf("backend handshake server address = %q, want canonical route address", result.handshake.ServerAddress)
 	}
 	if result.handshake.RouteAddress() != "status.example.com" {
 		t.Fatalf("backend route address = %q", result.handshake.RouteAddress())
 	}
 	if result.handshake.NextState != mcproto.NextStateStatus {
 		t.Fatalf("backend next state = %d, want status", result.handshake.NextState)
-	}
-	if result.pingPayload != pingPayload {
-		t.Fatalf("backend ping payload = %x, want %x", result.pingPayload, pingPayload)
 	}
 }
 
@@ -99,6 +97,8 @@ func TestProtocolSmokeStatusBackendFlow(t *testing.T) {
 		},
 	})
 	defer stop()
+	triggerObservedStatus(t, gatewayAddr, "STATUS.Example.COM.")
+	result := waitProtocolResult(t, statusBackend.result)
 
 	client := dialProtocolClient(t, gatewayAddr)
 	defer client.Close()
@@ -138,8 +138,7 @@ func TestProtocolSmokeStatusBackendFlow(t *testing.T) {
 		t.Fatalf("pong payload = %x, want %x", got, pingPayload)
 	}
 
-	result := waitProtocolResult(t, statusBackend.result)
-	if result.handshake.ServerAddress != requestedAddress || result.handshake.NextState != mcproto.NextStateStatus {
+	if result.handshake.ServerAddress != "status.example.com" || result.handshake.NextState != mcproto.NextStateStatus {
 		t.Fatalf("status backend handshake = %#v", result.handshake)
 	}
 }
@@ -242,25 +241,7 @@ func startStatusProtocolBackend(t *testing.T) protocolBackend {
 			result <- protocolResult{err: fmt.Errorf("write status response: %w", err)}
 			return
 		}
-		packetID, payload, err = readFramedPacket(br)
-		if err != nil {
-			result <- protocolResult{err: fmt.Errorf("read ping request: %w", err)}
-			return
-		}
-		if packetID != 0x01 {
-			result <- protocolResult{err: fmt.Errorf("invalid ping packet id=%d", packetID)}
-			return
-		}
-		pingPayload, err := parseLong(payload)
-		if err != nil {
-			result <- protocolResult{err: fmt.Errorf("parse ping payload: %w", err)}
-			return
-		}
-		if err := writeProtocolPacket(conn, 0x01, encodeLong(pingPayload)); err != nil {
-			result <- protocolResult{err: fmt.Errorf("write pong response: %w", err)}
-			return
-		}
-		result <- protocolResult{handshake: handshake, pingPayload: pingPayload}
+		result <- protocolResult{handshake: handshake}
 	}()
 	return protocolBackend{
 		addr:     listener.Addr().String(),
@@ -268,6 +249,17 @@ func startStatusProtocolBackend(t *testing.T) protocolBackend {
 		result:   result,
 		listener: listener,
 	}
+}
+
+func triggerObservedStatus(t *testing.T, gatewayAddr, address string) {
+	t.Helper()
+	client := dialProtocolClient(t, gatewayAddr)
+	defer client.Close()
+	writeProtocolBytes(t, client,
+		buildHandshakePacket(smokeProtocolVersion, address, 25565, mcproto.NextStateStatus),
+		buildPacket(mcproto.StatusRequestPacketID),
+	)
+	_ = readStatusResponse(t, client)
 }
 
 func startLoginProtocolBackend(t *testing.T) protocolBackend {

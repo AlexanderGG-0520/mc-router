@@ -68,6 +68,7 @@ type Config struct {
 	ScalerWebhook      ScalerWebhook   `yaml:"scalerWebhook"`
 	ConfigReload       ConfigReload    `yaml:"configReload"`
 	Availability       Availability    `yaml:"availability"`
+	Status             Status          `yaml:"status"`
 	Metrics            Metrics         `yaml:"metrics"`
 	UDPRelay           UDPRelay        `yaml:"udpRelay"`
 	Bedrock            Bedrock         `yaml:"bedrock"`
@@ -134,6 +135,15 @@ type AvailabilityBackend struct {
 	ServerAddress string `yaml:"serverAddress"`
 }
 
+// Status controls router-owned observations of Java STATUS sources. A normal
+// public STATUS response is only a claim about a completed observation within
+// MaxObservationAge; it is never a live backend round trip.
+type Status struct {
+	ProbeInterval     Duration `yaml:"probeInterval"`
+	ProbeTimeout      Duration `yaml:"probeTimeout"`
+	MaxObservationAge Duration `yaml:"maxObservationAge"`
+}
+
 type Fallback struct {
 	Enabled bool           `yaml:"enabled"`
 	Login   FallbackLogin  `yaml:"login"`
@@ -147,8 +157,10 @@ type FallbackLogin struct {
 }
 
 type FallbackStatus struct {
-	Enabled                 bool   `yaml:"enabled"`
-	RespondOnRouteDenied    *bool  `yaml:"respondOnRouteDenied"`
+	Enabled              bool  `yaml:"enabled"`
+	RespondOnRouteDenied *bool `yaml:"respondOnRouteDenied"`
+	// Retained for configuration compatibility. Selected STATUS routes now
+	// always return a degraded response after a failed observation.
 	RespondOnBackendFailure bool   `yaml:"respondOnBackendFailure"`
 	MOTD                    string `yaml:"motd"`
 	ProtocolName            string `yaml:"protocolName"`
@@ -296,6 +308,11 @@ func Defaults() Config {
 			Interval: Duration{Duration: 10 * time.Second},
 			Timeout:  Duration{Duration: 3 * time.Second},
 		},
+		Status: Status{
+			ProbeInterval:     Duration{Duration: 10 * time.Second},
+			ProbeTimeout:      Duration{Duration: 3 * time.Second},
+			MaxObservationAge: Duration{Duration: 15 * time.Second},
+		},
 		Metrics: Metrics{
 			Listen: ":9090",
 			Path:   "/metrics",
@@ -382,6 +399,9 @@ func (c Config) Validate() error {
 		errs = append(errs, err)
 	}
 	if err := validateAvailability(c.Availability); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateStatus(c.Status); err != nil {
 		errs = append(errs, err)
 	}
 	if c.Metrics.Enabled {
@@ -544,6 +564,33 @@ func validateStatusOverride(override *StatusOverride) error {
 	}
 	if override.OnlinePlayers < 0 {
 		errs = append(errs, errors.New("onlinePlayers must not be negative"))
+	}
+	return errors.Join(errs...)
+}
+
+func validateStatus(status Status) error {
+	defaults := Defaults().Status
+	if status.ProbeInterval.Duration == 0 {
+		status.ProbeInterval = defaults.ProbeInterval
+	}
+	if status.ProbeTimeout.Duration == 0 {
+		status.ProbeTimeout = defaults.ProbeTimeout
+	}
+	if status.MaxObservationAge.Duration == 0 {
+		status.MaxObservationAge = defaults.MaxObservationAge
+	}
+	var errs []error
+	if status.ProbeInterval.Duration <= 0 {
+		errs = append(errs, errors.New("status.probeInterval must be positive"))
+	}
+	if status.ProbeTimeout.Duration <= 0 {
+		errs = append(errs, errors.New("status.probeTimeout must be positive"))
+	}
+	if status.MaxObservationAge.Duration <= 0 {
+		errs = append(errs, errors.New("status.maxObservationAge must be positive"))
+	}
+	if status.ProbeInterval.Duration > 0 && status.ProbeTimeout.Duration > 0 && status.MaxObservationAge.Duration > 0 && status.MaxObservationAge.Duration < status.ProbeInterval.Duration+status.ProbeTimeout.Duration {
+		errs = append(errs, errors.New("status.maxObservationAge must be at least status.probeInterval plus status.probeTimeout"))
 	}
 	return errors.Join(errs...)
 }

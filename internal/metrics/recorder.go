@@ -14,19 +14,24 @@ const (
 	ConnectionResultDenied   = "denied"
 	ConnectionResultFailed   = "failed"
 
-	ReasonBackendClose       = "backend_close"
-	ReasonBackendDialFailed  = "backend_dial_failed"
-	ReasonBackendDialTimeout = "backend_dial_timeout"
-	ReasonClientClose        = "client_close"
-	ReasonClientDenied       = "client_denied"
-	ReasonContextCancelled   = "context_cancelled"
-	ReasonHandshakeMalformed = "handshake_malformed"
-	ReasonHandshakeTimeout   = "handshake_timeout"
-	ReasonInitialWriteFailed = "initial_write_failed"
-	ReasonRouteDenied        = "route_denied"
-	ReasonRateLimited        = "rate_limited"
-	ReasonSuccess            = "success"
-	ReasonUnknown            = "unknown"
+	ReasonBackendClose         = "backend_close"
+	ReasonBackendDialFailed    = "backend_dial_failed"
+	ReasonBackendDialTimeout   = "backend_dial_timeout"
+	ReasonBackendStatusFailed  = "backend_status_failed"
+	ReasonBackendStatusInvalid = "backend_status_invalid"
+	ReasonBackendStatusStale   = "backend_status_stale"
+	ReasonBackendStatusTimeout = "backend_status_timeout"
+	ReasonBackendStatusUnknown = "backend_status_unknown"
+	ReasonClientClose          = "client_close"
+	ReasonClientDenied         = "client_denied"
+	ReasonContextCancelled     = "context_cancelled"
+	ReasonHandshakeMalformed   = "handshake_malformed"
+	ReasonHandshakeTimeout     = "handshake_timeout"
+	ReasonInitialWriteFailed   = "initial_write_failed"
+	ReasonRouteDenied          = "route_denied"
+	ReasonRateLimited          = "rate_limited"
+	ReasonSuccess              = "success"
+	ReasonUnknown              = "unknown"
 
 	RouteDecisionDefault = "default"
 	RouteDecisionDenied  = "denied"
@@ -115,6 +120,7 @@ type Recorder struct {
 
 	connectionsTotal                 *prometheus.CounterVec
 	backendDialsTotal                *prometheus.CounterVec
+	statusSourceProbes               *prometheus.CounterVec
 	fallbackResponses                *prometheus.CounterVec
 	reloadTotal                      *prometheus.CounterVec
 	routeDecisionsTotal              *prometheus.CounterVec
@@ -158,6 +164,10 @@ func NewRecorder(enabled bool) *Recorder {
 		backendDialsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "mc_gateway_backend_dials_total",
 			Help: "Minecraft gateway backend dial attempts by low-cardinality result and reason.",
+		}, []string{"result", "reason"}),
+		statusSourceProbes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mc_gateway_status_source_probes_total",
+			Help: "Router-owned Java status source probe completions by low-cardinality result and reason.",
 		}, []string{"result", "reason"}),
 		fallbackResponses: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "mc_gateway_fallback_responses_total",
@@ -273,6 +283,7 @@ func NewRecorder(enabled bool) *Recorder {
 	r.registry.MustRegister(
 		r.connectionsTotal,
 		r.backendDialsTotal,
+		r.statusSourceProbes,
 		r.fallbackResponses,
 		r.reloadTotal,
 		r.routeDecisionsTotal,
@@ -339,6 +350,13 @@ func (r *Recorder) BackendDialFinished(result string, reason string, duration ti
 	}
 	r.backendDialsTotal.WithLabelValues(result, reason).Inc()
 	r.backendDialDuration.Observe(duration.Seconds())
+}
+
+func (r *Recorder) StatusSourceProbe(result string, reason string) {
+	if !r.enabled {
+		return
+	}
+	r.statusSourceProbes.WithLabelValues(result, reason).Inc()
 }
 
 func (r *Recorder) FallbackResponse(state string, reason string) {
