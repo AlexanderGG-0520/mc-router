@@ -227,7 +227,7 @@ func TestStatusSourceContinuesProbingWithoutFurtherPublicRequests(t *testing.T) 
 	cfg.Status.ProbeInterval = config.Duration{Duration: 25 * time.Millisecond}
 	cfg.Status.ProbeTimeout = config.Duration{Duration: 25 * time.Millisecond}
 	cfg.Status.MaxObservationAge = config.Duration{Duration: 50 * time.Millisecond}
-	gatewayAddr, _, stop := startTestServerWithServer(t, cfg)
+	_, _, stop := startTestServerWithServer(t, cfg)
 	defer stop()
 	waitClosed(t, probed, "initial source probe did not run")
 	waitClosed(t, probed, "source did not probe again without another public STATUS request")
