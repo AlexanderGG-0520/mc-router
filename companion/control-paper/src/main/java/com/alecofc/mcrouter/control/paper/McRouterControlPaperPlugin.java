@@ -1,5 +1,7 @@
 package com.alecofc.mcrouter.control.paper;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -34,10 +36,16 @@ public final class McRouterControlPaperPlugin extends JavaPlugin {
     }
 
     private void update(String backendId, BackendAvailability availability) {
-        store.update(backendId, availability, Instant.now()).ifPresent(change ->
-                Bukkit.getScheduler().runTask(this, () -> Bukkit.getPluginManager().callEvent(
-                        new BackendAvailabilityChangeEvent(change.previous(), change.current())
-                ))
-        );
+        Bukkit.getScheduler().runTask(this, () -> store.update(backendId, availability, Instant.now()).ifPresent(change -> {
+            Bukkit.getPluginManager().callEvent(new BackendAvailabilityChangeEvent(change.previous(), change.current()));
+            Bukkit.broadcast(availabilityMessage(change.current()));
+        }));
+    }
+
+    private static Component availabilityMessage(BackendStatus status) {
+        boolean online = status.availability() == BackendAvailability.ONLINE;
+        return Component.text("[mc-router] ", NamedTextColor.DARK_GRAY)
+                .append(Component.text(status.backendId(), NamedTextColor.AQUA))
+                .append(Component.text(online ? " が起動しました。" : " は現在停止中です。", online ? NamedTextColor.GREEN : NamedTextColor.RED));
     }
 }
