@@ -68,6 +68,7 @@ func MergeRoutes(staticRoutes []config.Route, discovered []kubernetes.Discovered
 	staticHosts := make(map[string]struct{}, len(staticRoutes))
 	for _, route := range staticRoutes {
 		normalized := route
+		normalized.Aliases = append([]string(nil), route.Aliases...)
 		normalized.Source = RouteSourceStatic
 		if host, err := hostaddr.Normalize(route.ServerAddress); err == nil {
 			normalized.ServerAddress = host

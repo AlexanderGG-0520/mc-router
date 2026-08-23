@@ -22,6 +22,23 @@ func TestMergeRoutesStaticRoutesOnly(t *testing.T) {
 	}
 }
 
+func TestMergeRoutesDoesNotMutateStaticRouteAliases(t *testing.T) {
+	routes := []config.Route{{
+		ServerAddress: "play.example.com",
+		Aliases:       []string{"LOCALHOST."},
+		Backend:       "static.example.com:25565",
+	}}
+
+	result := MergeRoutes(routes, nil, MergeOptions{})
+
+	if got := routes[0].Aliases[0]; got != "LOCALHOST." {
+		t.Fatalf("input alias = %q, want LOCALHOST.", got)
+	}
+	if got := result.Routes[0].Aliases[0]; got != "localhost" {
+		t.Fatalf("merged alias = %q, want localhost", got)
+	}
+}
+
 func TestMergeRoutesDiscoveredRoutesOnly(t *testing.T) {
 	result := MergeRoutes(nil, []kubernetes.DiscoveredRoute{
 		discoveredRoute("smp.example.com", "smp", "minecraft", 25565),

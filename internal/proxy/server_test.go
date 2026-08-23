@@ -184,6 +184,117 @@ func TestConnectionRejectedLogsUseReloadedConfigGeneration(t *testing.T) {
 	}
 }
 
+func TestStateGenerationMatchesItsRoutingSnapshot(t *testing.T) {
+	initial := validProxyConfig()
+	initial.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: "initial.example.com:25565"}}
+	initialSnapshot, err := BuildRouteSnapshot(initial, nil)
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot initial: %v", err)
+	}
+	server := NewServerFromSnapshot(initialSnapshot, testLogger())
+	before := server.currentState()
+
+	updated := cloneConfig(initial)
+	updated.Routes[0].Backend = "updated.example.com:25565"
+	updatedSnapshot, err := BuildRouteSnapshot(updated, nil)
+	if err != nil {
+		t.Fatalf("BuildRouteSnapshot updated: %v", err)
+	}
+	server.UpdateRouteSnapshot(updatedSnapshot)
+	after := server.currentState()
+
+	if before.generation != 1 || after.generation != 2 {
+		t.Fatalf("snapshot generations = %d and %d, want 1 and 2", before.generation, after.generation)
+	}
+	beforeSelection, err := before.router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("select from initial snapshot: %v", err)
+	}
+	afterSelection, err := after.router.Select("smp.example.com")
+	if err != nil {
+		t.Fatalf("select from updated snapshot: %v", err)
+	}
+	if beforeSelection.Backend != "initial.example.com:25565" || afterSelection.Backend != "updated.example.com:25565" {
+		t.Fatalf("snapshot backends = %q and %q", beforeSelection.Backend, afterSelection.Backend)
+	}
+}
+
+func TestFallbackLogsShareConnectionContextWithRejection(t *testing.T) {
+	var logs testLogBuffer
+	cfg := statusFallbackConfig()
+	gatewayAddr, _, stop := startTestServerWithServer(t, cfg, func(server *Server) {
+		server.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	})
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer conn.Close()
+	_ = readStatusResponse(t, conn)
+
+	fallback := waitForLogEntry(t, &logs, "fallback status response sent", "stage", "fallback_status")
+	rejection := findLogEntry(t, capturedLogEntries(t, logs.String()), "connection rejected", "error_kind", "route_not_found")
+	if fallback["connection_id"] == "" || fallback["connection_id"] != rejection["connection_id"] {
+		t.Fatalf("fallback and rejection connection IDs = %q and %q", fallback["connection_id"], rejection["connection_id"])
+	}
+	if fallback["config_generation"] != rejection["config_generation"] {
+		t.Fatalf("fallback and rejection config generations = %#v and %#v", fallback["config_generation"], rejection["config_generation"])
+	}
+}
+
+func TestStatusFallbackAfterBackendDialFailureLogsRouteSelectionContext(t *testing.T) {
+	var logs testLogBuffer
+	const statusBackend = "status-backend.example.com:25565"
+	cfg := backendFailureStatusFallbackConfig()
+	cfg.Routes = []config.Route{{
+		ServerAddress: "smp.example.com",
+		Aliases:       []string{"status.example.com"},
+		Backend:       "backend.example.com:25565",
+		StatusBackend: statusBackend,
+	}}
+	dialed := make(chan string, 1)
+	gatewayAddr, _, stop := startTestServerWithServer(t, cfg, func(server *Server) {
+		server.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+		server.dialContext = func(_ context.Context, _ string, address string) (net.Conn, error) {
+			dialed <- address
+			return nil, errors.New("backend dial failed")
+		}
+	})
+	defer stop()
+
+	conn := dialAndWrite(t, gatewayAddr, append(
+		buildHandshakePacket(765, "status.example.com", 25565, mcproto.NextStateStatus),
+		mcproto.BuildPacket(mcproto.StatusRequestPacketID)...,
+	))
+	defer conn.Close()
+	_ = readStatusResponse(t, conn)
+
+	select {
+	case got := <-dialed:
+		if got != statusBackend {
+			t.Fatalf("dialed backend = %q, want %q", got, statusBackend)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("backend was not dialed")
+	}
+
+	fallback := waitForLogEntry(t, &logs, "fallback status response sent", "reason", reasonBackendDialFailed)
+	if fallback["connection_id"] == "" || fallback["config_generation"] != float64(1) || fallback["stage"] != "fallback_status" {
+		t.Fatalf("fallback correlation fields = %#v", fallback)
+	}
+	if fallback["route_address"] != "status.example.com" || fallback["intent"] != "status" || fallback["server_port"] != float64(25565) {
+		t.Fatalf("fallback route request fields = %#v", fallback)
+	}
+	if fallback["route_match"] != "alias" || fallback["route_source"] != "static" || fallback["canonical_server_address"] != "smp.example.com" {
+		t.Fatalf("fallback route selection fields = %#v", fallback)
+	}
+	if fallback["backend_role"] != "status_backend" || fallback["selected_backend"] != statusBackend || fallback["backend"] != statusBackend {
+		t.Fatalf("fallback backend selection fields = %#v", fallback)
+	}
+}
+
 func TestProxyLifecycleLogsShareConnectionID(t *testing.T) {
 	backendListener := listenLocalTCP(t)
 	defer backendListener.Close()

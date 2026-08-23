@@ -33,7 +33,6 @@ type Server struct {
 
 	listenAddress string
 	dialContext   dialContextFunc
-	generation    atomic.Int64
 	connectionSeq atomic.Uint64
 
 	listenerMu sync.Mutex
@@ -44,6 +43,7 @@ type Server struct {
 }
 
 type serverState struct {
+	generation       int64
 	staticConfig     config.Config
 	cfg              config.Config
 	router           *router.Router
@@ -145,8 +145,7 @@ func newServer(snapshot RouteSnapshot, logger *slog.Logger) *Server {
 		listenAddress: cfg.Listen,
 		dialContext:   dialer.DialContext,
 	}
-	s.generation.Store(1)
-	s.state.Store(newServerState(staticConfig, cfg, routeTable, snapshot.DiscoveryMerge, snapshot.DiscoveredRoutes))
+	s.state.Store(newServerState(1, staticConfig, cfg, routeTable, snapshot.DiscoveryMerge, snapshot.DiscoveredRoutes))
 	recorder.SetConfig(1, cfg)
 	if staticConfig.Discovery.Kubernetes.Enabled {
 		recorder.KubernetesDiscoverySync(len(snapshot.DiscoveredRoutes))
@@ -294,8 +293,8 @@ func (s *Server) updateRouteSnapshotLocked(snapshot RouteSnapshot) {
 	if routeTable == nil {
 		panic("proxy: nil router")
 	}
-	s.state.Store(newServerState(staticConfig, cfg, routeTable, snapshot.DiscoveryMerge, snapshot.DiscoveredRoutes))
-	generation := s.generation.Add(1)
+	generation := s.currentState().generation + 1
+	s.state.Store(newServerState(generation, staticConfig, cfg, routeTable, snapshot.DiscoveryMerge, snapshot.DiscoveredRoutes))
 	s.metrics.SetConfig(generation, cfg)
 }
 
@@ -342,7 +341,7 @@ func cloneStringIntMap(values map[string]int) map[string]int {
 	return cloned
 }
 
-func newServerState(staticConfig, cfg config.Config, routeTable *router.Router, merge discovery.MergeResult, discoveredRoutes []kubernetes.DiscoveredRoute) *serverState {
+func newServerState(generation int64, staticConfig, cfg config.Config, routeTable *router.Router, merge discovery.MergeResult, discoveredRoutes []kubernetes.DiscoveredRoute) *serverState {
 	policy, err := clientpolicy.New(cfg.ClientPolicy.Allow, cfg.ClientPolicy.Deny)
 	if err != nil {
 		panic("proxy: invalid validated client policy: " + err.Error())
@@ -352,6 +351,7 @@ func newServerState(staticConfig, cfg config.Config, routeTable *router.Router, 
 		panic("proxy: invalid validated trusted proxies: " + err.Error())
 	}
 	return &serverState{
+		generation:     generation,
 		staticConfig:   cloneConfig(staticConfig),
 		cfg:            cfg,
 		router:         routeTable,
@@ -441,7 +441,7 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 
 	state := s.currentState()
 	connectionID := fmt.Sprintf("c-%016x", s.connectionSeq.Add(1))
-	configGeneration := s.generation.Load()
+	configGeneration := state.generation
 	remoteAddr := client.RemoteAddr().String()
 	logAttrs := func(stage string) []any {
 		return []any{"connection_id", connectionID, "config_generation", configGeneration, "stage", stage, "remote", remoteAddr}
@@ -512,14 +512,14 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		)
 		s.logger.Info("connection rejected", rejectionAttrs...)
 		if statusFallbackForRouteDeniedEnabled(state.cfg, handshake) {
-			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reasonRouteDenied, ""); err != nil {
-				s.logger.Warn("fallback status response failed", "reason", reasonRouteDenied, "state", "status", "remote", remoteAddr, "server_address", routeAddress, "error", err)
+			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reasonRouteDenied, "", logAttrs("fallback_status")); err != nil {
+				s.logger.Warn("fallback status response failed", append(logAttrs("fallback_status"), "reason", reasonRouteDenied, "state", "status", "server_address", routeAddress, "error", err)...)
 			}
 			return
 		}
 		if loginFallbackForRouteDeniedEnabled(state.cfg, handshake) {
-			if err := s.serveLoginDisconnectFallback(client, state.cfg, handshake, remoteAddr, routeAddress); err != nil {
-				s.logger.Warn("fallback login disconnect failed", "reason", reasonRouteDenied, "state", "login", "remote", remoteAddr, "server_address", routeAddress, "error", err)
+			if err := s.serveLoginDisconnectFallback(client, state.cfg, handshake, remoteAddr, routeAddress, logAttrs("fallback_login")); err != nil {
+				s.logger.Warn("fallback login disconnect failed", append(logAttrs("fallback_login"), "reason", reasonRouteDenied, "state", "login", "server_address", routeAddress, "error", err)...)
 			}
 			return
 		}
@@ -556,8 +556,9 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		connectionResult = gatewaymetrics.ConnectionResultFailed
 		connectionReason = reason
 		if statusFallbackForBackendFailureEnabled(state.cfg, handshake, reason) {
-			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reason, backendAddress); err != nil {
-				s.logger.Warn("fallback status response failed", "reason", reason, "state", "status", "remote", remoteAddr, "server_address", routeAddress, "backend", backendAddress, "error", err)
+			fallbackAttrs := append(logAttrs("fallback_status"), routeAttrs...)
+			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reason, backendAddress, fallbackAttrs); err != nil {
+				s.logger.Warn("fallback status response failed", append(fallbackAttrs, "reason", reason, "state", "status", "server_address", routeAddress, "backend", backendAddress, "error", err)...)
 			}
 			return
 		}
@@ -760,7 +761,7 @@ func (s *Server) serveStatusOverride(client net.Conn, handshakeTimeout time.Dura
 	return writeAll(client, mcproto.BuildStatusPongPacket(payload))
 }
 
-func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteAddr string, routeAddress string, reason string, backendAddress string) error {
+func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteAddr string, routeAddress string, reason string, backendAddress string, connectionAttrs []any) error {
 	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
 		return err
 	}
@@ -793,7 +794,7 @@ func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteA
 		return err
 	}
 	s.metrics.FallbackResponse(gatewaymetrics.FallbackStateStatus, reason)
-	s.logStatusFallbackSent("fallback status response sent", reason, remoteAddr, routeAddress, backendAddress)
+	s.logStatusFallbackSent("fallback status response sent", reason, remoteAddr, routeAddress, backendAddress, connectionAttrs)
 
 	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
 		return err
@@ -811,11 +812,11 @@ func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteA
 	if err := writeAll(client, mcproto.BuildStatusPongPacket(payload)); err != nil {
 		return err
 	}
-	s.logStatusFallbackSent("fallback status pong sent", reason, remoteAddr, routeAddress, backendAddress)
+	s.logStatusFallbackSent("fallback status pong sent", reason, remoteAddr, routeAddress, backendAddress, connectionAttrs)
 	return nil
 }
 
-func (s *Server) serveLoginDisconnectFallback(client net.Conn, cfg config.Config, handshake mcproto.Handshake, remoteAddr string, routeAddress string) error {
+func (s *Server) serveLoginDisconnectFallback(client net.Conn, cfg config.Config, handshake mcproto.Handshake, remoteAddr string, routeAddress string, connectionAttrs []any) error {
 	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
 		return err
 	}
@@ -837,16 +838,17 @@ func (s *Server) serveLoginDisconnectFallback(client net.Conn, cfg config.Config
 		return err
 	}
 	s.metrics.FallbackResponse(gatewaymetrics.FallbackStateLogin, reasonRouteDenied)
-	s.logFallbackSent("fallback login disconnect sent", gatewaymetrics.FallbackStateLogin, reasonRouteDenied, remoteAddr, routeAddress, "")
+	s.logFallbackSent("fallback login disconnect sent", gatewaymetrics.FallbackStateLogin, reasonRouteDenied, remoteAddr, routeAddress, "", connectionAttrs)
 	return nil
 }
 
-func (s *Server) logStatusFallbackSent(message string, reason string, remoteAddr string, routeAddress string, backendAddress string) {
-	s.logFallbackSent(message, gatewaymetrics.FallbackStateStatus, reason, remoteAddr, routeAddress, backendAddress)
+func (s *Server) logStatusFallbackSent(message string, reason string, remoteAddr string, routeAddress string, backendAddress string, connectionAttrs []any) {
+	s.logFallbackSent(message, gatewaymetrics.FallbackStateStatus, reason, remoteAddr, routeAddress, backendAddress, connectionAttrs)
 }
 
-func (s *Server) logFallbackSent(message string, state string, reason string, remoteAddr string, routeAddress string, backendAddress string) {
-	attrs := []any{"reason", reason, "state", state, "remote", remoteAddr, "server_address", routeAddress}
+func (s *Server) logFallbackSent(message string, state string, reason string, remoteAddr string, routeAddress string, backendAddress string, connectionAttrs []any) {
+	attrs := append([]any(nil), connectionAttrs...)
+	attrs = append(attrs, "reason", reason, "state", state, "server_address", routeAddress)
 	if backendAddress != "" {
 		attrs = append(attrs, "backend", backendAddress)
 	}
