@@ -18,6 +18,8 @@ const (
 	ReasonDuplicateDiscovered   = "duplicate_discovered_host"
 	ReasonInvalidDiscovered     = "invalid_discovered_route"
 	ReasonUnknown               = "unknown"
+	RouteSourceStatic           = "static"
+	RouteSourceDiscovered       = "discovered"
 )
 
 type MergeOptions struct {
@@ -66,9 +68,17 @@ func MergeRoutes(staticRoutes []config.Route, discovered []kubernetes.Discovered
 	staticHosts := make(map[string]struct{}, len(staticRoutes))
 	for _, route := range staticRoutes {
 		normalized := route
+		normalized.Aliases = append([]string(nil), route.Aliases...)
+		normalized.Source = RouteSourceStatic
 		if host, err := hostaddr.Normalize(route.ServerAddress); err == nil {
 			normalized.ServerAddress = host
 			staticHosts[host] = struct{}{}
+		}
+		for i, alias := range route.Aliases {
+			if host, err := hostaddr.Normalize(alias); err == nil {
+				normalized.Aliases[i] = host
+				staticHosts[host] = struct{}{}
+			}
 		}
 		result.Routes = append(result.Routes, normalized)
 	}
@@ -116,6 +126,7 @@ func MergeRoutes(staticRoutes []config.Route, discovered []kubernetes.Discovered
 		result.Routes = append(result.Routes, config.Route{
 			ServerAddress: candidate.Host,
 			Backend:       candidate.Backend,
+			Source:        RouteSourceDiscovered,
 		})
 	}
 

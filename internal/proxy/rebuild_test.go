@@ -29,8 +29,8 @@ func TestRebuildRouteSnapshot(t *testing.T) {
 
 	// Verify both static and discovered routes are present
 	wantRoutes := []config.Route{
-		{ServerAddress: "discovered.example.com", Backend: "service1.ns1.svc.cluster.local:25565"},
-		{ServerAddress: "static.example.com", Backend: "127.0.0.1:25565"},
+		{ServerAddress: "discovered.example.com", Backend: "service1.ns1.svc.cluster.local:25565", Source: discovery.RouteSourceDiscovered},
+		{ServerAddress: "static.example.com", Backend: "127.0.0.1:25565", Source: discovery.RouteSourceStatic},
 	}
 	if !reflect.DeepEqual(snapshot.Config.Routes, wantRoutes) {
 		t.Errorf("snapshot.Config.Routes = %v, want %v", snapshot.Config.Routes, wantRoutes)

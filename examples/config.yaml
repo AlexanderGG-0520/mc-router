@@ -65,27 +65,22 @@ fallback:
     respondOnRouteDenied: true
     # Backend failure fallback can reveal that a configured route exists.
     # Enable it only when a generic unavailable response is acceptable.
+    respondOnBackendFailure: false
     motd: "Server unavailable"
     protocolName: "mc-gateway"
     protocolVersion: 767
     maxPlayers: 0
     onlinePlayers: 0
 unknownHostPolicy: "deny"
-status:
-  # Probe outcomes update a router-owned health state, not a per-client proxy.
-  probeInterval: "10s"
-  probeTimeout: "3s"
-  failureThreshold: 3
-  recoveryThreshold: 2
-  # Fail closed if the observation loop itself stops completing probes.
-  maxObservationAge: "15s"
 defaultRoute:
   backend: "mc-hub.mc-hub.svc.cluster.local:25565"
   mode: "allow"
 routes:
   - serverAddress: "hub.example.com"
+    # Add every additional hostname or IP literal clients are allowed to send.
+    aliases: ["hub.local"]
     backend: "mc-hub.mc-hub.svc.cluster.local:25565"
-    # STATUS is observed from this source; Login and Transfer use backend.
+    # Status pings normally use this backend, while Login and Transfer use backend.
     # statusOverride below takes precedence when it is configured.
     statusBackend: "alec-smp.alec-smp.svc.cluster.local:25565"
     # When present, this static response is returned for Java status pings
