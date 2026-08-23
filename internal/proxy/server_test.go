@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -81,6 +82,20 @@ func TestProxyRoutesTransferHandshakeToKnownBackend(t *testing.T) {
 	}
 }
 
+func TestSelectedBackendKeepsLoginAndTransferOnNormalBackend(t *testing.T) {
+	selection := router.Selection{Backend: "normal:25565", StatusBackend: "status:25565"}
+	for _, nextState := range []int32{mcproto.NextStateLogin, mcproto.NextStateTransfer} {
+		backend, role := selectedBackend(mcproto.Handshake{NextState: nextState}, selection)
+		if backend != "normal:25565" || role != "backend" {
+			t.Fatalf("next_state=%d selected backend=%q role=%q", nextState, backend, role)
+		}
+	}
+	backend, role := selectedBackend(mcproto.Handshake{NextState: mcproto.NextStateStatus}, selection)
+	if backend != "status:25565" || role != "status_backend" {
+		t.Fatalf("status selected backend=%q role=%q", backend, role)
+	}
+}
+
 func TestProxyDeniesUnknownHostWithoutConnectingBackend(t *testing.T) {
 	dialed := make(chan struct{}, 1)
 
@@ -109,6 +124,93 @@ func TestProxyDeniesUnknownHostWithoutConnectingBackend(t *testing.T) {
 	case <-dialed:
 		t.Fatal("dialer was called for an unknown host")
 	default:
+	}
+}
+
+func TestConnectionRejectedLogsDistinguishRouteNotFoundAndInvalidRouteAddress(t *testing.T) {
+	var logs testLogBuffer
+	cfg := validProxyConfig()
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"}}
+	gatewayAddr, _, stop := startTestServerWithServer(t, cfg, func(server *Server) {
+		server.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	})
+	defer stop()
+
+	unknown := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateLogin))
+	readClosed(t, unknown)
+	_ = unknown.Close()
+
+	invalid := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "bad host\x00private-token", 25565, mcproto.NextStateLogin))
+	readClosed(t, invalid)
+	_ = invalid.Close()
+
+	entries := capturedLogEntries(t, logs.String())
+	routeNotFound := findLogEntry(t, entries, "connection rejected", "error_kind", "route_not_found")
+	if routeNotFound["stage"] != "route_selection" || routeNotFound["route_address"] != "unknown.example.com" || routeNotFound["route_match"] != "none" {
+		t.Fatalf("route-not-found log = %#v", routeNotFound)
+	}
+	if routeNotFound["connection_id"] == "" || routeNotFound["config_generation"] != float64(1) {
+		t.Fatalf("route-not-found correlation fields = %#v", routeNotFound)
+	}
+	invalidAddress := findLogEntry(t, entries, "connection rejected", "error_kind", "handshake_invalid_server_address")
+	if invalidAddress["stage"] != "handshake" {
+		t.Fatalf("invalid-address log = %#v", invalidAddress)
+	}
+	if strings.Contains(logs.String(), "private-token") {
+		t.Fatal("raw handshake suffix was written to logs")
+	}
+}
+
+func TestConnectionRejectedLogsUseReloadedConfigGeneration(t *testing.T) {
+	var logs testLogBuffer
+	cfg := validProxyConfig()
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: "127.0.0.1:1"}}
+	gatewayAddr, server, stop := startTestServerWithServer(t, cfg, func(server *Server) {
+		server.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	})
+	defer stop()
+
+	path := writeRouteConfig(t, "127.0.0.1:1")
+	if err := server.ReloadFile(path); err != nil {
+		t.Fatalf("ReloadFile: %v", err)
+	}
+	client := dialAndWrite(t, gatewayAddr, buildHandshakePacket(765, "unknown.example.com", 25565, mcproto.NextStateLogin))
+	readClosed(t, client)
+	_ = client.Close()
+
+	entry := findLogEntry(t, capturedLogEntries(t, logs.String()), "connection rejected", "error_kind", "route_not_found")
+	if entry["config_generation"] != float64(2) {
+		t.Fatalf("config_generation = %#v, want 2", entry["config_generation"])
+	}
+}
+
+func TestProxyLifecycleLogsShareConnectionID(t *testing.T) {
+	backendListener := listenLocalTCP(t)
+	defer backendListener.Close()
+	backendBytes := acceptAndReadOnce(t, backendListener)
+	var logs testLogBuffer
+	cfg := validProxyConfig()
+	cfg.Routes = []config.Route{{ServerAddress: "smp.example.com", Backend: backendListener.Addr().String()}}
+	gatewayAddr, _, stop := startTestServerWithServer(t, cfg, func(server *Server) {
+		server.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	})
+	defer stop()
+
+	handshake := buildHandshakePacket(765, "smp.example.com", 25565, mcproto.NextStateLogin)
+	client := dialAndWrite(t, gatewayAddr, handshake)
+	closeClientWrite(t, client)
+	_ = client.Close()
+	if got := waitBytes(t, backendBytes); !bytes.Equal(got, handshake) {
+		t.Fatalf("backend bytes = %v, want %v", got, handshake)
+	}
+
+	started := waitForLogEntry(t, &logs, "proxying connection", "stage", "proxy_started")
+	closed := waitForLogEntry(t, &logs, "proxy connection closed", "stage", "proxy_closed")
+	if started["connection_id"] == "" || started["connection_id"] != closed["connection_id"] {
+		t.Fatalf("lifecycle connection IDs = %q and %q", started["connection_id"], closed["connection_id"])
+	}
+	if started["route_match"] != "canonical" || started["backend_role"] != "backend" || started["selected_backend"] != backendListener.Addr().String() {
+		t.Fatalf("proxy start log = %#v", started)
 	}
 }
 
@@ -2233,6 +2335,67 @@ func waitForConnClosed(conn net.Conn) error {
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
+type testLogBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *testLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(p)
+}
+
+func (b *testLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
+}
+
+func capturedLogEntries(t *testing.T, raw string) []map[string]any {
+	t.Helper()
+	var entries []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("unmarshal log entry: %v", err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func findLogEntry(t *testing.T, entries []map[string]any, message, key, value string) map[string]any {
+	t.Helper()
+	for _, entry := range entries {
+		if entry["msg"] == message && entry[key] == value {
+			return entry
+		}
+	}
+	t.Fatalf("log entry message=%q %s=%q not found in %#v", message, key, value, entries)
+	return nil
+}
+
+func waitForLogEntry(t *testing.T, logs *testLogBuffer, message, key, value string) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		entries := capturedLogEntries(t, logs.String())
+		for _, entry := range entries {
+			if entry["msg"] == message && entry[key] == value {
+				return entry
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("log entry message=%q %s=%q not found in %#v", message, key, value, entries)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func writeRouteConfig(t *testing.T, backend string) string {

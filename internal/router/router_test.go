@@ -30,6 +30,61 @@ func TestRouterSelectsExactRoute(t *testing.T) {
 	if got.MatchedBy != "route" {
 		t.Fatalf("matched by = %q", got.MatchedBy)
 	}
+	if got.MatchKind != MatchKindCanonical || got.RouteSource != "static" || got.CanonicalServerAddress != "smp.example.com" {
+		t.Fatalf("selection provenance = %#v", got)
+	}
+}
+
+func TestRouterPreservesDiscoveredRouteSource(t *testing.T) {
+	r, err := New(config.Config{
+		Listen:             ":25565",
+		HandshakeTimeout:   config.Duration{Duration: 1},
+		BackendDialTimeout: config.Duration{Duration: 1},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{{
+			ServerAddress: "discovered.example.com",
+			Backend:       "smp.default.svc.cluster.local:25565",
+			Source:        "discovered",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	got, err := r.Select("discovered.example.com")
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if got.RouteSource != "discovered" || got.MatchKind != MatchKindCanonical {
+		t.Fatalf("selection provenance = %#v", got)
+	}
+}
+
+func TestRouterSelectsExplicitAlias(t *testing.T) {
+	r, err := New(config.Config{
+		Listen:             ":25565",
+		HandshakeTimeout:   config.Duration{Duration: 1},
+		BackendDialTimeout: config.Duration{Duration: 1},
+		UnknownHostPolicy:  config.UnknownHostDeny,
+		Routes: []config.Route{{
+			ServerAddress: "127.0.0.1",
+			Aliases:       []string{"localhost"},
+			Backend:       "smp.default.svc.cluster.local:25565",
+			StatusBackend: "status.default.svc.cluster.local:25565",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	got, err := r.Select("LOCALHOST.")
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if got.Backend != "smp.default.svc.cluster.local:25565" || got.StatusBackend != "status.default.svc.cluster.local:25565" {
+		t.Fatalf("selection = %#v", got)
+	}
+	if got.MatchKind != MatchKindAlias || got.RouteSource != "static" || got.CanonicalServerAddress != "127.0.0.1" {
+		t.Fatalf("selection provenance = %#v", got)
+	}
 }
 
 func TestRouterUsesDefaultRoute(t *testing.T) {
@@ -55,6 +110,9 @@ func TestRouterUsesDefaultRoute(t *testing.T) {
 	}
 	if got.MatchedBy != "default" {
 		t.Fatalf("matched by = %q", got.MatchedBy)
+	}
+	if got.MatchKind != MatchKindDefault || got.RouteSource != RouteSourceDefault {
+		t.Fatalf("selection provenance = %#v", got)
 	}
 }
 

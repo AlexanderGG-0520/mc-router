@@ -16,6 +16,7 @@ import (
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
 	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
 	"github.com/AlexanderGG-0520/mc-router/internal/discovery/kubernetes"
+	"github.com/AlexanderGG-0520/mc-router/internal/hostaddr"
 	"github.com/AlexanderGG-0520/mc-router/internal/mcproto"
 	gatewaymetrics "github.com/AlexanderGG-0520/mc-router/internal/metrics"
 	"github.com/AlexanderGG-0520/mc-router/internal/proxyprotocol"
@@ -25,15 +26,15 @@ import (
 )
 
 type Server struct {
-	state         atomic.Pointer[serverState]
-	logger        *slog.Logger
-	limits        mcproto.Limits
-	metrics       *gatewaymetrics.Recorder
-	statusMonitor *statusMonitor
+	state   atomic.Pointer[serverState]
+	logger  *slog.Logger
+	limits  mcproto.Limits
+	metrics *gatewaymetrics.Recorder
 
 	listenAddress string
 	dialContext   dialContextFunc
 	generation    atomic.Int64
+	connectionSeq atomic.Uint64
 
 	listenerMu sync.Mutex
 	listener   net.Listener
@@ -144,7 +145,6 @@ func newServer(snapshot RouteSnapshot, logger *slog.Logger) *Server {
 		listenAddress: cfg.Listen,
 		dialContext:   dialer.DialContext,
 	}
-	s.statusMonitor = newStatusMonitor(s)
 	s.generation.Store(1)
 	s.state.Store(newServerState(staticConfig, cfg, routeTable, snapshot.DiscoveryMerge, snapshot.DiscoveredRoutes))
 	recorder.SetConfig(1, cfg)
@@ -295,9 +295,6 @@ func (s *Server) updateRouteSnapshotLocked(snapshot RouteSnapshot) {
 		panic("proxy: nil router")
 	}
 	s.state.Store(newServerState(staticConfig, cfg, routeTable, snapshot.DiscoveryMerge, snapshot.DiscoveredRoutes))
-	if s.statusMonitor != nil {
-		s.statusMonitor.Reconcile(cfg)
-	}
 	generation := s.generation.Add(1)
 	s.metrics.SetConfig(generation, cfg)
 }
@@ -317,6 +314,7 @@ func cloneConfig(cfg config.Config) config.Config {
 	cfg.ClientPolicy.Deny = append([]string(nil), cfg.ClientPolicy.Deny...)
 	cfg.Routes = append([]config.Route(nil), cfg.Routes...)
 	for i := range cfg.Routes {
+		cfg.Routes[i].Aliases = append([]string(nil), cfg.Routes[i].Aliases...)
 		if cfg.Routes[i].StatusOverride != nil {
 			override := *cfg.Routes[i].StatusOverride
 			cfg.Routes[i].StatusOverride = &override
@@ -391,7 +389,6 @@ func stateToSnapshot(state *serverState) RouteSnapshot {
 }
 
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
-	s.statusMonitor.Start(ctx, s.currentState().cfg)
 	s.listenerMu.Lock()
 	s.listener = listener
 	s.listenerMu.Unlock()
@@ -443,14 +440,19 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 	}()
 
 	state := s.currentState()
+	connectionID := fmt.Sprintf("c-%016x", s.connectionSeq.Add(1))
+	configGeneration := s.generation.Load()
 	remoteAddr := client.RemoteAddr().String()
+	logAttrs := func(stage string) []any {
+		return []any{"connection_id", connectionID, "config_generation", configGeneration, "stage", stage, "remote", remoteAddr}
+	}
 	clientAddr, err := addressFromAddr(client.RemoteAddr())
 	if err == nil && proxyprotocol.Trusted(state.trustedProxies, clientAddr) {
 		clientAddr, err = proxyprotocol.Read(client)
 		if err != nil {
 			connectionResult = gatewaymetrics.ConnectionResultDenied
 			connectionReason = reasonHandshakeMalformed
-			s.logger.Warn("connection rejected", "reason", "proxy_protocol_invalid", "remote", remoteAddr)
+			s.logger.Warn("connection rejected", append(logAttrs("proxy_protocol"), "reason", "proxy_protocol_invalid", "error_kind", "proxy_protocol_invalid")...)
 			return
 		}
 		remoteAddr = clientAddr.String()
@@ -459,16 +461,16 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		connectionResult = gatewaymetrics.ConnectionResultDenied
 		connectionReason = gatewaymetrics.ReasonClientDenied
 		if err != nil {
-			s.logger.Warn("connection rejected", "reason", connectionReason, "remote", remoteAddr, "error", err)
+			s.logger.Warn("connection rejected", append(logAttrs("client_identity"), "reason", connectionReason, "error_kind", "client_address_invalid", "error", err)...)
 			return
 		}
-		s.logger.Info("connection rejected", "reason", connectionReason, "remote", remoteAddr)
+		s.logger.Info("connection rejected", append(logAttrs("client_policy"), "reason", connectionReason, "error_kind", "client_policy_denied")...)
 		return
 	}
 	if !state.clientRateLimit.Allow(clientAddr) {
 		connectionResult = gatewaymetrics.ConnectionResultDenied
 		connectionReason = gatewaymetrics.ReasonRateLimited
-		s.logger.Info("connection rejected", "reason", connectionReason, "remote", remoteAddr)
+		s.logger.Info("connection rejected", append(logAttrs("client_rate_limit"), "reason", connectionReason, "error_kind", "rate_limited")...)
 		return
 	}
 	if err := client.SetReadDeadline(time.Now().Add(state.cfg.HandshakeTimeout.Duration)); err != nil {
@@ -483,7 +485,7 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		}
 		connectionResult = gatewaymetrics.ConnectionResultDenied
 		connectionReason = reason
-		s.logger.Warn("connection rejected", "reason", reason, "remote", remoteAddr, "error", err)
+		s.logger.Warn("connection rejected", append(logAttrs("handshake"), "reason", reason, "error_kind", handshakeErrorKind(err), "error", err)...)
 		return
 	}
 	if err := client.SetReadDeadline(time.Time{}); err != nil {
@@ -497,6 +499,18 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 		s.metrics.RouteDecision(gatewaymetrics.RouteDecisionDenied)
 		connectionResult = gatewaymetrics.ConnectionResultDenied
 		connectionReason = reasonRouteDenied
+		rejectionAttrs := append(logAttrs("route_selection"),
+			"reason", reasonRouteDenied,
+			"error_kind", routeSelectionErrorKind(err),
+			"route_address", routeAddress,
+			"intent", intentName(handshake.NextState),
+			"server_port", handshake.ServerPort,
+			"route_match", "none",
+			"unknown_host_policy", state.cfg.UnknownHostPolicy,
+			"default_route_configured", state.cfg.DefaultRoute.Backend != "",
+			"error", err,
+		)
+		s.logger.Info("connection rejected", rejectionAttrs...)
 		if statusFallbackForRouteDeniedEnabled(state.cfg, handshake) {
 			if err := s.serveStatusFallback(client, state.cfg, remoteAddr, routeAddress, reasonRouteDenied, ""); err != nil {
 				s.logger.Warn("fallback status response failed", "reason", reasonRouteDenied, "state", "status", "remote", remoteAddr, "server_address", routeAddress, "error", err)
@@ -509,33 +523,27 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 			}
 			return
 		}
-		s.logger.Info("connection rejected", "reason", reasonRouteDenied, "remote", remoteAddr, "server_address", routeAddress, "error", err)
 		return
 	}
 	s.metrics.RouteDecision(routeDecisionResult(selection.MatchedBy))
+	routeAttrs := selectionLogAttrs(routeAddress, handshake, selection)
 	if handshake.NextState == mcproto.NextStateStatus && selection.StatusOverride != nil {
 		if err := s.serveStatusOverride(client, state.cfg.HandshakeTimeout.Duration, *selection.StatusOverride); err != nil {
-			s.logger.Warn("route status override response failed", "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend, "error", err)
+			s.logger.Warn("route status override response failed", append(logAttrs("status_override"), append(routeAttrs, "reason", reasonInitialWriteFailed, "error_kind", "status_override_failed", "error", err)...)...)
 			return
 		}
 		connectionResult = gatewaymetrics.ConnectionResultClosed
 		connectionReason = gatewaymetrics.ReasonSuccess
-		s.logger.Info("route status override response sent", "remote", remoteAddr, "server_address", routeAddress, "backend", selection.Backend)
+		s.logger.Info("route status override response sent", append(logAttrs("status_override"), append(routeAttrs, "reason", gatewaymetrics.ReasonSuccess)...)...)
 		return
 	}
-	if handshake.NextState == mcproto.NextStateStatus && selection.StatusBackend != "" {
-		if err := s.serveObservedStatus(client, state.cfg, selection, routeAddress, remoteAddr); err != nil {
-			s.logger.Warn("router status response failed", "remote", remoteAddr, "server_address", routeAddress, "error", err)
-			return
-		}
-		connectionResult = gatewaymetrics.ConnectionResultClosed
-		connectionReason = gatewaymetrics.ReasonSuccess
-		return
-	}
-	backendAddress := selection.Backend
+	backendAddress, backendRole := selectedBackend(handshake, selection)
+	routeAttrs = append(routeAttrs, "backend_role", backendRole, "selected_backend", backendAddress)
 
 	if err := state.scalerWebhook.Notify(ctx, scaler.Event{Backend: backendAddress, ServerAddress: routeAddress, NextState: handshake.NextState}); err != nil {
-		s.logger.Warn("scaler webhook failed", "backend", backendAddress, "server_address", routeAddress, "error", err)
+		attrs := append(logAttrs("scaler_webhook"), routeAttrs...)
+		attrs = append(attrs, "backend", backendAddress, "error", err)
+		s.logger.Warn("scaler webhook failed", attrs...)
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, state.cfg.BackendDialTimeout.Duration)
@@ -553,7 +561,7 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 			}
 			return
 		}
-		s.logger.Warn("connection rejected", "reason", reason, "remote", remoteAddr, "server_address", routeAddress, "backend", backendAddress, "error", err)
+		s.logger.Warn("connection rejected", append(logAttrs("backend_dial"), append(routeAttrs, "reason", reason, "error_kind", reason, "error", err)...)...)
 		return
 	}
 	s.metrics.BackendDialFinished(gatewaymetrics.ReasonSuccess, gatewaymetrics.ReasonSuccess, time.Since(dialStart))
@@ -562,31 +570,30 @@ func (s *Server) handleConn(ctx context.Context, client net.Conn) {
 	if err := writeAll(backend, rawHandshake); err != nil {
 		connectionResult = gatewaymetrics.ConnectionResultFailed
 		connectionReason = reasonInitialWriteFailed
-		s.logger.Warn("connection rejected", "reason", reasonInitialWriteFailed, "remote", remoteAddr, "server_address", routeAddress, "backend", backendAddress, "error", err)
+		s.logger.Warn("connection rejected", append(logAttrs("backend_initial_write"), append(routeAttrs, "reason", reasonInitialWriteFailed, "error_kind", "initial_write_failed", "error", err)...)...)
 		return
 	}
 
-	s.logger.Info(
-		"proxying connection",
-		"remote", remoteAddr,
+	proxyStartedAttrs := append(logAttrs("proxy_started"),
 		"server_address", routeAddress,
-		"server_port", handshake.ServerPort,
 		"next_state", handshake.NextState,
 		"backend", backendAddress,
 		"matched_by", selection.MatchedBy,
 	)
+	proxyStartedAttrs = append(proxyStartedAttrs, routeAttrs...)
+	s.logger.Info("proxying connection", proxyStartedAttrs...)
 	result := s.proxy(ctx, client, backend)
 	connectionResult = gatewaymetrics.ConnectionResultClosed
 	connectionReason = result.reason
-	s.logger.Info(
-		"proxy connection closed",
+	proxyClosedAttrs := append(logAttrs("proxy_closed"),
 		"reason", result.reason,
-		"remote", remoteAddr,
 		"server_address", routeAddress,
 		"backend", backendAddress,
 		"direction", result.direction,
 		"bytes_copied", result.bytesCopied,
 	)
+	proxyClosedAttrs = append(proxyClosedAttrs, routeAttrs...)
+	s.logger.Info("proxy connection closed", proxyClosedAttrs...)
 }
 
 func addressFromAddr(addr net.Addr) (netip.Addr, error) {
@@ -613,6 +620,67 @@ func routeDecisionResult(matchedBy string) string {
 		return gatewaymetrics.RouteDecisionDefault
 	}
 	return gatewaymetrics.RouteDecisionMatched
+}
+
+func intentName(nextState int32) string {
+	switch nextState {
+	case mcproto.NextStateStatus:
+		return "status"
+	case mcproto.NextStateLogin:
+		return "login"
+	case mcproto.NextStateTransfer:
+		return "transfer"
+	default:
+		return "unknown"
+	}
+}
+
+func handshakeErrorKind(err error) string {
+	switch {
+	case errors.Is(err, hostaddr.ErrInvalid):
+		return "handshake_invalid_server_address"
+	case errors.Is(err, mcproto.ErrPacketTooLarge):
+		return "handshake_packet_too_large"
+	case errors.Is(err, mcproto.ErrUnsupportedNextState):
+		return "handshake_unsupported_next_state"
+	default:
+		return "handshake_malformed"
+	}
+}
+
+func routeSelectionErrorKind(err error) string {
+	switch {
+	case errors.Is(err, router.ErrInvalidServerAddress):
+		return "route_address_invalid"
+	case errors.Is(err, router.ErrNoRoute):
+		return "route_not_found"
+	default:
+		return "route_selection_failed"
+	}
+}
+
+func selectionLogAttrs(routeAddress string, handshake mcproto.Handshake, selection router.Selection) []any {
+	attrs := []any{
+		"route_address", routeAddress,
+		"intent", intentName(handshake.NextState),
+		"server_port", handshake.ServerPort,
+		"route_match", selection.MatchKind,
+		"route_source", selection.RouteSource,
+	}
+	if selection.CanonicalServerAddress != "" {
+		attrs = append(attrs, "canonical_server_address", selection.CanonicalServerAddress)
+	}
+	if selection.StatusOverride != nil && handshake.NextState == mcproto.NextStateStatus {
+		return append(attrs, "backend_role", "status_override")
+	}
+	return attrs
+}
+
+func selectedBackend(handshake mcproto.Handshake, selection router.Selection) (string, string) {
+	if handshake.NextState == mcproto.NextStateStatus && selection.StatusBackend != "" {
+		return selection.StatusBackend, "status_backend"
+	}
+	return selection.Backend, "backend"
 }
 
 func statusFallbackForRouteDeniedEnabled(cfg config.Config, handshake mcproto.Handshake) bool {
@@ -645,6 +713,17 @@ func loginFallbackEnabled(cfg config.Config, handshake mcproto.Handshake) bool {
 }
 
 func (s *Server) serveStatusOverride(client net.Conn, handshakeTimeout time.Duration, override config.StatusOverride) error {
+	if err := client.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return err
+	}
+	packetID, payload, err := mcproto.ReadPacket(client, s.limits.MaxPacketLength)
+	if err != nil {
+		return err
+	}
+	if packetID != mcproto.StatusRequestPacketID || len(payload) != 0 {
+		return errors.New("malformed status request")
+	}
+
 	response, err := mcproto.BuildStatusResponsePacket(mcproto.StatusResponse{
 		Version: mcproto.StatusVersion{
 			Name:     override.ProtocolName,
@@ -661,92 +740,14 @@ func (s *Server) serveStatusOverride(client net.Conn, handshakeTimeout time.Dura
 	if err != nil {
 		return err
 	}
-	return s.serveStatusPacket(client, handshakeTimeout, response, nil)
-}
-
-func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteAddr string, routeAddress string, reason string, backendAddress string) error {
-	response, err := degradedStatusPacket(cfg)
-	if err != nil {
-		return err
-	}
-	return s.serveStatusPacket(client, cfg.HandshakeTimeout.Duration, response, func() {
-		s.metrics.FallbackResponse(gatewaymetrics.FallbackStateStatus, reason)
-		s.logStatusFallbackSent("fallback status response sent", reason, remoteAddr, routeAddress, backendAddress)
-	})
-}
-
-func (s *Server) serveObservedStatus(client net.Conn, cfg config.Config, selection router.Selection, routeAddress, remoteAddr string) error {
-	if err := readStatusRequest(client, cfg.HandshakeTimeout.Duration, s.limits); err != nil {
-		return err
-	}
-	backend := selection.Backend
-	if selection.StatusBackend != "" {
-		backend = selection.StatusBackend
-	}
-	response, reason := s.statusMonitor.response(statusSourceKey{backend: backend, routeAddress: routeAddress}, cfg.Status)
-	if len(response) == 0 {
-		var err error
-		response, err = degradedStatusPacket(cfg)
-		if err != nil {
-			return err
-		}
-		if err := writeAll(client, response); err != nil {
-			return err
-		}
-		s.metrics.FallbackResponse(gatewaymetrics.FallbackStateStatus, reason)
-		s.logStatusFallbackSent("degraded status response sent", reason, remoteAddr, routeAddress, backend)
-		return serveOptionalStatusPing(client, cfg.HandshakeTimeout.Duration, s.limits)
-	}
 	if err := writeAll(client, response); err != nil {
 		return err
 	}
-	return serveOptionalStatusPing(client, cfg.HandshakeTimeout.Duration, s.limits)
-}
 
-func degradedStatusPacket(cfg config.Config) ([]byte, error) {
-	fallback := cfg.Fallback.Status
-	if fallback.MOTD == "" && fallback.ProtocolName == "" && fallback.ProtocolVersion == 0 && fallback.MaxPlayers == 0 && fallback.OnlinePlayers == 0 {
-		fallback = config.Defaults().Fallback.Status
-	}
-	return mcproto.BuildStatusResponsePacket(mcproto.StatusResponse{
-		Version:     mcproto.StatusVersion{Name: fallback.ProtocolName, Protocol: fallback.ProtocolVersion},
-		Players:     mcproto.StatusPlayers{Max: fallback.MaxPlayers, Online: fallback.OnlinePlayers},
-		Description: mcproto.StatusChatComponent{Text: fallback.MOTD},
-	})
-}
-
-func (s *Server) serveStatusPacket(client net.Conn, handshakeTimeout time.Duration, response []byte, afterWrite func()) error {
-	if err := readStatusRequest(client, handshakeTimeout, s.limits); err != nil {
-		return err
-	}
-	if err := writeAll(client, response); err != nil {
-		return err
-	}
-	if afterWrite != nil {
-		afterWrite()
-	}
-	return serveOptionalStatusPing(client, handshakeTimeout, s.limits)
-}
-
-func readStatusRequest(client net.Conn, handshakeTimeout time.Duration, limits mcproto.Limits) error {
 	if err := client.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
 		return err
 	}
-	packetID, payload, err := mcproto.ReadPacket(client, limits.MaxPacketLength)
-	if err != nil {
-		return err
-	}
-	if packetID != mcproto.StatusRequestPacketID || len(payload) != 0 {
-		return errors.New("malformed status request")
-	}
-	return nil
-}
-
-func serveOptionalStatusPing(client net.Conn, handshakeTimeout time.Duration, limits mcproto.Limits) error {
-	if err := client.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
-		return err
-	}
-	packetID, payload, err := mcproto.ReadPacket(client, limits.MaxPacketLength)
+	packetID, payload, err = mcproto.ReadPacket(client, s.limits.MaxPacketLength)
 	if err != nil {
 		if errors.Is(err, io.EOF) || isTimeout(err) {
 			return nil
@@ -757,6 +758,61 @@ func serveOptionalStatusPing(client net.Conn, handshakeTimeout time.Duration, li
 		return errors.New("malformed status ping")
 	}
 	return writeAll(client, mcproto.BuildStatusPongPacket(payload))
+}
+
+func (s *Server) serveStatusFallback(client net.Conn, cfg config.Config, remoteAddr string, routeAddress string, reason string, backendAddress string) error {
+	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
+		return err
+	}
+	packetID, payload, err := mcproto.ReadPacket(client, s.limits.MaxPacketLength)
+	if err != nil {
+		return err
+	}
+	if packetID != mcproto.StatusRequestPacketID || len(payload) != 0 {
+		return errors.New("malformed status request")
+	}
+
+	status := mcproto.StatusResponse{
+		Version: mcproto.StatusVersion{
+			Name:     cfg.Fallback.Status.ProtocolName,
+			Protocol: cfg.Fallback.Status.ProtocolVersion,
+		},
+		Players: mcproto.StatusPlayers{
+			Max:    cfg.Fallback.Status.MaxPlayers,
+			Online: cfg.Fallback.Status.OnlinePlayers,
+		},
+		Description: mcproto.StatusChatComponent{
+			Text: cfg.Fallback.Status.MOTD,
+		},
+	}
+	response, err := mcproto.BuildStatusResponsePacket(status)
+	if err != nil {
+		return err
+	}
+	if err := writeAll(client, response); err != nil {
+		return err
+	}
+	s.metrics.FallbackResponse(gatewaymetrics.FallbackStateStatus, reason)
+	s.logStatusFallbackSent("fallback status response sent", reason, remoteAddr, routeAddress, backendAddress)
+
+	if err := client.SetReadDeadline(time.Now().Add(cfg.HandshakeTimeout.Duration)); err != nil {
+		return err
+	}
+	packetID, payload, err = mcproto.ReadPacket(client, s.limits.MaxPacketLength)
+	if err != nil {
+		if errors.Is(err, io.EOF) || isTimeout(err) {
+			return nil
+		}
+		return err
+	}
+	if packetID != mcproto.StatusPingPacketID || len(payload) != 8 {
+		return errors.New("malformed status ping")
+	}
+	if err := writeAll(client, mcproto.BuildStatusPongPacket(payload)); err != nil {
+		return err
+	}
+	s.logStatusFallbackSent("fallback status pong sent", reason, remoteAddr, routeAddress, backendAddress)
+	return nil
 }
 
 func (s *Server) serveLoginDisconnectFallback(client net.Conn, cfg config.Config, handshake mcproto.Handshake, remoteAddr string, routeAddress string) error {

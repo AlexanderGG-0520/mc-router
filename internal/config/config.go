@@ -68,7 +68,6 @@ type Config struct {
 	ScalerWebhook      ScalerWebhook   `yaml:"scalerWebhook"`
 	ConfigReload       ConfigReload    `yaml:"configReload"`
 	Availability       Availability    `yaml:"availability"`
-	Status             Status          `yaml:"status"`
 	Metrics            Metrics         `yaml:"metrics"`
 	UDPRelay           UDPRelay        `yaml:"udpRelay"`
 	Bedrock            Bedrock         `yaml:"bedrock"`
@@ -135,18 +134,6 @@ type AvailabilityBackend struct {
 	ServerAddress string `yaml:"serverAddress"`
 }
 
-// Status controls router-owned health state for Java STATUS sources. Probe
-// results are observations; the thresholds decide when those observations are
-// allowed to change the public health state. MaxObservationAge is a watchdog
-// for the observation loop itself, not a freshness bound for one success.
-type Status struct {
-	ProbeInterval     Duration `yaml:"probeInterval"`
-	ProbeTimeout      Duration `yaml:"probeTimeout"`
-	FailureThreshold  int      `yaml:"failureThreshold"`
-	RecoveryThreshold int      `yaml:"recoveryThreshold"`
-	MaxObservationAge Duration `yaml:"maxObservationAge"`
-}
-
 type Fallback struct {
 	Enabled bool           `yaml:"enabled"`
 	Login   FallbackLogin  `yaml:"login"`
@@ -160,10 +147,8 @@ type FallbackLogin struct {
 }
 
 type FallbackStatus struct {
-	Enabled              bool  `yaml:"enabled"`
-	RespondOnRouteDenied *bool `yaml:"respondOnRouteDenied"`
-	// Retained for configuration compatibility. Selected STATUS routes now
-	// always return a degraded response after a failed observation.
+	Enabled                 bool   `yaml:"enabled"`
+	RespondOnRouteDenied    *bool  `yaml:"respondOnRouteDenied"`
 	RespondOnBackendFailure bool   `yaml:"respondOnBackendFailure"`
 	MOTD                    string `yaml:"motd"`
 	ProtocolName            string `yaml:"protocolName"`
@@ -261,9 +246,11 @@ type StatusOverride struct {
 
 type Route struct {
 	ServerAddress  string          `yaml:"serverAddress"`
+	Aliases        []string        `yaml:"aliases"`
 	Backend        string          `yaml:"backend"`
 	StatusBackend  string          `yaml:"statusBackend"`
 	StatusOverride *StatusOverride `yaml:"statusOverride"`
+	Source         string          `yaml:"-"`
 }
 
 func LoadFile(path string) (Config, error) {
@@ -310,13 +297,6 @@ func Defaults() Config {
 		Availability: Availability{
 			Interval: Duration{Duration: 10 * time.Second},
 			Timeout:  Duration{Duration: 3 * time.Second},
-		},
-		Status: Status{
-			ProbeInterval:     Duration{Duration: 10 * time.Second},
-			ProbeTimeout:      Duration{Duration: 3 * time.Second},
-			FailureThreshold:  3,
-			RecoveryThreshold: 2,
-			MaxObservationAge: Duration{Duration: 15 * time.Second},
 		},
 		Metrics: Metrics{
 			Listen: ":9090",
@@ -406,9 +386,6 @@ func (c Config) Validate() error {
 	if err := validateAvailability(c.Availability); err != nil {
 		errs = append(errs, err)
 	}
-	if err := validateStatus(c.Status); err != nil {
-		errs = append(errs, err)
-	}
 	if c.Metrics.Enabled {
 		if strings.TrimSpace(c.Metrics.Listen) == "" {
 			errs = append(errs, errors.New("metrics.listen must not be empty when metrics.enabled is true"))
@@ -483,14 +460,23 @@ func (c Config) Validate() error {
 	}
 	seen := map[string]struct{}{}
 	for i, route := range c.Routes {
-		addr, err := hostaddr.Normalize(route.ServerAddress)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("routes[%d].serverAddress: %w", i, err))
+		identities := append([]string{route.ServerAddress}, route.Aliases...)
+		for identityIndex, identity := range identities {
+			addr, err := hostaddr.Normalize(identity)
+			field := fmt.Sprintf("routes[%d].serverAddress", i)
+			if identityIndex > 0 {
+				field = fmt.Sprintf("routes[%d].aliases[%d]", i, identityIndex-1)
+			}
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", field, err))
+				continue
+			}
+			if _, ok := seen[addr]; ok {
+				errs = append(errs, fmt.Errorf("%s duplicates %q", field, addr))
+				continue
+			}
+			seen[addr] = struct{}{}
 		}
-		if _, ok := seen[addr]; ok {
-			errs = append(errs, fmt.Errorf("routes[%d].serverAddress duplicates %q", i, addr))
-		}
-		seen[addr] = struct{}{}
 		if err := validateBackend(route.Backend); err != nil {
 			errs = append(errs, fmt.Errorf("routes[%d].backend: %w", i, err))
 		}
@@ -569,45 +555,6 @@ func validateStatusOverride(override *StatusOverride) error {
 	}
 	if override.OnlinePlayers < 0 {
 		errs = append(errs, errors.New("onlinePlayers must not be negative"))
-	}
-	return errors.Join(errs...)
-}
-
-func validateStatus(status Status) error {
-	defaults := Defaults().Status
-	if status.ProbeInterval.Duration == 0 {
-		status.ProbeInterval = defaults.ProbeInterval
-	}
-	if status.ProbeTimeout.Duration == 0 {
-		status.ProbeTimeout = defaults.ProbeTimeout
-	}
-	if status.FailureThreshold == 0 {
-		status.FailureThreshold = defaults.FailureThreshold
-	}
-	if status.RecoveryThreshold == 0 {
-		status.RecoveryThreshold = defaults.RecoveryThreshold
-	}
-	if status.MaxObservationAge.Duration == 0 {
-		status.MaxObservationAge = defaults.MaxObservationAge
-	}
-	var errs []error
-	if status.ProbeInterval.Duration <= 0 {
-		errs = append(errs, errors.New("status.probeInterval must be positive"))
-	}
-	if status.ProbeTimeout.Duration <= 0 {
-		errs = append(errs, errors.New("status.probeTimeout must be positive"))
-	}
-	if status.FailureThreshold <= 0 {
-		errs = append(errs, errors.New("status.failureThreshold must be at least 1"))
-	}
-	if status.RecoveryThreshold <= 0 {
-		errs = append(errs, errors.New("status.recoveryThreshold must be at least 1"))
-	}
-	if status.MaxObservationAge.Duration <= 0 {
-		errs = append(errs, errors.New("status.maxObservationAge must be positive"))
-	}
-	if status.ProbeInterval.Duration > 0 && status.ProbeTimeout.Duration > 0 && status.MaxObservationAge.Duration > 0 && status.MaxObservationAge.Duration < status.ProbeInterval.Duration+status.ProbeTimeout.Duration {
-		errs = append(errs, errors.New("status.maxObservationAge must be at least status.probeInterval plus status.probeTimeout"))
 	}
 	return errors.Join(errs...)
 }

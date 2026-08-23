@@ -26,13 +26,7 @@ alec-smp.alec-smp.svc.cluster.local:25565
 alec-smp-lobby.alec-smp-lobby.svc.cluster.local:25565
 ```
 
-Static routes may set `statusBackend` to another Service DNS address when Java
-STATUS information should come from a different server. The router probes that
-source independently and terminates public STATUS connections; it does not
-proxy each client STATUS connection. Kubernetes Service annotation discovery
-does not currently discover `statusBackend`; discovered routes retain
-transparent STATUS proxying to their annotated backend, as well as using it for
-Login and Transfer traffic.
+Static routes may set `statusBackend` to another Service DNS address when Java status pings should represent a different server. Kubernetes Service annotation discovery does not currently discover `statusBackend`; discovered routes use their annotated backend for all Java connection states.
 
 ## Minimal Deployment
 
@@ -87,6 +81,7 @@ fallback:
   status:
     enabled: true
     respondOnRouteDenied: true
+    respondOnBackendFailure: false
     motd: "Server unavailable"
     protocolName: "mc-gateway"
     protocolVersion: 767
@@ -105,14 +100,18 @@ fallback:
     message: "Server unavailable. Please try again later."
 ```
 
-For a selected STATUS route, an unknown, failed, invalid, or stale source
-observation always returns this degraded response. Use an explicit
-unavailable/degraded MOTD; do not reuse the normal MOTD. Unknown-host fallback
-remains opt-in. Do not include namespace names, backend service names, internal
-domains, readiness details, or operational runbook text. These fallbacks are
-Minecraft protocol responses only; they are not a substitute for Kubernetes
-readiness, Service health, or alerting. Backend failure login fallback is not
-implemented yet.
+To also return the same generic status response when a known route or default route is selected but the backend Service is unavailable or the dial times out, opt in explicitly:
+
+```yaml
+fallback:
+  enabled: true
+  status:
+    enabled: true
+    respondOnBackendFailure: true
+    motd: "Server unavailable"
+```
+
+Use generic MOTD and login disconnect messages. Unknown host fallback can reveal that a gateway is present, and backend failure fallback can reveal that a route exists but is unavailable. Do not include namespace names, backend service names, internal domains, readiness details, or operational runbook text. These fallbacks are Minecraft protocol responses only; they are not a substitute for Kubernetes readiness, Service health, or alerting. Backend failure login fallback is not implemented yet.
 
 ## Prometheus Scraping
 

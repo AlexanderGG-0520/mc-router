@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/AlexanderGG-0520/mc-router/internal/config"
+	"github.com/AlexanderGG-0520/mc-router/internal/discovery"
 	"github.com/AlexanderGG-0520/mc-router/internal/hostaddr"
 )
 
@@ -14,24 +15,39 @@ var (
 )
 
 type Router struct {
-	routes            map[string]config.Route
+	routes            map[string]routeEntry
 	defaultBackend    string
 	unknownHostPolicy string
 }
 
-type Selection struct {
-	Backend        string
-	StatusBackend  string
-	MatchedBy      string
-	StatusOverride *config.StatusOverride
+type routeEntry struct {
+	route     config.Route
+	matchKind string
 }
+
+type Selection struct {
+	Backend                string
+	StatusBackend          string
+	MatchedBy              string
+	MatchKind              string
+	RouteSource            string
+	CanonicalServerAddress string
+	StatusOverride         *config.StatusOverride
+}
+
+const (
+	MatchKindCanonical = "canonical"
+	MatchKindAlias     = "alias"
+	MatchKindDefault   = "default"
+	RouteSourceDefault = "default"
+)
 
 func New(cfg config.Config) (*Router, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	r := &Router{
-		routes:            make(map[string]config.Route, len(cfg.Routes)),
+		routes:            make(map[string]routeEntry, len(cfg.Routes)),
 		defaultBackend:    cfg.DefaultRoute.Backend,
 		unknownHostPolicy: cfg.UnknownHostPolicy,
 	}
@@ -41,8 +57,18 @@ func New(cfg config.Config) (*Router, error) {
 			return nil, err
 		}
 		route.ServerAddress = normalized
+		if route.Source == "" {
+			route.Source = discovery.RouteSourceStatic
+		}
 		route.StatusOverride = cloneStatusOverride(route.StatusOverride)
-		r.routes[normalized] = route
+		r.routes[normalized] = routeEntry{route: route, matchKind: MatchKindCanonical}
+		for _, alias := range route.Aliases {
+			normalizedAlias, err := hostaddr.Normalize(alias)
+			if err != nil {
+				return nil, err
+			}
+			r.routes[normalizedAlias] = routeEntry{route: route, matchKind: MatchKindAlias}
+		}
 	}
 	return r, nil
 }
@@ -52,16 +78,20 @@ func (r *Router) Select(serverAddress string) (Selection, error) {
 	if err != nil {
 		return Selection{}, fmt.Errorf("%w: %w", ErrInvalidServerAddress, err)
 	}
-	if route, ok := r.routes[address]; ok {
+	if entry, ok := r.routes[address]; ok {
+		route := entry.route
 		return Selection{
-			Backend:        route.Backend,
-			StatusBackend:  route.StatusBackend,
-			MatchedBy:      "route",
-			StatusOverride: cloneStatusOverride(route.StatusOverride),
+			Backend:                route.Backend,
+			StatusBackend:          route.StatusBackend,
+			MatchedBy:              "route",
+			MatchKind:              entry.matchKind,
+			RouteSource:            route.Source,
+			CanonicalServerAddress: route.ServerAddress,
+			StatusOverride:         cloneStatusOverride(route.StatusOverride),
 		}, nil
 	}
 	if r.unknownHostPolicy == config.UnknownHostDefault && r.defaultBackend != "" {
-		return Selection{Backend: r.defaultBackend, MatchedBy: "default"}, nil
+		return Selection{Backend: r.defaultBackend, MatchedBy: "default", MatchKind: MatchKindDefault, RouteSource: RouteSourceDefault}, nil
 	}
 	return Selection{}, fmt.Errorf("%w: %q", ErrNoRoute, address)
 }

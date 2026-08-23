@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"reflect"
 	"strconv"
 	"testing"
 
@@ -64,6 +65,22 @@ func TestMergeRoutesStaticRouteWinsOnSameHost(t *testing.T) {
 	})
 	assertIgnoredReasonCount(t, result, ReasonStaticRoutePrecedence, 1)
 	assertIgnored(t, result.Ignored[0], "smp.example.com", "smp.minecraft.svc.cluster.local:25565", ReasonStaticRoutePrecedence)
+}
+
+func TestMergeRoutesStaticAliasWinsOverDiscoveredHost(t *testing.T) {
+	result := MergeRoutes([]config.Route{
+		{ServerAddress: "play.example.com", Aliases: []string{"LOCALHOST."}, Backend: "static.example.com:25565"},
+	}, []kubernetes.DiscoveredRoute{
+		discoveredRoute("localhost", "smp", "minecraft", 25565),
+	}, MergeOptions{})
+
+	assertRoutes(t, result.Routes, []config.Route{
+		{ServerAddress: "play.example.com", Aliases: []string{"localhost"}, Backend: "static.example.com:25565"},
+	})
+	if got := result.Routes[0].Source; got != RouteSourceStatic {
+		t.Fatalf("route source = %q, want %q", got, RouteSourceStatic)
+	}
+	assertIgnoredReasonCount(t, result, ReasonStaticRoutePrecedence, 1)
 }
 
 func TestMergeRoutesIgnoresDuplicateDiscoveredHost(t *testing.T) {
@@ -192,7 +209,10 @@ func assertRoutes(t *testing.T, got, want []config.Route) {
 		t.Fatalf("routes length = %d, want %d: %#v", len(got), len(want), got)
 	}
 	for i := range got {
-		if got[i] != want[i] {
+		gotRoute, wantRoute := got[i], want[i]
+		gotRoute.Source = ""
+		wantRoute.Source = ""
+		if !reflect.DeepEqual(gotRoute, wantRoute) {
 			t.Fatalf("routes[%d] = %#v, want %#v", i, got[i], want[i])
 		}
 	}

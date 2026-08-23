@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -89,25 +88,35 @@ func TestProtocolSmokeStatusFlow(t *testing.T) {
 func TestProtocolSmokeStatusBackendFlow(t *testing.T) {
 	statusBackend := startStatusProtocolBackend(t)
 	defer statusBackend.close()
+	loginBackend := startLoginProtocolBackend(t)
+	defer loginBackend.close()
 
 	gatewayAddr, stop := startTestServer(t, config.Config{
 		Listen:             ":0",
 		HandshakeTimeout:   config.Duration{Duration: time.Second},
 		BackendDialTimeout: config.Duration{Duration: time.Second},
 		UnknownHostPolicy:  config.UnknownHostDeny,
-		Status:             config.Status{RecoveryThreshold: 1},
+		Fallback: config.Fallback{
+			Enabled: true,
+			Status: config.FallbackStatus{
+				Enabled:                 true,
+				RespondOnBackendFailure: true,
+				MOTD:                    "Server unavailable",
+				ProtocolName:            "mc-gateway",
+				ProtocolVersion:         int(smokeProtocolVersion),
+				MaxPlayers:              1,
+			},
+		},
 		Routes: []config.Route{
-			{ServerAddress: "status.example.com", Backend: "127.0.0.1:1", StatusBackend: statusBackend.addr},
+			{ServerAddress: "127.0.0.1", Aliases: []string{"localhost"}, Backend: loginBackend.addr, StatusBackend: statusBackend.addr},
 		},
 	})
 	defer stop()
-	triggerObservedStatus(t, gatewayAddr, "STATUS.Example.COM.")
-	result := waitProtocolResult(t, statusBackend.result)
 
 	client := dialProtocolClient(t, gatewayAddr)
 	defer client.Close()
 	clientReader := bufio.NewReader(client)
-	requestedAddress := "STATUS.Example.COM."
+	requestedAddress := "127.0.0.1"
 	pingPayload := int64(0x1122334455667788)
 	writeProtocolBytes(t, client,
 		buildHandshakePacket(smokeProtocolVersion, requestedAddress, 25565, mcproto.NextStateStatus),
@@ -126,6 +135,9 @@ func TestProtocolSmokeStatusBackendFlow(t *testing.T) {
 	if version, ok := status["version"].(map[string]any); !ok || version["name"] != "mc-router-smoke" {
 		t.Fatalf("unexpected status response: %s", statusJSON)
 	}
+	if description, ok := status["description"].(map[string]any); !ok || description["text"] != "mc-router smoke" {
+		t.Fatalf("status backend MOTD was not preserved: %s", statusJSON)
+	}
 	if status["favicon"] != "data:image/png;base64,AA==" || status["enforcesSecureChat"] != true {
 		t.Fatalf("status response was not passed through: %s", statusJSON)
 	}
@@ -142,8 +154,29 @@ func TestProtocolSmokeStatusBackendFlow(t *testing.T) {
 		t.Fatalf("pong payload = %x, want %x", got, pingPayload)
 	}
 
-	if result.handshake.ServerAddress != "status.example.com" || result.handshake.NextState != mcproto.NextStateStatus {
+	result := waitProtocolResult(t, statusBackend.result)
+	if result.handshake.ServerAddress != requestedAddress || result.handshake.NextState != mcproto.NextStateStatus {
 		t.Fatalf("status backend handshake = %#v", result.handshake)
+	}
+
+	loginClient := dialProtocolClient(t, gatewayAddr)
+	defer loginClient.Close()
+	loginReader := bufio.NewReader(loginClient)
+	username := "StatusIsolationUser"
+	writeProtocolBytes(t, loginClient,
+		buildHandshakePacket(smokeProtocolVersion, "localhost", 25565, mcproto.NextStateLogin),
+		buildLoginStartPacket(username),
+	)
+	disconnectID, disconnectPayload := readProtocolPacket(t, loginReader)
+	if disconnectID != 0x00 {
+		t.Fatalf("login disconnect packet id = %d, want 0", disconnectID)
+	}
+	if reason := readProtocolString(t, disconnectPayload); !bytes.Contains([]byte(reason), []byte("mc-router smoke disconnect")) {
+		t.Fatalf("unexpected login disconnect reason: %s", reason)
+	}
+	loginResult := waitProtocolResult(t, loginBackend.result)
+	if loginResult.handshake.NextState != mcproto.NextStateLogin || loginResult.loginName != username {
+		t.Fatalf("normal backend login result = %#v", loginResult)
 	}
 }
 
@@ -247,13 +280,6 @@ func startStatusProtocolBackend(t *testing.T) protocolBackend {
 		}
 		packetID, payload, err = readFramedPacket(br)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				// Router-owned source probes intentionally stop after the
-				// Status Response. A transparent client STATUS flow continues
-				// with a Ping and is handled below.
-				result <- protocolResult{handshake: handshake}
-				return
-			}
 			result <- protocolResult{err: fmt.Errorf("read ping request: %w", err)}
 			return
 		}
@@ -278,17 +304,6 @@ func startStatusProtocolBackend(t *testing.T) protocolBackend {
 		result:   result,
 		listener: listener,
 	}
-}
-
-func triggerObservedStatus(t *testing.T, gatewayAddr, address string) {
-	t.Helper()
-	client := dialProtocolClient(t, gatewayAddr)
-	defer client.Close()
-	writeProtocolBytes(t, client,
-		buildHandshakePacket(smokeProtocolVersion, address, 25565, mcproto.NextStateStatus),
-		buildPacket(mcproto.StatusRequestPacketID),
-	)
-	_ = readStatusResponse(t, client)
 }
 
 func startLoginProtocolBackend(t *testing.T) protocolBackend {

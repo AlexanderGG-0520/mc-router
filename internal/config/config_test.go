@@ -101,6 +101,22 @@ routes:
 	}
 }
 
+func TestLoadAcceptsRouteAliases(t *testing.T) {
+	cfg, err := Load([]byte(`
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "127.0.0.1"
+    aliases: ["localhost", "loopback"]
+    backend: "hub.default.svc.cluster.local:25565"
+`))
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if got := cfg.Routes[0].Aliases; len(got) != 2 || got[0] != "localhost" || got[1] != "loopback" {
+		t.Fatalf("aliases = %#v", got)
+	}
+}
+
 func TestLoadRejectsInvalidRouteStatusBackend(t *testing.T) {
 	_, err := Load([]byte(`
 unknownHostPolicy: "deny"
@@ -877,36 +893,6 @@ unknownHostPolicy: "deny"
 	}
 }
 
-func TestLoadAcceptsStatusHealthThresholds(t *testing.T) {
-	cfg, err := Load([]byte(`
-status:
-  probeInterval: "5s"
-  probeTimeout: "2s"
-  failureThreshold: 4
-  recoveryThreshold: 3
-  maxObservationAge: "7s"
-unknownHostPolicy: "deny"
-`))
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if cfg.Status.FailureThreshold != 4 || cfg.Status.RecoveryThreshold != 3 {
-		t.Fatalf("status thresholds = %#v", cfg.Status)
-	}
-}
-
-func TestLoadRejectsInvalidStatusHealthThresholds(t *testing.T) {
-	_, err := Load([]byte(`
-status:
-  failureThreshold: -1
-  recoveryThreshold: -1
-unknownHostPolicy: "deny"
-`))
-	if err == nil {
-		t.Fatal("expected invalid status threshold error")
-	}
-}
-
 func TestLoadAcceptsFallbackStatusConfig(t *testing.T) {
 	cfg, err := Load([]byte(`
 fallback:
@@ -1067,6 +1053,42 @@ routes:
 `))
 	if err == nil {
 		t.Fatal("expected duplicate route error")
+	}
+}
+
+func TestLoadRejectsDuplicateRouteIdentity(t *testing.T) {
+	for _, body := range []string{
+		`routes:
+  - serverAddress: "smp.example.com"
+    aliases: ["SMP.EXAMPLE.COM."]
+    backend: "smp.default.svc.cluster.local:25565"`,
+		`routes:
+  - serverAddress: "smp.example.com"
+    aliases: ["lobby.example.com"]
+    backend: "smp.default.svc.cluster.local:25565"
+  - serverAddress: "LOBBY.EXAMPLE.COM."
+    backend: "smp2.default.svc.cluster.local:25565"`,
+	} {
+		_, err := Load([]byte(`
+unknownHostPolicy: "deny"
+` + body + `
+`))
+		if err == nil {
+			t.Fatalf("Load accepted duplicate route identity:\n%s", body)
+		}
+	}
+}
+
+func TestLoadRejectsInvalidRouteAlias(t *testing.T) {
+	_, err := Load([]byte(`
+unknownHostPolicy: "deny"
+routes:
+  - serverAddress: "smp.example.com"
+    aliases: ["bad host.example.com"]
+    backend: "smp.default.svc.cluster.local:25565"
+`))
+	if err == nil {
+		t.Fatal("expected invalid route alias error")
 	}
 }
 
