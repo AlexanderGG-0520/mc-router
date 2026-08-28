@@ -131,8 +131,8 @@ A simplified comparison:
 | Kubernetes workload scaling | Can directly scale supported workloads and coordinate wake/sleep behavior | Optional webhook integration leaves the workload controller external |
 | Java protocol inspection | Can inspect Login Start for player-aware features such as login metrics and scale-up access policy | Normal path stops at the initial handshake needed for routing |
 | STATUS during backend lifecycle events | Can generate asleep/loading responses as part of auto-scale behavior | Transparent by default; router-generated STATUS requires explicit `statusOverride` or fallback configuration |
-| Monitoring relationship to routing | Operational lifecycle features are integrated into the router | Availability monitoring is intentionally prevented from implicitly controlling LOGIN/Transfer/ordinary STATUS |
-| Additional protocol paths | Focused on its established Java routing and infrastructure integrations | Also experiments with Bedrock/Geyser routing and Transfer-aware Simple Voice Chat UDP routing |
+| Monitoring relationship to routing | Operational lifecycle features can participate directly in connection handling | Availability monitoring is intentionally prevented from implicitly controlling LOGIN/Transfer/ordinary STATUS |
+| Additional protocol paths | Primarily centered on Java hostname routing plus infrastructure integrations | Also experiments with Bedrock/Geyser routing and Transfer-aware Simple Voice Chat UDP routing |
 
 Neither model is universally better.
 
