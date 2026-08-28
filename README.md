@@ -8,278 +8,201 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Kubernetes](https://img.shields.io/badge/kubernetes-ready-blue)
 
-`mc-router` is a Go-based Minecraft Java Edition gateway for routing a single public TCP entry point, usually `:25565`, to multiple backend Minecraft servers based on the hostname that the client requested in the Minecraft handshake.
+`mc-router` is a lightweight Minecraft gateway that lets multiple Minecraft servers share one public entry point.
 
-The first binary is named `mc-gateway` so the project can be renamed later without changing the initial command layout.
-
-## Name Candidates
-
-- `mc-gateway`
-- `mc-router-k8s`
-- `mine-gateway`
-- `block-gateway`
-- `mc-ingress-router`
-
-For now the repository remains `mc-router` and the binary remains `mc-gateway`.
-
-## Why This Is Separate From the Minecraft Server Image
-
-The Minecraft server image should stay focused on running one server process and its server-side lifecycle. Routing, connection admission, Kubernetes discovery, future wake-up control, fallback behavior, rate limiting, and metrics are gateway responsibilities. Keeping those responsibilities separate makes each Minecraft workload simpler, lets namespaces remain isolated, and allows the gateway to evolve without rebuilding every server image.
-
-## MVP Scope
-
-Implemented in this skeleton:
-
-- TCP listener for Minecraft Java Edition connections.
-- Minecraft handshake parser with VarInt support, including Minecraft Java 1.20.5+ transfer intent.
-- Requested `serverAddress` based static route matching.
-- TCP proxying to selected backend `host:port`.
-- Unknown host deny policy, with optional default route policy.
-- Optional fallback responses for denied status pings, backend status dial failures, and denied login starts.
-- Structured JSON logging through Go `log/slog`.
-- Prometheus metrics endpoint when explicitly enabled, including low-cardinality fallback response counters.
-- Optional fixed-backend UDP relay foundation for local transport validation.
-- Optional Bedrock Edition UDP entrypoint forwarding to one Geyser-enabled backend.
-- Handshake read timeout and backend dial timeout.
-- Graceful shutdown on SIGINT/SIGTERM.
-- Unit tests for VarInt, handshake parsing, config loading, and route matching.
-- Dockerfile and minimal Kubernetes manifest.
-- GitHub Actions CI for `gofmt`, `go test`, `go vet`, and Docker build smoke.
-- Namespace-scoped Kubernetes Service annotation discovery, including startup initial list, `SIGHUP` reload re-list, runtime watch updates, retry/backoff recovery, and low-cardinality discovery metrics.
-
-Deferred by design:
-
-- Kubernetes discovery beyond namespace-scoped Service annotations, such as Pod annotations, EndpointSlice discovery, CRDs, all-namespaces RBAC, or informer-based implementation.
-- Scale-to-zero wake-up and scale-down control.
-- Maintenance fallback behavior.
-- REST API.
-- Web UI.
-- CRD definitions and controllers.
-
-## Transfer-Aware Simple Voice Chat Routing
-
-`mc-router` includes an experimental dynamic UDP routing mode for [Simple Voice Chat](https://modrinth.com/plugin/simple-voice-chat).
-
-Unlike the fixed-backend UDP relay, this mode can route a player's Simple Voice Chat UDP traffic to the backend Minecraft server that currently owns that player, including after a Minecraft Transfer.
-
-The architecture consists of:
-
-* the Go-based `mc-gateway`, which owns the shared public UDP listener and the authenticated registration API;
-* a Paper or Fabric companion JAR installed on every participating backend;
-* one configured backend ID and authentication token per Minecraft backend.
-
-The companion registers a player's UUID with `mc-router` before the Simple Voice Chat UDP endpoint is sent to the client. Registrations use short-lived leases and are refreshed while the player remains connected. Replacing a registration closes stale UDP sessions so late replies from the previous backend are not forwarded after Transfer.
-
-Unknown, expired, malformed, or ambiguous sessions fail closed. `mc-router` does not decrypt, inspect, or log voice payloads or Simple Voice Chat secrets.
-
-## Hub Control Companion
-
-`mc-router-control-companion-paper` is a separate Paper plugin for a Hub. It listens only on a configured internal address and accepts authenticated `PUT /v1/backends/{backendId}/availability` requests with `{"availability":"online"}` or `{"availability":"offline"}`. Backend IDs are an explicit allow-list, request bodies are bounded, and an update emits a Paper `BackendAvailabilityChangeEvent` only when the availability state changes. It does not require Simple Voice Chat.
-
-Set `MC_ROUTER_CONTROL_LISTEN`, `MC_ROUTER_CONTROL_TOKEN`, and a comma-separated `MC_ROUTER_CONTROL_BACKENDS` allow-list. Do not expose its listener outside the Kubernetes cluster. The mc-router availability notifier and any Hub GUI/NPC plugin use this API and event.
-
-## Backend Availability Notifications
-
-Set `availability.enabled: true` to have `mc-gateway` send state changes to the Hub control companion. The gateway performs a Java STATUS handshake and status request for each explicit `availability.backends` entry; a bare successful TCP connection does not count as online. The initial observed state is sent, then only changes are sent. Failed notifications are retried on the next interval. Keep `tokenEnv` in a Kubernetes Secret rather than putting the token in the ConfigMap.
-
-```yaml
-availability:
-  enabled: true
-  interval: "10s"
-  timeout: "3s"
-  controlURL: "http://mc-router-control.mc-hub.svc.cluster.local:8082"
-  tokenEnv: "MC_ROUTER_CONTROL_TOKEN"
-  backends:
-    - id: "alec-smp-2"
-      address: "fabric-c2me-gpu-not-true-crafter-mode.fabric-c2me-gpu-not-true-crafter-mode.svc.cluster.local:25565"
-      serverAddress: "c2me.alec-ofc.com"
-```
-
-### Current status
-
-Dynamic Simple Voice Chat routing is experimental and has not yet been declared production-ready.
-
-The following are implemented:
-
-* authenticated backend registration;
-* bounded, expiring player-to-backend leases;
-* UUID-based client UDP routing;
-* backend reassignment after Transfer;
-* stale-session closure;
-* same-IP client isolation;
-* Paper and Fabric companion JARs;
-* unit and local transport tests.
-
-The following still require real-client validation:
-
-* the exact Simple Voice Chat event order during Minecraft Transfer;
-* voice reconnection behavior after Transfer;
-* sustained multi-client operation;
-* backend and gateway restart behavior;
-* deployment behind the intended public UDP endpoint.
-
-A brief interruption in voice connectivity during Transfer is expected. Seamless audio continuity is not currently guaranteed.
-
-### Companion JARs
-
-Build both platform-specific companion JARs with:
-
-```bash
-gradle -p companion :fabric:jar :paper:jar
-```
-
-Generated artifacts:
+For Java Edition, it reads the hostname from the initial Minecraft handshake, selects a backend, forwards the original handshake, and then proxies the TCP stream in both directions. The project is called `mc-router`; the executable is currently named `mc-gateway`.
 
 ```text
-companion/fabric/build/libs/mc-router-voicechat-companion-fabric-<version>.jar
-companion/paper/build/libs/mc-router-voicechat-companion-paper-<version>.jar
+                               +--------------------+
+hub.example.com  -----------+  |                    | ---> hub:25565
+                            +->|     mc-router      |
+smp.example.com  -----------+  |    public :25565   | ---> smp:25565
+                               |                    |
+                               +--------------------+
 ```
 
-Install exactly one companion JAR on each backend:
+## Why mc-router exists
 
-* Fabric: place the Fabric JAR in `mods/`;
-* Paper: place the Paper JAR in `plugins/`.
+Running several Minecraft servers usually creates an awkward networking choice:
 
-Simple Voice Chat must be installed separately on every backend. The companion does not bundle or redistribute Simple Voice Chat.
+- expose a different public port for every server;
+- put every server behind a larger gameplay proxy stack;
+- or build routing logic into the Minecraft server containers themselves.
 
-### Required companion configuration
+`mc-router` exists to keep that responsibility at the network edge instead.
 
-The companion currently reads its configuration from environment variables.
+A typical deployment has several DNS names pointing to the same public address:
 
-| Variable                                  | Required | Description                                                                 |
-| ----------------------------------------- | -------- | --------------------------------------------------------------------------- |
-| `MC_ROUTER_VOICECHAT_REGISTRATION_URL`    | Yes      | Internal registration API base URL, such as `http://mc-router:9091`         |
-| `MC_ROUTER_VOICECHAT_BACKEND_ID`          | Yes      | Backend ID matching one entry under `voiceChat.backends`                    |
-| `MC_ROUTER_VOICECHAT_TOKEN`               | Yes      | Authentication token assigned to that backend                               |
-| `MC_ROUTER_VOICECHAT_PUBLIC_HOST`         | Yes      | Public Simple Voice Chat endpoint sent to clients, including the UDP port   |
-| `MC_ROUTER_VOICECHAT_INSTANCE_ID`         | No       | Stable owner ID for this server instance; generated at startup when omitted |
-| `MC_ROUTER_VOICECHAT_TTL`                 | No       | Local lease timing basis as an ISO-8601 duration; defaults to `PT30S`       |
-| `MC_ROUTER_VOICECHAT_REFRESH_INTERVAL`    | No       | Lease refresh interval; defaults to half of the configured local TTL        |
-| `MC_ROUTER_VOICECHAT_REQUEST_TIMEOUT`     | No       | Registration HTTP timeout; defaults to `PT5S`                               |
-| `MC_ROUTER_VOICECHAT_MAX_TRACKED_PLAYERS` | No       | Maximum locally tracked players; defaults to `4096`                         |
-
-The registration API must remain on a trusted internal network. Do not expose backend authentication tokens or the registration listener to the public internet.
-
-### Compatibility
-
-The table below describes the versions currently targeted by the source tree. It is not a promise of compatibility with unlisted versions.
-
-| Component                      | Fabric companion | Paper companion                      | Validation status                                                                             |
-| ------------------------------ | ---------------- | ------------------------------------ | --------------------------------------------------------------------------------------------- |
-| Minecraft                      | `26.2`           | `1.21.8`                             | Builds successfully; cross-version Transfer environment still requires real-client validation |
-| Java                           | 25               | 21                                   | Compile and JAR packaging verified                                                            |
-| Fabric Loader                  | `>=0.19.3`       | N/A                                  | Matches the Simple Voice Chat 2.6.21 + Minecraft 26.2 upstream target                         |
-| Simple Voice Chat runtime      | `>=2.6.18`       | Version compatible with Paper 1.21.8 | API compilation and packaging verified; runtime event behavior still requires validation      |
-| Simple Voice Chat API artifact | `2.6.20`         | `2.6.20`                             | Compile-time dependency only                                                                  |
-| Companion                      | `0.2.0`          | `0.2.0`                              | Experimental, unreleased                                                                      |
-
-The inspected Simple Voice Chat upstream target uses Minecraft `26.2`, Java 25, Fabric Loader `0.19.3`, and Simple Voice Chat `2.6.21+26.2`. The companion compiles against the separately published `voicechat-api:2.6.20` artifact. Runtime compatibility must be validated before the first stable companion release.
-
-See [docs/voicechat-routing-design.md](docs/voicechat-routing-design.md) for the protocol investigation, threat model, rejected alternatives, and session lifecycle.
-
-## Bedrock UDP Forwarding
-
-`mc-router` can expose one public Minecraft Bedrock Edition UDP entrypoint, normally UDP `19132`, and send Bedrock players to Geyser-enabled backends.
-
-Two Bedrock modes are available:
-
-* `udp-forward`: opaque UDP forwarding to `bedrock.defaultBackend`. This preserves the original low-level relay behavior and does not parse RakNet or Bedrock packets.
-* `host-proxy`: Bedrock-aware routing using gophertunnel. `mc-router` accepts the Bedrock login, reads the client's requested `ServerAddress`, matches it against `bedrock.routes[].hosts`, then connects to the selected Geyser backend. Unknown hosts fall back to `bedrock.defaultBackend`.
-
-Run Geyser on every backend Minecraft server or backend service that should accept Bedrock players. `mc-router` still does not run Geyser and does not translate Bedrock to Java itself.
-
-The intended design is one public UDP `19132` listener rather than exposing one public UDP port per backend server. Java Edition TCP routing on `listen`, normally TCP `25565`, is separate and unchanged.
-
-`host-proxy` terminates and re-originates the Bedrock session, so it has a larger compatibility surface than `udp-forward`. It depends on gophertunnel tracking current Minecraft Bedrock protocol versions. Backend authentication settings must allow the proxied Bedrock connection model used by the deployment; validate this with the target Geyser/Floodgate configuration before relying on it in production.
-
-```yaml
-listen: ":25565"
-bedrock:
-  enabled: true
-  mode: "host-proxy"
-  listen: ":19132"
-  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
-  sessionTimeout: "30s"
-  routes:
-    - name: hub
-      hosts:
-        - "play.example.com"
-        - "hub.play.example.com"
-      backend: "mc-hub.mc-hub.svc.cluster.local:19132"
-    - name: creative
-      hosts:
-        - "creative.play.example.com"
-      backend: "mc-creative.mc-creative.svc.cluster.local:19132"
-    - name: survival
-      hosts:
-        - "survival.play.example.com"
-      backend: "mc-survival.mc-survival.svc.cluster.local:19132"
+```text
+hub.example.com -> 203.0.113.10
+smp.example.com -> 203.0.113.10
 ```
 
-## Config
+Players still connect to the normal Minecraft port. `mc-router` uses the hostname the client actually sent in the Minecraft handshake to decide which internal backend should receive the connection.
 
-Static YAML is the first supported route source:
+That gives the deployment one public listener while allowing each backend to remain an independent Minecraft workload.
+
+This separation is deliberate. A Minecraft server image should be responsible for running one Minecraft server and managing its lifecycle. Public routing, connection policy, discovery, metrics, fallback behavior, and related edge concerns belong to a separate component so they can evolve without rebuilding every backend image.
+
+## How Java routing works
+
+The normal Java Edition path is intentionally small:
+
+1. A client connects to `mc-router`, normally on TCP `25565`.
+2. `mc-router` reads the first Minecraft handshake packet.
+3. It extracts the requested `serverAddress` and the requested next state.
+4. It normalizes the configured host identity and selects a route.
+5. It connects to the selected backend.
+6. It forwards the exact original handshake bytes.
+7. It proxies the remaining TCP stream in both directions.
+
+For ordinary Java LOGIN and STATUS traffic, `mc-router` does not generate or reinterpret the backend's Minecraft response.
+
+STATUS has two explicit routing controls:
+
+```text
+statusOverride -> statusBackend -> backend
+```
+
+- `statusOverride` returns a configured router-generated STATUS response and does not contact a backend.
+- `statusBackend` sends only Java STATUS traffic to another backend.
+- without either setting, STATUS uses the normal `backend`.
+- LOGIN and Minecraft Transfer traffic always use the normal `backend`.
+
+Monitoring state and backend availability notifications are separate concerns. They do not implicitly change this routing order or decide what Minecraft STATUS response a player receives.
+
+## Quick start
+
+The smallest useful setup needs two things:
+
+1. one or more Minecraft backends reachable from `mc-router`;
+2. DNS names that players use to reach the public `mc-router` listener.
+
+### 1. Create a config
+
+Create `config.yaml`:
 
 ```yaml
 listen: ":25565"
 handshakeTimeout: "5s"
 backendDialTimeout: "5s"
-clientPolicy:
-  # Disabled when both lists are empty. allow takes precedence over deny.
-  allow: []
-  deny: []
-clientRateLimit:
-  # Disabled by default. Limits each source IP independently.
-  enabled: false
-  connectionsPerSecond: 1
-  burst: 3
-  idleTimeout: "10m"
-  maxEntries: 4096
-proxyProtocol:
-  # Accept headers only from an explicitly trusted TCP peer. Empty by default.
-  trustedProxies: []
-scalerWebhook:
-  # Disabled by default. Notification failure does not block backend dialing.
-  enabled: false
-  url: "http://scaler.default.svc.cluster.local/wake"
-  timeout: "2s"
-  headers: {}
-configReload:
-  # Disabled by default. Detects direct-file writes and Kubernetes ConfigMap updates.
-  watch: false
-  debounce: "1s"
-metrics:
-  enabled: true
-  listen: ":9090"
-  path: "/metrics"
-udpRelay:
-  enabled: false
-  listen: ":24454"
-  backend: "hub:24454"
-  idleTimeout: "30s"
-  backendDialTimeout: "5s"
-  maxSessions: 4096
-  maxPacketSize: 65535
-bedrock:
-  enabled: false
-  mode: "udp-forward"
-  listen: ":19132"
-  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
-  sessionTimeout: "30s"
-  routes:
-    - name: hub
-      hosts:
-        - "play.example.com"
-        - "hub.play.example.com"
-      backend: "mc-hub.mc-hub.svc.cluster.local:19132"
-    - name: creative
-      hosts:
-        - "creative.play.example.com"
-      backend: "mc-creative.mc-creative.svc.cluster.local:19132"
-    - name: survival
-      hosts:
-        - "survival.play.example.com"
-      backend: "mc-survival.mc-survival.svc.cluster.local:19132"
+
+unknownHostPolicy: "deny"
+
+routes:
+  - serverAddress: "hub.example.com"
+    backend: "hub:25565"
+
+  - serverAddress: "smp.example.com"
+    backend: "smp:25565"
+```
+
+The backend addresses above are examples. They can be Docker service names, Kubernetes Services, private IP addresses, or any other address reachable from the `mc-router` process.
+
+### 2. Point DNS at the router
+
+Both public hostnames can resolve to the same public IP:
+
+```text
+hub.example.com -> your mc-router public IP
+smp.example.com -> your mc-router public IP
+```
+
+The DNS result gets the player to the router. The hostname in the Minecraft handshake tells `mc-router` which backend to use.
+
+### 3. Run mc-router
+
+Using the current stable container release as an example:
+
+```bash
+docker run --rm \
+  -p 25565:25565 \
+  -v "$PWD/config.yaml:/etc/mc-gateway/config.yaml:ro" \
+  ghcr.io/alexandergg-0520/mc-router:0.9.1
+```
+
+For production, pin the image to the release version you have validated rather than tracking `main`.
+
+At this point:
+
+```text
+hub.example.com:25565 -> hub:25565
+smp.example.com:25565 -> smp:25565
+```
+
+No plugin is required on the Java backend for this basic routing path.
+
+## Routing configuration
+
+### Multiple hostnames for one backend
+
+Use `aliases` when several explicit host identities should map to the same route:
+
+```yaml
+routes:
+  - serverAddress: "play.example.com"
+    aliases:
+      - "hub.example.com"
+      - "play.local"
+    backend: "hub:25565"
+```
+
+Aliases are explicit handshake identities. `mc-router` does not infer aliases from DNS resolution or IP equivalence.
+
+### Unknown hosts
+
+By default, a public Minecraft listener can receive handshakes for hostnames you did not intend to serve. The recommended strict policy is:
+
+```yaml
+unknownHostPolicy: "deny"
+```
+
+If you intentionally want unmatched hosts to go to a default backend:
+
+```yaml
+unknownHostPolicy: "default"
+
+defaultRoute:
+  backend: "lobby:25565"
+  mode: "allow"
+```
+
+### Send STATUS to another backend
+
+`statusBackend` is useful when the server-list ping should be answered by a different Minecraft backend while actual joins still go to the normal backend:
+
+```yaml
+routes:
+  - serverAddress: "play.example.com"
+    backend: "smp:25565"
+    statusBackend: "status-service:25565"
+```
+
+The STATUS connection is proxied as Minecraft TCP traffic. The selected status backend remains responsible for its MOTD, version information, player sample, favicon, and other STATUS fields.
+
+### Return an explicit static STATUS
+
+When a route intentionally needs a router-owned static STATUS response:
+
+```yaml
+routes:
+  - serverAddress: "play.example.com"
+    backend: "smp:25565"
+    statusOverride:
+      motd: "Alec SMP"
+      protocolName: "Alec SMP 2"
+      protocolVersion: 767
+      maxPlayers: 100
+      onlinePlayers: 0
+```
+
+`statusOverride` is an explicit exception to transparent STATUS proxying. It takes precedence over `statusBackend` and `backend`, but it does not affect LOGIN or Transfer routing.
+
+### Explicit fallback responses
+
+Fallback responses are also opt-in. They are intended for configured error cases, not as an implicit health-state controller.
+
+```yaml
 fallback:
   enabled: true
   login:
@@ -295,120 +218,241 @@ fallback:
     protocolVersion: 767
     maxPlayers: 0
     onlinePlayers: 0
-unknownHostPolicy: "deny"
-defaultRoute:
-  backend: "lobby.default.svc.cluster.local:25565"
-  mode: "allow"
-routes:
-  - serverAddress: "play.example.com"
-    aliases: ["play.local"] # Explicit additional handshake host identities for this route.
-    backend: "hub.default.svc.cluster.local:25565"
-    statusBackend: "smp.default.svc.cluster.local:25565"
-  - serverAddress: "smp.example.com"
-    backend: "alec-smp.alec-smp.svc.cluster.local:25565"
-    # Optional: answer Java status pings directly without contacting the backend.
-    statusOverride:
-      motd: "Alec SMP"
-      protocolName: "Alec SMP 2"
-      protocolVersion: 767
-      maxPlayers: 100
-      onlinePlayers: 0
-  - serverAddress: "lobby.example.com"
-    backend: "alec-smp-lobby.alec-smp-lobby.svc.cluster.local:25565"
 ```
 
-`unknownHostPolicy` supports:
+Keep `respondOnBackendFailure` disabled unless you intentionally want backend dial failures to produce the configured router-generated STATUS response.
 
-- `deny`: close connections for hosts that do not match an explicit route.
-- `default`: send unknown hosts to `defaultRoute.backend`.
+## Docker
 
-`aliases` adds explicit additional Minecraft handshake host identities to the same route. It does not use DNS resolution or IP equivalence: every accepted hostname or IP address must be listed as `serverAddress` or an alias, and each normalized identity may belong to only one route.
+The runtime image is built with a distroless non-root base. The container entrypoint is `/mc-gateway`, and the default config path is `/etc/mc-gateway/config.yaml`.
 
-`statusBackend` routes Java Edition status pings to a different backend while login and Transfer traffic continue to use `backend`. The status connection is a plain TCP proxy, so the selected backend's complete Status Response (including MOTD, version, player sample, favicon, and other fields) is passed through unchanged. It is optional; when omitted, status uses `backend` as before.
+Build locally:
 
-A route can instead set `statusOverride` to return a static Java Edition status response for that hostname. It is used only for the status state: login and Transfer handshakes still proxy to the route's backend. `statusOverride` takes precedence over `statusBackend`, so removing an override automatically resumes proxying status to `statusBackend`. The override bypasses both backends entirely, so the response remains available during backend outages and does not show live player counts. Its `motd`, `protocolName`, `protocolVersion`, `maxPlayers`, and `onlinePlayers` fields are all required; protocol and player counts must be non-negative.
+```bash
+docker build -t mc-gateway:dev .
+```
 
-Metrics are disabled by default. Set `metrics.enabled: true` to serve unauthenticated Prometheus text metrics on `metrics.listen` and `metrics.path`. Do not expose this HTTP listener directly to the public internet; it is intended for internal scraping, such as from a Kubernetes cluster Prometheus.
+Run a local build:
 
-The UDP relay is disabled by default. Set `udpRelay.enabled: true` to bind one UDP listener and forward opaque datagrams bidirectionally to one explicit backend. The relay is a fixed-backend transport foundation only; it does not parse Simple Voice Chat packets, infer backends from TCP routes, or perform Transfer-aware routing.
+```bash
+docker run --rm \
+  -p 25565:25565 \
+  -p 19132:19132/udp \
+  -p 127.0.0.1:9090:9090 \
+  -v "$PWD/examples/config.yaml:/etc/mc-gateway/config.yaml:ro" \
+  mc-gateway:dev
+```
 
-Bedrock support is disabled by default. Set `bedrock.enabled: true` to bind one UDP listener, usually `:19132`. `bedrock.mode` defaults to `udp-forward`. Use `host-proxy` when hostname-based Bedrock routing is required. Each route host is matched case-insensitively, and host values with ports such as `creative.play.example.com:19132` are normalized to the host. Each backend route must point at a Geyser-enabled Minecraft server or separate Geyser service.
+Published images are available from GHCR and, when configured by the release workflow, Docker Hub.
 
-Fallback responses are counted with `mc_gateway_fallback_responses_total{state,reason}` after a fallback response packet is successfully written. Labels are intentionally bounded: `state` is `status` or `login`, and `reason` is one of the documented low-cardinality lifecycle reasons.
+## Kubernetes
 
-Fallback responses are disabled by default. Set `fallback.enabled: true` and `fallback.status.enabled: true` to answer selected status pings with a minimal Minecraft status response. Route denied status responses default to enabled once status fallback is enabled; backend failure status responses require `fallback.status.respondOnBackendFailure: true` because they can reveal that a configured route exists. Set `fallback.login.enabled: true` to return a protocol 767 login-state disconnect packet for denied login starts.
+`mc-router` is designed to work cleanly as a separate edge workload in Kubernetes.
 
-## Run Locally
+A common shape is:
 
-```powershell
+```text
+Internet
+   |
+LoadBalancer / tunnel / L4 entry point
+   |
+mc-router
+   |
+   +----> mc-hub.mc-hub.svc.cluster.local:25565
+   |
+   +----> survival.survival.svc.cluster.local:25565
+   |
+   +----> creative.creative.svc.cluster.local:25565
+```
+
+Apply the minimal example after replacing its image and backend names:
+
+```bash
+kubectl apply -f deploy/kubernetes/mc-gateway.yaml
+```
+
+The example includes a ConfigMap-backed YAML config, Deployment, non-root security context, LoadBalancer Service, and TCP readiness/liveness probes.
+
+For dynamic namespace-scoped Service annotation discovery, see [docs/kubernetes-discovery.md](docs/kubernetes-discovery.md). For the broader Kubernetes deployment model, see [docs/kubernetes.md](docs/kubernetes.md).
+
+## Bedrock Edition
+
+Bedrock uses UDP and is handled separately from the Java TCP listener.
+
+Two modes are available:
+
+- `udp-forward`: opaque UDP forwarding to one configured backend.
+- `host-proxy`: Bedrock-aware routing through gophertunnel using the client's requested `ServerAddress`.
+
+Example:
+
+```yaml
+bedrock:
+  enabled: true
+  mode: "host-proxy"
+  listen: ":19132"
+  defaultBackend: "mc-hub.mc-hub.svc.cluster.local:19132"
+  sessionTimeout: "30s"
+  routes:
+    - name: hub
+      hosts:
+        - "play.example.com"
+        - "hub.play.example.com"
+      backend: "mc-hub.mc-hub.svc.cluster.local:19132"
+
+    - name: survival
+      hosts:
+        - "survival.play.example.com"
+      backend: "mc-survival.mc-survival.svc.cluster.local:19132"
+```
+
+`mc-router` does not implement Bedrock-to-Java translation. A Geyser-enabled backend or separate Geyser service is still required.
+
+`host-proxy` terminates and re-originates the Bedrock session and therefore has a larger compatibility surface than the Java TCP path or opaque `udp-forward` mode. Validate it against the exact Geyser/Floodgate setup used in production.
+
+## Transfer-aware Simple Voice Chat routing
+
+`mc-router` includes experimental dynamic UDP routing for [Simple Voice Chat](https://modrinth.com/plugin/simple-voice-chat).
+
+The problem is different from ordinary TCP routing: after a Minecraft Transfer, the same player may now belong to another backend, while Simple Voice Chat still uses a shared public UDP endpoint.
+
+The experimental design uses:
+
+- `mc-gateway` as the shared UDP listener and authenticated registration API;
+- one Fabric or Paper companion JAR on each participating backend;
+- short-lived player UUID -> backend registrations refreshed while the player remains connected.
+
+Replacing a registration closes stale UDP sessions so late packets from a previous backend are not forwarded after Transfer.
+
+Unknown, expired, malformed, or ambiguous sessions fail closed. `mc-router` does not decrypt, inspect, or log voice payloads or Simple Voice Chat secrets.
+
+This feature has unit and local transport coverage but still requires real-client validation for Transfer event ordering, reconnection behavior, sustained multi-client operation, restart behavior, and the intended production network path. A brief voice interruption during Transfer is expected.
+
+Build companion JARs with:
+
+```bash
+gradle -p companion :fabric:jar :paper:jar
+```
+
+Generated artifacts:
+
+```text
+companion/fabric/build/libs/mc-router-voicechat-companion-fabric-<version>.jar
+companion/paper/build/libs/mc-router-voicechat-companion-paper-<version>.jar
+```
+
+Install exactly one platform-appropriate companion on each participating backend. Simple Voice Chat itself must be installed separately.
+
+Required environment variables:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `MC_ROUTER_VOICECHAT_REGISTRATION_URL` | Yes | Internal registration API base URL |
+| `MC_ROUTER_VOICECHAT_BACKEND_ID` | Yes | Backend ID matching `voiceChat.backends` |
+| `MC_ROUTER_VOICECHAT_TOKEN` | Yes | Authentication token for that backend |
+| `MC_ROUTER_VOICECHAT_PUBLIC_HOST` | Yes | Public voice endpoint, including UDP port |
+| `MC_ROUTER_VOICECHAT_INSTANCE_ID` | No | Stable server-instance owner ID |
+| `MC_ROUTER_VOICECHAT_TTL` | No | Registration lease timing basis |
+| `MC_ROUTER_VOICECHAT_REFRESH_INTERVAL` | No | Lease refresh interval |
+| `MC_ROUTER_VOICECHAT_REQUEST_TIMEOUT` | No | Registration HTTP timeout |
+| `MC_ROUTER_VOICECHAT_MAX_TRACKED_PLAYERS` | No | Maximum locally tracked players |
+
+Keep the registration API and authentication tokens on a trusted internal network.
+
+See [docs/voicechat-routing-design.md](docs/voicechat-routing-design.md) for the protocol design and threat model, and [docs/voicechat-development.md](docs/voicechat-development.md) for local development and E2E setup.
+
+## Backend availability notifications
+
+`mc-router` can independently probe explicitly configured Minecraft backends and notify the Hub control companion when their observed availability changes.
+
+```yaml
+availability:
+  enabled: true
+  interval: "10s"
+  timeout: "3s"
+  controlURL: "http://mc-router-control.mc-hub.svc.cluster.local:8082"
+  tokenEnv: "MC_ROUTER_CONTROL_TOKEN"
+  backends:
+    - id: "alec-smp-2"
+      address: "survival.survival.svc.cluster.local:25565"
+      serverAddress: "smp.example.com"
+```
+
+The probe performs a Java STATUS handshake and request; a bare TCP connect is not considered sufficient evidence that the backend is online.
+
+This monitoring path is intentionally separate from player routing. Availability state is notification data and does not implicitly redirect LOGIN, Transfer, or ordinary STATUS traffic.
+
+`mc-router-control-companion-paper` is a separate Paper plugin intended for an internal Hub. It accepts authenticated backend availability updates and emits a `BackendAvailabilityChangeEvent` when state changes. Do not expose its control listener publicly.
+
+## Other optional controls
+
+The example configuration also documents optional features including:
+
+- source IP/CIDR allow and deny policy;
+- per-source-IP connection rate limiting;
+- trusted PROXY Protocol peers;
+- Prometheus metrics;
+- config-file reload watching;
+- a scaler webhook;
+- fixed-backend UDP relay.
+
+See [examples/config.yaml](examples/config.yaml) for the current configuration surface and [docs/architecture.md](docs/architecture.md) for the corresponding runtime behavior.
+
+## Run from source
+
+```bash
 go run ./cmd/mc-gateway -config examples/config.yaml
 ```
 
-For local testing with a backend on localhost, edit `examples/config.yaml` to point a route at your test Minecraft server, for example `127.0.0.1:25566`.
+For a local backend, point one route at a local server such as `127.0.0.1:25566`.
 
 ## Test
 
-```powershell
+```bash
 gofmt -w .
 go test ./...
 go test -race ./...
 go vet ./...
 ```
 
-The normal test suite uses fake protocol backends and does not start a real Minecraft server. A separate optional real-server E2E smoke test is available through a manual GitHub Actions workflow and can also be run locally with Docker. See [docs/e2e.md](docs/e2e.md).
+The normal test suite uses fake protocol backends and does not require a real Minecraft server.
 
-Local research and E2E setup for experimental Simple Voice Chat support is documented in [docs/voicechat-development.md](docs/voicechat-development.md). Dynamic, Transfer-aware routing is implemented but remains experimental and requires real-client validation before it is considered production-ready.
-
-For release gating, manual smoke checks, and non-blocking post-MVP work, see [docs/v0.1.0-readiness.md](docs/v0.1.0-readiness.md).
-
-## Docker
-
-```powershell
-docker build -t mc-gateway:dev .
-docker run --rm -p 25565:25565 -p 19132:19132/udp -p 127.0.0.1:9090:9090 -v ${PWD}/examples/config.yaml:/etc/mc-gateway/config.yaml:ro mc-gateway:dev
-```
-
-The Dockerfile uses a multi-stage build and `gcr.io/distroless/static-debian12:nonroot` for the runtime image. Distroless keeps the image small and removes shell/package-manager attack surface while retaining a minimal base with non-root support. Alpine is easier to debug interactively, but the runtime container should not require a shell for the MVP. If operational debugging becomes painful, a separate debug image target can be added later.
+A separate optional real-server E2E smoke test can be run locally with Docker or through the manual GitHub Actions workflow. See [docs/e2e.md](docs/e2e.md).
 
 ## Standalone binaries
 
-Version tags publish `mc-gateway` archives for Linux, macOS, and Windows to the corresponding GitHub Release. Each release includes `checksums.txt`. Container images continue to be published separately by the Docker workflow.
+Version tags publish `mc-gateway` archives for Linux, macOS, and Windows through GitHub Releases, together with `checksums.txt`.
 
-Health checks are intentionally left to Kubernetes TCP probes in the MVP. A richer health endpoint can be added after a metrics or admin listener exists.
+Container images are published separately by the Docker workflow.
 
-## Kubernetes
+## Security model
 
-Apply the minimal example after replacing the image and backend service names:
+The gateway is intentionally strict at the public edge:
 
-```powershell
-kubectl apply -f deploy/kubernetes/mc-gateway.yaml
-```
-
-The manifest includes:
-
-- `Namespace`
-- ConfigMap backed YAML config
-- Deployment with non-root security context
-- LoadBalancer Service on TCP `25565`
-- Optional Bedrock forwarding requires exposing UDP `19132` when `bedrock.enabled` is true.
-- TCP readiness and liveness probes
-
-Namespace-scoped Kubernetes Service annotation discovery is implemented. If discovery is enabled, use the namespace-scoped RBAC example in `deploy/kubernetes/discovery-rbac.yaml`. See [docs/kubernetes-discovery.md](docs/kubernetes-discovery.md).
-
-## Security Notes
-
-- The handshake parser caps packet length.
-- Server address length is limited.
-- A read deadline is applied while waiting for the initial handshake.
-- Backend dial timeout is configured.
-- Unknown hosts are denied unless explicitly configured to use the default route.
-- Logs include route-level metadata, not raw packet payloads.
-- UDP relay payloads are opaque; relay sessions are bounded transport endpoint mappings, not player identity.
-- Parser and network proxy are separate packages to keep tests focused.
+- initial handshake packet length is capped;
+- server-address length is limited;
+- handshake reads have a deadline;
+- backend dialing has a timeout;
+- unknown hosts can be denied before any backend connection;
+- logs contain route-level metadata rather than raw Minecraft payloads;
+- UDP transport sessions are bounded;
+- metrics and internal control APIs are intended for trusted networks, not direct public exposure.
 
 See [docs/security.md](docs/security.md) for more detail.
+
+## Documentation
+
+- [Architecture](docs/architecture.md) - connection lifecycle and design boundaries.
+- [Kubernetes](docs/kubernetes.md) - deployment model.
+- [Kubernetes discovery](docs/kubernetes-discovery.md) - namespace-scoped Service annotation discovery.
+- [E2E testing](docs/e2e.md) - real-server smoke validation.
+- [Development](docs/development.md) - contributor workflow and local development.
+- [Simple Voice Chat design](docs/voicechat-routing-design.md) - dynamic UDP routing design and threat model.
+- [Simple Voice Chat development](docs/voicechat-development.md) - experimental companion development and validation.
+- [Security](docs/security.md) - parser, routing, and network-security notes.
 
 ## Contributing
 
 Use a feature branch for every change and open a pull request against `main`.
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/development.md](docs/development.md) for the workflow, pre-PR checks, and GitHub branch protection recommendations.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/development.md](docs/development.md) for the development workflow, pre-PR checks, and repository conventions.
