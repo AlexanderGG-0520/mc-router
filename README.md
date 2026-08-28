@@ -54,6 +54,8 @@ Go fits the runtime shape of `mc-router`: a long-running network process with ma
 
 The Java routing path can therefore remain mostly standard-library networking code instead of depending on a full Minecraft server or plugin runtime.
 
+This is a fit-for-purpose rationale, not a claim that Go is uniquely required: the important property is that the gateway can remain a small independently deployable network process.
+
 ### Inspect only what is needed to route
 
 For normal Java traffic, `mc-router` parses the initial handshake because that is where Minecraft exposes the requested server address and next state. After a route is selected, it forwards the original handshake bytes and treats the rest of the connection as an opaque TCP stream.
